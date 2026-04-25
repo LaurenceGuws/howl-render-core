@@ -19,18 +19,7 @@ M0 scaffold queue open.
   - zig build
   - zig build test
 
-## TH2 (Test Hygiene Phase 2)
+## TH (Test Hygiene) Closeout
 
-| Ticket | Status | Intent |
-| --- | --- | --- |
-| `TH2-1` | done | Baseline test inventory (TEST_HYGIENE_MATRIX.md) |
-| `TH2-2` | done | VS Code workflow normalization (.vscode/ config) |
-| `TH2-3` | done | Platform target verification (standard config) |
-
-### Known Intentional Limits
-
-- Minimal test coverage (API surface checks only)
-- GPU rendering tests deferred to integration phase
-- Platform-specific integration testing deferred
-- Direct-file testing not applicable (cross-module dependencies)
+**Phase complete.** Package-context test authority: `zig build test` (1 test passing). Known intentional limits: API surface checks only, GPU rendering tests and platform-specific integration testing deferred.
 
