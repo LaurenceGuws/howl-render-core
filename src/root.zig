@@ -470,13 +470,23 @@ const ansi16 = [16]Rgba8{
     .{ .r = 255, .g = 255, .b = 255, .a = 255 },
 };
 
+fn indexed256(idx: u8) Rgba8 {
+    if (idx < 16) return ansi16[idx];
+    if (idx < 232) {
+        const i: u32 = idx - 16;
+        const r: u8 = @intCast((i / 36) * 51);
+        const g: u8 = @intCast(((i / 6) % 6) * 51);
+        const b: u8 = @intCast((i % 6) * 51);
+        return .{ .r = r, .g = g, .b = b, .a = 255 };
+    }
+    const gray: u8 = @intCast((@as(u32, idx) - 232) * 10 + 8);
+    return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
+}
+
 fn colorToRgba8(color: howl_term_surface.Color, is_fg: bool) Rgba8 {
     return switch (color.kind) {
         .default => if (is_fg) default_fg else default_bg,
-        .indexed => blk: {
-            const idx: u8 = @intCast(color.value & 0xFF);
-            break :blk if (idx < 16) ansi16[idx] else default_fg;
-        },
+        .indexed => indexed256(@intCast(color.value & 0xFF)),
         .rgb => .{
             .r = @intCast((color.value >> 16) & 0xFF),
             .g = @intCast((color.value >> 8) & 0xFF),
@@ -624,4 +634,76 @@ test "adapter: ansi16 indexed color maps to palette entry" {
     try std.testing.expectEqual(ansi16[1].r, owned.plan.fills[0].color.r);
     try std.testing.expectEqual(ansi16[1].g, owned.plan.fills[0].color.g);
     try std.testing.expectEqual(ansi16[1].b, owned.plan.fills[0].color.b);
+}
+
+// --- 256-color tests ---
+
+test "indexed256: ansi range 0-15 matches palette" {
+    for (0..16) |i| {
+        const got = indexed256(@intCast(i));
+        try std.testing.expectEqual(ansi16[i].r, got.r);
+        try std.testing.expectEqual(ansi16[i].g, got.g);
+        try std.testing.expectEqual(ansi16[i].b, got.b);
+    }
+}
+
+test "indexed256: color cube index 16 is black (0,0,0)" {
+    const c = indexed256(16);
+    try std.testing.expectEqual(@as(u8, 0), c.r);
+    try std.testing.expectEqual(@as(u8, 0), c.g);
+    try std.testing.expectEqual(@as(u8, 0), c.b);
+}
+
+test "indexed256: color cube index 231 is white (255,255,255)" {
+    const c = indexed256(231);
+    try std.testing.expectEqual(@as(u8, 255), c.r);
+    try std.testing.expectEqual(@as(u8, 255), c.g);
+    try std.testing.expectEqual(@as(u8, 255), c.b);
+}
+
+test "indexed256: color cube index 196 is red (255,0,0)" {
+    // index 196 = 16 + 36*5 + 6*0 + 0 = 16+180 = 196
+    const c = indexed256(196);
+    try std.testing.expectEqual(@as(u8, 255), c.r);
+    try std.testing.expectEqual(@as(u8, 0), c.g);
+    try std.testing.expectEqual(@as(u8, 0), c.b);
+}
+
+test "indexed256: color cube index 46 is green (0,255,0)" {
+    // index 46 = 16 + 36*0 + 6*5 + 0 = 16+30 = 46
+    const c = indexed256(46);
+    try std.testing.expectEqual(@as(u8, 0), c.r);
+    try std.testing.expectEqual(@as(u8, 255), c.g);
+    try std.testing.expectEqual(@as(u8, 0), c.b);
+}
+
+test "indexed256: color cube index 21 is blue (0,0,255)" {
+    // index 21 = 16 + 36*0 + 6*0 + 5 = 16+5 = 21
+    const c = indexed256(21);
+    try std.testing.expectEqual(@as(u8, 0), c.r);
+    try std.testing.expectEqual(@as(u8, 0), c.g);
+    try std.testing.expectEqual(@as(u8, 255), c.b);
+}
+
+test "indexed256: grayscale index 232 is darkest gray (8,8,8)" {
+    const c = indexed256(232);
+    try std.testing.expectEqual(@as(u8, 8), c.r);
+    try std.testing.expectEqual(@as(u8, 8), c.g);
+    try std.testing.expectEqual(@as(u8, 8), c.b);
+}
+
+test "indexed256: grayscale index 255 is lightest gray (238,238,238)" {
+    const c = indexed256(255);
+    try std.testing.expectEqual(@as(u8, 238), c.r);
+    try std.testing.expectEqual(@as(u8, 238), c.g);
+    try std.testing.expectEqual(@as(u8, 238), c.b);
+}
+
+test "indexed256: grayscale ramp is monotonically increasing" {
+    var prev: u8 = 0;
+    for (232..256) |i| {
+        const c = indexed256(@intCast(i));
+        try std.testing.expect(c.r >= prev);
+        prev = c.r;
+    }
 }
