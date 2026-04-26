@@ -132,6 +132,128 @@ test "render plan stats summarize backend-neutral command counts" {
     try std.testing.expect(stats.has_cursor);
 }
 
+// --- Frame input types (render-core-owned; surface maps to these before calling the planner) ---
+
+pub const CellInput = struct {
+    codepoint: u21,
+    fg: Rgba8,
+    bg: Rgba8,
+    continuation: bool = false,
+};
+
+pub const GridInput = struct {
+    cells: []const CellInput,
+    cols: u16,
+    rows: u16,
+};
+
+pub const CursorInput = struct {
+    col: u16,
+    row: u16,
+    shape: CursorShape,
+    color: Rgba8,
+};
+
+pub const FrameInput = struct {
+    surface_px: PixelSize,
+    cell_px: CellSize,
+    grid: GridInput,
+    cursor: ?CursorInput = null,
+};
+
+// --- Owned plan (planner output; caller responsible for deinit) ---
+
+pub const OwnedPlan = struct {
+    plan: RenderPlan,
+    _fills: []FillRect,
+    _glyphs: []GlyphQuad,
+    _uploads: []AtlasUpload,
+    _allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *OwnedPlan) void {
+        self._allocator.free(self._fills);
+        self._allocator.free(self._glyphs);
+        self._allocator.free(self._uploads);
+        self.* = undefined;
+    }
+};
+
+// --- Planner ---
+
+pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
+    const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
+    const visible = @min(cell_count, frame.grid.cells.len);
+
+    var fills = try std.ArrayList(FillRect).initCapacity(allocator, visible);
+    errdefer fills.deinit(allocator);
+
+    var glyphs = try std.ArrayList(GlyphQuad).initCapacity(allocator, visible / 2 + 1);
+    errdefer glyphs.deinit(allocator);
+
+    var uploads: std.ArrayList(AtlasUpload) = .empty;
+    errdefer uploads.deinit(allocator);
+
+    for (0..frame.grid.rows) |row| {
+        for (0..frame.grid.cols) |col| {
+            const idx = row * @as(usize, frame.grid.cols) + col;
+            if (idx >= visible) break;
+            const cell = frame.grid.cells[idx];
+
+            const cell_x: i32 = @intCast(col * @as(usize, frame.cell_px.width));
+            const cell_y: i32 = @intCast(row * @as(usize, frame.cell_px.height));
+
+            try fills.append(allocator, .{
+                .x = cell_x,
+                .y = cell_y,
+                .width = frame.cell_px.width,
+                .height = frame.cell_px.height,
+                .color = cell.bg,
+            });
+
+            if (cell.codepoint > 0x20 and !cell.continuation) {
+                try glyphs.append(allocator, .{
+                    .cell_col = @intCast(col),
+                    .cell_row = @intCast(row),
+                    .atlas_slot = @as(u32, cell.codepoint),
+                    .fg = cell.fg,
+                });
+            }
+        }
+    }
+
+    var cursor_draw: ?CursorDraw = null;
+    if (frame.cursor) |c| {
+        cursor_draw = .{
+            .cell_col = c.col,
+            .cell_row = c.row,
+            .shape = c.shape,
+            .color = c.color,
+        };
+    }
+
+    const fills_owned = try fills.toOwnedSlice(allocator);
+    errdefer allocator.free(fills_owned);
+    const glyphs_owned = try glyphs.toOwnedSlice(allocator);
+    errdefer allocator.free(glyphs_owned);
+    const uploads_owned = try uploads.toOwnedSlice(allocator);
+
+    return .{
+        .plan = .{
+            .surface_px = frame.surface_px,
+            .cell_px = frame.cell_px,
+            .grid = .{ .cols = frame.grid.cols, .rows = frame.grid.rows },
+            .fills = fills_owned,
+            .glyphs = glyphs_owned,
+            .cursor = cursor_draw,
+            .atlas_uploads = uploads_owned,
+        },
+        ._fills = fills_owned,
+        ._glyphs = glyphs_owned,
+        ._uploads = uploads_owned,
+        ._allocator = allocator,
+    };
+}
+
 test "render plan stats handle empty command sets" {
     const plan = RenderPlan{
         .surface_px = .{ .width = 640, .height = 480 },
@@ -145,3 +267,4 @@ test "render plan stats handle empty command sets" {
     try std.testing.expectEqual(@as(usize, 0), stats.atlas_uploads);
     try std.testing.expect(!stats.has_cursor);
 }
+
