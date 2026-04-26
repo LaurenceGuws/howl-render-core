@@ -15,10 +15,12 @@ This document defines the renderer-core development ladder.
 | `M5` | Backend Capability Negotiation | Render-core plans against declared backend capabilities without backend-specific policy leaks. |
 | `M6` | Backend Conformance Fixtures | Shared fixtures prove backends consume identical plans with identical semantic results. |
 | `M7` | Performance and Memory Discipline | Plan generation, buffer growth, and allocation bounds are measured and enforced. |
-| `M8` | Integration Readiness | Surface/host integration seams are stable and backend-agnostic. |
+| `M8` | Integration Readiness | Terminal-boundary and host integration surfaces are stable and backend-agnostic. |
 | `M9` | Visual Reliability | Edge cases, stress paths, and failure boundaries are explicit and reproducible. |
 | `M10` | Production Render Core | Render-core is mature enough to anchor all backend implementations. |
 
 ## Current Target
 
-Current target is `M5` backend capability negotiation.
+Current target is `M5` backend capability negotiation, with the primary
+terminal boundary (`howl-term`, currently `howl-term-surface`) as the canonical
+render-core caller.
