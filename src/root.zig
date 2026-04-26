@@ -268,3 +268,178 @@ test "render plan stats handle empty command sets" {
     try std.testing.expect(!stats.has_cursor);
 }
 
+// --- Planner tests ---
+
+fn makeCell(cp: u21, fg: Rgba8, bg: Rgba8) CellInput {
+    return .{ .codepoint = cp, .fg = fg, .bg = bg };
+}
+
+const white = Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+const black = Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const red = Rgba8{ .r = 200, .g = 0, .b = 0, .a = 255 };
+
+test "planner: empty grid produces zero glyphs and fills equal grid size" {
+    const cells = [_]CellInput{
+        makeCell(0, white, black), makeCell(0, white, black),
+        makeCell(0, white, black), makeCell(0, white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 16, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 4), owned.plan.fills.len);
+}
+
+test "planner: space cells produce no glyph quad" {
+    const cells = [_]CellInput{
+        makeCell(0x20, white, black), makeCell(0x20, white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.fills.len);
+}
+
+test "planner: printable cells produce glyph quads matching count" {
+    const cells = [_]CellInput{
+        makeCell('A', white, black),
+        makeCell(0, white, black),
+        makeCell('Z', white, black),
+        makeCell(0x20, white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 32, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 4), owned.plan.fills.len);
+}
+
+test "planner: fill count equals total cell count" {
+    const cells = [_]CellInput{
+        makeCell('H', white, black), makeCell('i', white, black),
+        makeCell(0, white, black),   makeCell(0, white, black),
+        makeCell('!', white, black), makeCell(0x20, white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 48, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 3, .rows = 2 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), owned.plan.fills.len);
+    try std.testing.expectEqual(@as(usize, 3), owned.plan.glyphs.len);
+}
+
+test "planner: cursor visible maps to cursor draw" {
+    const cells = [_]CellInput{ makeCell(0, white, black) };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 8, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .col = 0, .row = 0, .shape = .block, .color = white },
+    });
+    defer owned.deinit();
+
+    try std.testing.expect(owned.plan.cursor != null);
+    try std.testing.expectEqual(CursorShape.block, owned.plan.cursor.?.shape);
+    try std.testing.expectEqual(@as(u16, 0), owned.plan.cursor.?.cell_col);
+}
+
+test "planner: cursor absent produces null cursor entry" {
+    const cells = [_]CellInput{ makeCell(0, white, black) };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 8, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expect(owned.plan.cursor == null);
+}
+
+test "planner: same frame produces identical plan" {
+    const cells = [_]CellInput{
+        makeCell('A', white, black), makeCell('B', red, black),
+        makeCell(0, white, black),   makeCell('C', white, black),
+    };
+    const frame = FrameInput{
+        .surface_px = .{ .width = 32, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
+        .cursor = .{ .col = 1, .row = 0, .shape = .underline, .color = white },
+    };
+
+    var a = try buildPlan(std.testing.allocator, frame);
+    defer a.deinit();
+    var b = try buildPlan(std.testing.allocator, frame);
+    defer b.deinit();
+
+    try std.testing.expectEqual(a.plan.fills.len, b.plan.fills.len);
+    try std.testing.expectEqual(a.plan.glyphs.len, b.plan.glyphs.len);
+    try std.testing.expectEqual(a.plan.cursor != null, b.plan.cursor != null);
+    for (a.plan.fills, b.plan.fills) |fa, fb| {
+        try std.testing.expectEqual(fa.x, fb.x);
+        try std.testing.expectEqual(fa.y, fb.y);
+        try std.testing.expectEqual(fa.color.r, fb.color.r);
+    }
+    for (a.plan.glyphs, b.plan.glyphs) |ga, gb| {
+        try std.testing.expectEqual(ga.cell_col, gb.cell_col);
+        try std.testing.expectEqual(ga.cell_row, gb.cell_row);
+        try std.testing.expectEqual(ga.atlas_slot, gb.atlas_slot);
+    }
+}
+
+test "planner: continuation cells are skipped for glyph quads" {
+    var cont = makeCell('A', white, black);
+    cont.continuation = true;
+    const cells = [_]CellInput{
+        makeCell('A', white, black),
+        cont,
+        makeCell('B', white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 24, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 3, .rows = 1 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
+}
+
+test "planner: fill pixel positions match cell geometry" {
+    const cells = [_]CellInput{
+        makeCell(0, white, black), makeCell(0, white, black),
+        makeCell(0, white, black), makeCell(0, white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 16, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
+    });
+    defer owned.deinit();
+
+    // Cell (0,0): pixel (0,0)
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.fills[0].x);
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.fills[0].y);
+    // Cell (1,0): pixel (8,0)
+    try std.testing.expectEqual(@as(i32, 8), owned.plan.fills[1].x);
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.fills[1].y);
+    // Cell (0,1): pixel (0,16)
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.fills[2].x);
+    try std.testing.expectEqual(@as(i32, 16), owned.plan.fills[2].y);
+}
