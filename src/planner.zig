@@ -5,6 +5,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+/// Build an owned backend-neutral draw plan from a complete frame input.
 pub fn buildPlan(
     allocator: std.mem.Allocator,
     frame: types.FrameInput,

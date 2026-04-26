@@ -4,6 +4,7 @@
 
 const types = @import("types.zig");
 
+/// Default color theme used by the Linux MVP terminal frame path.
 pub const linux_mvp_theme = types.FrameTheme{
     .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
     .default_bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },

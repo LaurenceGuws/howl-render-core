@@ -4,33 +4,39 @@
 
 const std = @import("std");
 
+/// Configuration shared by renderer backend implementations at initialization.
 pub const BackendConfig = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
     font_path: ?[:0]const u8 = null,
 };
 
+/// Runtime capability report used by render-core planning.
 pub const BackendCapability = struct {
     max_atlas_slots: u32,
     supports_fill_rect: bool,
     supports_glyph_quads: bool,
 };
 
+/// Pixel dimensions for a drawable surface.
 pub const PixelSize = struct {
     width: u16,
     height: u16,
 };
 
+/// Pixel dimensions for one terminal grid cell.
 pub const CellSize = struct {
     width: u16,
     height: u16,
 };
 
+/// Terminal grid dimensions in cells.
 pub const GridSize = struct {
     cols: u16,
     rows: u16,
 };
 
+/// Eight-bit RGBA color used in render plans.
 pub const Rgba8 = extern struct {
     r: u8,
     g: u8,
@@ -38,6 +44,7 @@ pub const Rgba8 = extern struct {
     a: u8,
 };
 
+/// Solid rectangle command emitted before glyph drawing.
 pub const FillRect = struct {
     x: i32,
     y: i32,
@@ -46,6 +53,7 @@ pub const FillRect = struct {
     color: Rgba8,
 };
 
+/// Textured glyph rectangle with its atlas slot and foreground color.
 pub const GlyphQuad = struct {
     x: i32,
     y: i32,
@@ -57,6 +65,7 @@ pub const GlyphQuad = struct {
     bg: ?Rgba8 = null,
 };
 
+/// Cursor shape variants supported by the shared plan contract.
 pub const CursorShape = enum {
     block,
     underline,
@@ -64,6 +73,7 @@ pub const CursorShape = enum {
     hollow_block,
 };
 
+/// Cursor command positioned in grid coordinates.
 pub const CursorDraw = struct {
     cell_col: u16,
     cell_row: u16,
@@ -71,6 +81,7 @@ pub const CursorDraw = struct {
     color: Rgba8,
 };
 
+/// Glyph upload request keyed by atlas slot and codepoint.
 pub const AtlasUpload = struct {
     slot: u32,
     codepoint: u21,
@@ -78,6 +89,7 @@ pub const AtlasUpload = struct {
     height: u16,
 };
 
+/// Summary counts for a render plan.
 pub const PlanStats = struct {
     fills: usize,
     glyphs: usize,
@@ -85,6 +97,7 @@ pub const PlanStats = struct {
     has_cursor: bool,
 };
 
+/// Backend-neutral draw plan produced by render-core.
 pub const RenderPlan = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -94,6 +107,7 @@ pub const RenderPlan = struct {
     cursor: ?CursorDraw = null,
     atlas_uploads: []const AtlasUpload = &.{},
 
+    /// Count the draw commands and cursor presence without mutating the plan.
     pub fn stats(self: RenderPlan) PlanStats {
         return .{
             .fills = self.fills.len,
@@ -104,6 +118,7 @@ pub const RenderPlan = struct {
     }
 };
 
+/// Backend-neutral terminal cell input consumed by the planner.
 pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
@@ -111,12 +126,14 @@ pub const CellInput = struct {
     continuation: bool = false,
 };
 
+/// Row-major terminal cell buffer and dimensions consumed by the planner.
 pub const GridInput = struct {
     cells: []const CellInput,
     cols: u16,
     rows: u16,
 };
 
+/// Cursor input from the surface-facing frame contract.
 pub const CursorInput = struct {
     col: u16,
     row: u16,
@@ -124,6 +141,7 @@ pub const CursorInput = struct {
     color: Rgba8,
 };
 
+/// Complete frame input consumed by render-core planning.
 pub const FrameInput = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -131,6 +149,7 @@ pub const FrameInput = struct {
     cursor: ?CursorInput = null,
 };
 
+/// Color theme used when converting frame colors before planning.
 pub const FrameTheme = struct {
     default_fg: Rgba8,
     default_bg: Rgba8,
@@ -138,6 +157,7 @@ pub const FrameTheme = struct {
     ansi16: [16]Rgba8,
 };
 
+/// Owned render plan with buffers that must be released by the caller.
 pub const OwnedPlan = struct {
     plan: RenderPlan,
     _fills: []FillRect,
@@ -145,6 +165,7 @@ pub const OwnedPlan = struct {
     _uploads: []AtlasUpload,
     _allocator: std.mem.Allocator,
 
+    /// Release all buffers owned by this plan.
     pub fn deinit(self: *OwnedPlan) void {
         self._allocator.free(self._fills);
         self._allocator.free(self._glyphs);
