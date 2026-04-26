@@ -45,6 +45,9 @@ Atlas policy is `howl-render-core`-owned. Render-core decides:
 Backends allocate and manage the atlas texture resource, but slot assignment and upload
 scheduling are exclusively core-owned.
 
+The glyph-side contract is defined in `TEXT_GLYPH_CONTRACT.md`. That document captures the
+real text-path handoff between glyph planning, atlas upload scheduling, and backend execution.
+
 ## Text Batching Policy
 
 Text batching policy is `howl-render-core`-owned. Render-core decides:
