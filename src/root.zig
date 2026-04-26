@@ -10,6 +10,7 @@ const howl_term_surface = @import("howl_term_surface");
 pub const BackendConfig = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
+    font_path: ?[:0]const u8 = null,
 };
 
 pub const BackendCapability = struct {
@@ -228,6 +229,8 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
 
     var uploads = try std.ArrayList(AtlasUpload).initCapacity(allocator, visible);
     errdefer uploads.deinit(allocator);
+    var seen_upload_slots = std.AutoHashMap(u32, void).init(allocator);
+    defer seen_upload_slots.deinit();
 
     for (0..frame.grid.rows) |row| {
         for (0..frame.grid.cols) |col| {
@@ -247,22 +250,25 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
             });
 
             if (cell.codepoint > 0x20 and !cell.continuation) {
-                const upload = AtlasUpload{
-                    .slot = @as(u32, cell.codepoint),
-                    .codepoint = cell.codepoint,
-                    .width = frame.cell_px.width,
-                    .height = frame.cell_px.height,
-                };
+                const slot = @as(u32, cell.codepoint);
                 try glyphs.append(allocator, .{
                     .x = cell_x,
                     .y = cell_y,
                     .width = frame.cell_px.width,
                     .height = frame.cell_px.height,
-                    .atlas_slot = upload.slot,
+                    .atlas_slot = slot,
                     .codepoint = cell.codepoint,
                     .fg = cell.fg,
                 });
-                try uploads.append(allocator, upload);
+                if (!seen_upload_slots.contains(slot)) {
+                    try seen_upload_slots.put(slot, {});
+                    try uploads.append(allocator, .{
+                        .slot = slot,
+                        .codepoint = cell.codepoint,
+                        .width = frame.cell_px.width,
+                        .height = frame.cell_px.height,
+                    });
+                }
             }
         }
     }
@@ -371,6 +377,25 @@ test "planner: printable cells produce glyph quads matching count" {
 
     try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
     try std.testing.expectEqual(@as(usize, 4), owned.plan.fills.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
+}
+
+test "planner: repeated codepoints dedupe atlas uploads per slot" {
+    const cells = [_]CellInput{
+        makeCell('A', white, black),
+        makeCell('A', white, black),
+        makeCell('A', white, black),
+        makeCell('B', white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 32, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
+    });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 4), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
 }
 
 test "planner: fill count equals total cell count" {

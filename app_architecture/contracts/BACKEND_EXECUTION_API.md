@@ -80,5 +80,6 @@ initialization input. Backends must not extend or redefine this type.
 BackendConfig {
     surface_px: PixelSize   // drawable pixel dimensions
     cell_px:    CellSize    // cell pixel dimensions
+    font_path:  ?[:0]const u8 // optional host-provided font resource path
 }
 ```
