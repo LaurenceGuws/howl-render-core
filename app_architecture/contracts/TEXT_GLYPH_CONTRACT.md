@@ -56,6 +56,20 @@ An upload entry must describe real glyph content. It must identify the glyph ras
 occupy the slot and the slot itself. Empty or placeholder upload records are not acceptable as
 the contract for real glyph execution.
 
+## Capacity Gate
+
+Render-core receives backend capability as an explicit planning input. The planner must never
+emit glyph quads or atlas uploads that exceed `max_atlas_slots`.
+
+The overflow rule is deterministic:
+
+- unique glyph rasters are assigned slots in first-seen row-major order starting at slot `0`
+- repeated codepoints reuse the slot already assigned to that codepoint
+- once slot budget is exhausted, any new codepoint is dropped for the rest of the frame
+
+This means a frame can still contain glyph quads after capacity is reached if those quads reuse
+already assigned slots. What it cannot do is introduce a new slot beyond the backend limit.
+
 ## Placeholder vs Real Execution
 
 Placeholder glyph execution is a transitional implementation detail, not a supported contract
@@ -96,4 +110,3 @@ backend-owned and stays out of render-core.
 | atlas upload execution | backend |
 | glyph quad submission | backend |
 | alternate execution interpretations | neither |
-

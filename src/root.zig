@@ -217,7 +217,11 @@ pub const OwnedPlan = struct {
 
 // --- Planner ---
 
-pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
+pub fn buildPlan(
+    allocator: std.mem.Allocator,
+    frame: FrameInput,
+    capability: BackendCapability,
+) !OwnedPlan {
     const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
     const visible = @min(cell_count, frame.grid.cells.len);
 
@@ -229,8 +233,10 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
 
     var uploads = try std.ArrayList(AtlasUpload).initCapacity(allocator, visible);
     errdefer uploads.deinit(allocator);
-    var seen_upload_slots = std.AutoHashMap(u32, void).init(allocator);
-    defer seen_upload_slots.deinit();
+    var glyph_slots = std.AutoHashMap(u21, u32).init(allocator);
+    defer glyph_slots.deinit();
+    const glyphs_enabled = capability.supports_glyph_quads and capability.max_atlas_slots > 0;
+    var next_slot: u32 = 0;
 
     for (0..frame.grid.rows) |row| {
         for (0..frame.grid.cols) |col| {
@@ -249,24 +255,29 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
                 .color = cell.bg,
             });
 
-            if (cell.codepoint > 0x20 and !cell.continuation) {
-                const slot = @as(u32, cell.codepoint);
-                try glyphs.append(allocator, .{
-                    .x = cell_x,
-                    .y = cell_y,
-                    .width = frame.cell_px.width,
-                    .height = frame.cell_px.height,
-                    .atlas_slot = slot,
-                    .codepoint = cell.codepoint,
-                    .fg = cell.fg,
-                });
-                if (!seen_upload_slots.contains(slot)) {
-                    try seen_upload_slots.put(slot, {});
+            if (glyphs_enabled and cell.codepoint > 0x20 and !cell.continuation) {
+                const slot = if (glyph_slots.get(cell.codepoint)) |existing| existing else blk: {
+                    if (next_slot >= capability.max_atlas_slots) break :blk null;
+                    const assigned = next_slot;
+                    try glyph_slots.put(cell.codepoint, assigned);
+                    next_slot += 1;
                     try uploads.append(allocator, .{
-                        .slot = slot,
+                        .slot = assigned,
                         .codepoint = cell.codepoint,
                         .width = frame.cell_px.width,
                         .height = frame.cell_px.height,
+                    });
+                    break :blk assigned;
+                };
+                if (slot) |assigned_slot| {
+                    try glyphs.append(allocator, .{
+                        .x = cell_x,
+                        .y = cell_y,
+                        .width = frame.cell_px.width,
+                        .height = frame.cell_px.height,
+                        .atlas_slot = assigned_slot,
+                        .codepoint = cell.codepoint,
+                        .fg = cell.fg,
                     });
                 }
             }
@@ -330,6 +341,14 @@ const white = Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
 const black = Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
 const red = Rgba8{ .r = 200, .g = 0, .b = 0, .a = 255 };
 
+fn testCapability(max_atlas_slots: u32) BackendCapability {
+    return .{
+        .max_atlas_slots = max_atlas_slots,
+        .supports_fill_rect = true,
+        .supports_glyph_quads = true,
+    };
+}
+
 test "planner: empty grid produces zero glyphs and fills equal grid size" {
     const cells = [_]CellInput{
         makeCell(0, white, black), makeCell(0, white, black),
@@ -339,7 +358,7 @@ test "planner: empty grid produces zero glyphs and fills equal grid size" {
         .surface_px = .{ .width = 16, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
-    });
+    }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), owned.plan.glyphs.len);
@@ -354,7 +373,7 @@ test "planner: space cells produce no glyph quad" {
         .surface_px = .{ .width = 16, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
-    });
+    }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), owned.plan.glyphs.len);
@@ -372,7 +391,7 @@ test "planner: printable cells produce glyph quads matching count" {
         .surface_px = .{ .width = 32, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
-    });
+    }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
@@ -391,11 +410,53 @@ test "planner: repeated codepoints dedupe atlas uploads per slot" {
         .surface_px = .{ .width = 32, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
-    });
+    }, testCapability(2));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), owned.plan.glyphs.len);
     try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
+}
+
+test "planner: exactly at capacity keeps all unique glyph slots" {
+    const cells = [_]CellInput{
+        makeCell('A', white, black),
+        makeCell('B', white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
+    }, testCapability(2));
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
+    try std.testing.expectEqual(@as(u32, 0), owned.plan.glyphs[0].atlas_slot);
+    try std.testing.expectEqual(@as(u32, 1), owned.plan.glyphs[1].atlas_slot);
+}
+
+test "planner: over capacity drops new codepoints deterministically" {
+    const cells = [_]CellInput{
+        makeCell('A', white, black),
+        makeCell('B', white, black),
+        makeCell('C', white, black),
+        makeCell('A', white, black),
+    };
+    var owned = try buildPlan(std.testing.allocator, .{
+        .surface_px = .{ .width = 32, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
+    }, testCapability(2));
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.plan.glyphs[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'B'), owned.plan.glyphs[1].codepoint);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.plan.glyphs[2].codepoint);
+    try std.testing.expectEqual(@as(u32, 0), owned.plan.glyphs[0].atlas_slot);
+    try std.testing.expectEqual(@as(u32, 1), owned.plan.glyphs[1].atlas_slot);
+    try std.testing.expectEqual(@as(u32, 0), owned.plan.glyphs[2].atlas_slot);
 }
 
 test "planner: fill count equals total cell count" {
@@ -408,7 +469,7 @@ test "planner: fill count equals total cell count" {
         .surface_px = .{ .width = 48, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 3, .rows = 2 },
-    });
+    }, testCapability(8));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 6), owned.plan.fills.len);
@@ -422,7 +483,7 @@ test "planner: cursor visible maps to cursor draw" {
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .col = 0, .row = 0, .shape = .block, .color = white },
-    });
+    }, testCapability(1));
     defer owned.deinit();
 
     try std.testing.expect(owned.plan.cursor != null);
@@ -438,7 +499,7 @@ test "planner: cursor absent produces null cursor entry" {
         .surface_px = .{ .width = 8, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
-    });
+    }, testCapability(1));
     defer owned.deinit();
 
     try std.testing.expect(owned.plan.cursor == null);
@@ -456,9 +517,9 @@ test "planner: same frame produces identical plan" {
         .cursor = .{ .col = 1, .row = 0, .shape = .underline, .color = white },
     };
 
-    var a = try buildPlan(std.testing.allocator, frame);
+    var a = try buildPlan(std.testing.allocator, frame, testCapability(4));
     defer a.deinit();
-    var b = try buildPlan(std.testing.allocator, frame);
+    var b = try buildPlan(std.testing.allocator, frame, testCapability(4));
     defer b.deinit();
 
     try std.testing.expectEqual(a.plan.fills.len, b.plan.fills.len);
@@ -494,7 +555,7 @@ test "planner: continuation cells are skipped for glyph quads" {
         .surface_px = .{ .width = 24, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 3, .rows = 1 },
-    });
+    }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
@@ -510,7 +571,7 @@ test "planner: fill pixel positions match cell geometry" {
         .surface_px = .{ .width = 16, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
-    });
+    }, testCapability(4));
     defer owned.deinit();
 
     // Cell (0,0): pixel (0,0)
@@ -566,8 +627,9 @@ pub fn buildPlanFromFrame(
     frame: howl_term_surface.FrameData,
     surface_px: PixelSize,
     cell_px: CellSize,
+    capability: BackendCapability,
 ) !OwnedPlan {
-    return buildPlanFromFrameWithTheme(allocator, frame, surface_px, cell_px, linux_mvp_theme);
+    return buildPlanFromFrameWithTheme(allocator, frame, surface_px, cell_px, linux_mvp_theme, capability);
 }
 
 pub fn buildPlanFromFrameWithTheme(
@@ -576,6 +638,7 @@ pub fn buildPlanFromFrameWithTheme(
     surface_px: PixelSize,
     cell_px: CellSize,
     theme: FrameTheme,
+    capability: BackendCapability,
 ) !OwnedPlan {
     const cell_inputs = try allocator.alloc(CellInput, frame.grid.cells.len);
     defer allocator.free(cell_inputs);
@@ -598,7 +661,7 @@ pub fn buildPlanFromFrameWithTheme(
         .cell_px = cell_px,
         .grid = .{ .cells = cell_inputs, .cols = frame.grid.cols, .rows = frame.grid.rows },
         .cursor = cursor_input,
-    });
+    }, capability);
 }
 
 // --- Adapter tests ---
@@ -622,7 +685,7 @@ test "adapter: default-color cells map to default fill color" {
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
     };
-    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), owned.plan.fills.len);
@@ -640,7 +703,7 @@ test "adapter: rgb color cells map to exact rgb values" {
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
     };
-    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(u8, 0x00), owned.plan.fills[0].color.r);
@@ -666,7 +729,7 @@ test "adapter: cursor visible maps to cursor draw at correct position" {
         .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
         .cursor = .{ .row = 0, .col = 1, .visible = true, .shape = .underline },
     };
-    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 16, .height = 16 }, .{ .width = 8, .height = 16 });
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 16, .height = 16 }, .{ .width = 8, .height = 16 }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expect(owned.plan.cursor != null);
@@ -684,7 +747,7 @@ test "adapter: cursor hidden maps to null cursor draw" {
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
     };
-    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expect(owned.plan.cursor == null);
@@ -699,7 +762,7 @@ test "adapter: ansi16 indexed color maps to palette entry" {
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
     };
-    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(linux_mvp_theme.ansi16[1].r, owned.plan.fills[0].color.r);
@@ -794,7 +857,7 @@ test "adapter: explicit theme overrides default and cursor colors" {
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
         .cursor = .{ .row = 0, .col = 0, .visible = true, .shape = .block },
     };
-    var owned = try buildPlanFromFrameWithTheme(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, custom_theme);
+    var owned = try buildPlanFromFrameWithTheme(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, custom_theme, testCapability(4));
     defer owned.deinit();
 
     try std.testing.expectEqual(custom_theme.default_bg.r, owned.plan.fills[0].color.r);
