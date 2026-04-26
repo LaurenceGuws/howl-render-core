@@ -162,6 +162,37 @@ pub const FrameInput = struct {
     cursor: ?CursorInput = null,
 };
 
+pub const FrameTheme = struct {
+    default_fg: Rgba8,
+    default_bg: Rgba8,
+    cursor_color: Rgba8,
+    ansi16: [16]Rgba8,
+};
+
+pub const linux_mvp_theme = FrameTheme{
+    .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
+    .default_bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    .cursor_color = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
+    .ansi16 = .{
+        .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+        .{ .r = 170, .g = 0, .b = 0, .a = 255 },
+        .{ .r = 0, .g = 170, .b = 0, .a = 255 },
+        .{ .r = 170, .g = 85, .b = 0, .a = 255 },
+        .{ .r = 0, .g = 0, .b = 170, .a = 255 },
+        .{ .r = 170, .g = 0, .b = 170, .a = 255 },
+        .{ .r = 0, .g = 170, .b = 170, .a = 255 },
+        .{ .r = 170, .g = 170, .b = 170, .a = 255 },
+        .{ .r = 85, .g = 85, .b = 85, .a = 255 },
+        .{ .r = 255, .g = 85, .b = 85, .a = 255 },
+        .{ .r = 85, .g = 255, .b = 85, .a = 255 },
+        .{ .r = 255, .g = 255, .b = 85, .a = 255 },
+        .{ .r = 85, .g = 85, .b = 255, .a = 255 },
+        .{ .r = 255, .g = 85, .b = 255, .a = 255 },
+        .{ .r = 85, .g = 255, .b = 255, .a = 255 },
+        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    },
+};
+
 // --- Owned plan (planner output; caller responsible for deinit) ---
 
 pub const OwnedPlan = struct {
@@ -447,31 +478,8 @@ test "planner: fill pixel positions match cell geometry" {
 
 // --- Surface frame adapter ---
 
-const default_fg: Rgba8 = .{ .r = 204, .g = 204, .b = 204, .a = 255 };
-const default_bg: Rgba8 = .{ .r = 0, .g = 0, .b = 0, .a = 255 };
-const default_cursor_color: Rgba8 = .{ .r = 204, .g = 204, .b = 204, .a = 255 };
-
-const ansi16 = [16]Rgba8{
-    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    .{ .r = 170, .g = 0, .b = 0, .a = 255 },
-    .{ .r = 0, .g = 170, .b = 0, .a = 255 },
-    .{ .r = 170, .g = 85, .b = 0, .a = 255 },
-    .{ .r = 0, .g = 0, .b = 170, .a = 255 },
-    .{ .r = 170, .g = 0, .b = 170, .a = 255 },
-    .{ .r = 0, .g = 170, .b = 170, .a = 255 },
-    .{ .r = 170, .g = 170, .b = 170, .a = 255 },
-    .{ .r = 85, .g = 85, .b = 85, .a = 255 },
-    .{ .r = 255, .g = 85, .b = 85, .a = 255 },
-    .{ .r = 85, .g = 255, .b = 85, .a = 255 },
-    .{ .r = 255, .g = 255, .b = 85, .a = 255 },
-    .{ .r = 85, .g = 85, .b = 255, .a = 255 },
-    .{ .r = 255, .g = 85, .b = 255, .a = 255 },
-    .{ .r = 85, .g = 255, .b = 255, .a = 255 },
-    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
-};
-
-fn indexed256(idx: u8) Rgba8 {
-    if (idx < 16) return ansi16[idx];
+fn indexed256(idx: u8, theme: FrameTheme) Rgba8 {
+    if (idx < 16) return theme.ansi16[idx];
     if (idx < 232) {
         const i: u32 = idx - 16;
         const r: u8 = @intCast((i / 36) * 51);
@@ -483,10 +491,10 @@ fn indexed256(idx: u8) Rgba8 {
     return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
 }
 
-fn colorToRgba8(color: howl_term_surface.Color, is_fg: bool) Rgba8 {
+fn colorToRgba8(color: howl_term_surface.Color, is_fg: bool, theme: FrameTheme) Rgba8 {
     return switch (color.kind) {
-        .default => if (is_fg) default_fg else default_bg,
-        .indexed => indexed256(@intCast(color.value & 0xFF)),
+        .default => if (is_fg) theme.default_fg else theme.default_bg,
+        .indexed => indexed256(@intCast(color.value & 0xFF), theme),
         .rgb => .{
             .r = @intCast((color.value >> 16) & 0xFF),
             .g = @intCast((color.value >> 8) & 0xFF),
@@ -511,13 +519,23 @@ pub fn buildPlanFromFrame(
     surface_px: PixelSize,
     cell_px: CellSize,
 ) !OwnedPlan {
+    return buildPlanFromFrameWithTheme(allocator, frame, surface_px, cell_px, linux_mvp_theme);
+}
+
+pub fn buildPlanFromFrameWithTheme(
+    allocator: std.mem.Allocator,
+    frame: howl_term_surface.FrameData,
+    surface_px: PixelSize,
+    cell_px: CellSize,
+    theme: FrameTheme,
+) !OwnedPlan {
     const cell_inputs = try allocator.alloc(CellInput, frame.grid.cells.len);
     defer allocator.free(cell_inputs);
     for (frame.grid.cells, cell_inputs) |src, *dst| {
         dst.* = .{
             .codepoint = src.codepoint,
-            .fg = colorToRgba8(src.fg_color, true),
-            .bg = colorToRgba8(src.bg_color, false),
+            .fg = colorToRgba8(src.fg_color, true, theme),
+            .bg = colorToRgba8(src.bg_color, false, theme),
             .continuation = src.flags.continuation,
         };
     }
@@ -525,7 +543,7 @@ pub fn buildPlanFromFrame(
         .col = frame.cursor.col,
         .row = frame.cursor.row,
         .shape = mapCursorShape(frame.cursor.shape),
-        .color = default_cursor_color,
+        .color = theme.cursor_color,
     } else null;
     return buildPlan(allocator, .{
         .surface_px = surface_px,
@@ -560,9 +578,9 @@ test "adapter: default-color cells map to default fill color" {
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), owned.plan.fills.len);
-    try std.testing.expectEqual(default_bg.r, owned.plan.fills[0].color.r);
-    try std.testing.expectEqual(default_bg.g, owned.plan.fills[0].color.g);
-    try std.testing.expectEqual(default_bg.b, owned.plan.fills[0].color.b);
+    try std.testing.expectEqual(linux_mvp_theme.default_bg.r, owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(linux_mvp_theme.default_bg.g, owned.plan.fills[0].color.g);
+    try std.testing.expectEqual(linux_mvp_theme.default_bg.b, owned.plan.fills[0].color.b);
 }
 
 test "adapter: rgb color cells map to exact rgb values" {
@@ -631,31 +649,31 @@ test "adapter: ansi16 indexed color maps to palette entry" {
     var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
     defer owned.deinit();
 
-    try std.testing.expectEqual(ansi16[1].r, owned.plan.fills[0].color.r);
-    try std.testing.expectEqual(ansi16[1].g, owned.plan.fills[0].color.g);
-    try std.testing.expectEqual(ansi16[1].b, owned.plan.fills[0].color.b);
+    try std.testing.expectEqual(linux_mvp_theme.ansi16[1].r, owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(linux_mvp_theme.ansi16[1].g, owned.plan.fills[0].color.g);
+    try std.testing.expectEqual(linux_mvp_theme.ansi16[1].b, owned.plan.fills[0].color.b);
 }
 
 // --- 256-color tests ---
 
 test "indexed256: ansi range 0-15 matches palette" {
     for (0..16) |i| {
-        const got = indexed256(@intCast(i));
-        try std.testing.expectEqual(ansi16[i].r, got.r);
-        try std.testing.expectEqual(ansi16[i].g, got.g);
-        try std.testing.expectEqual(ansi16[i].b, got.b);
+        const got = indexed256(@intCast(i), linux_mvp_theme);
+        try std.testing.expectEqual(linux_mvp_theme.ansi16[i].r, got.r);
+        try std.testing.expectEqual(linux_mvp_theme.ansi16[i].g, got.g);
+        try std.testing.expectEqual(linux_mvp_theme.ansi16[i].b, got.b);
     }
 }
 
 test "indexed256: color cube index 16 is black (0,0,0)" {
-    const c = indexed256(16);
+    const c = indexed256(16, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 0), c.r);
     try std.testing.expectEqual(@as(u8, 0), c.g);
     try std.testing.expectEqual(@as(u8, 0), c.b);
 }
 
 test "indexed256: color cube index 231 is white (255,255,255)" {
-    const c = indexed256(231);
+    const c = indexed256(231, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 255), c.r);
     try std.testing.expectEqual(@as(u8, 255), c.g);
     try std.testing.expectEqual(@as(u8, 255), c.b);
@@ -663,7 +681,7 @@ test "indexed256: color cube index 231 is white (255,255,255)" {
 
 test "indexed256: color cube index 196 is red (255,0,0)" {
     // index 196 = 16 + 36*5 + 6*0 + 0 = 16+180 = 196
-    const c = indexed256(196);
+    const c = indexed256(196, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 255), c.r);
     try std.testing.expectEqual(@as(u8, 0), c.g);
     try std.testing.expectEqual(@as(u8, 0), c.b);
@@ -671,7 +689,7 @@ test "indexed256: color cube index 196 is red (255,0,0)" {
 
 test "indexed256: color cube index 46 is green (0,255,0)" {
     // index 46 = 16 + 36*0 + 6*5 + 0 = 16+30 = 46
-    const c = indexed256(46);
+    const c = indexed256(46, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 0), c.r);
     try std.testing.expectEqual(@as(u8, 255), c.g);
     try std.testing.expectEqual(@as(u8, 0), c.b);
@@ -679,21 +697,21 @@ test "indexed256: color cube index 46 is green (0,255,0)" {
 
 test "indexed256: color cube index 21 is blue (0,0,255)" {
     // index 21 = 16 + 36*0 + 6*0 + 5 = 16+5 = 21
-    const c = indexed256(21);
+    const c = indexed256(21, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 0), c.r);
     try std.testing.expectEqual(@as(u8, 0), c.g);
     try std.testing.expectEqual(@as(u8, 255), c.b);
 }
 
 test "indexed256: grayscale index 232 is darkest gray (8,8,8)" {
-    const c = indexed256(232);
+    const c = indexed256(232, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 8), c.r);
     try std.testing.expectEqual(@as(u8, 8), c.g);
     try std.testing.expectEqual(@as(u8, 8), c.b);
 }
 
 test "indexed256: grayscale index 255 is lightest gray (238,238,238)" {
-    const c = indexed256(255);
+    const c = indexed256(255, linux_mvp_theme);
     try std.testing.expectEqual(@as(u8, 238), c.r);
     try std.testing.expectEqual(@as(u8, 238), c.g);
     try std.testing.expectEqual(@as(u8, 238), c.b);
@@ -702,8 +720,31 @@ test "indexed256: grayscale index 255 is lightest gray (238,238,238)" {
 test "indexed256: grayscale ramp is monotonically increasing" {
     var prev: u8 = 0;
     for (232..256) |i| {
-        const c = indexed256(@intCast(i));
+        const c = indexed256(@intCast(i), linux_mvp_theme);
         try std.testing.expect(c.r >= prev);
         prev = c.r;
     }
+}
+
+test "adapter: explicit theme overrides default and cursor colors" {
+    const custom_theme = FrameTheme{
+        .default_fg = .{ .r = 1, .g = 2, .b = 3, .a = 255 },
+        .default_bg = .{ .r = 4, .g = 5, .b = 6, .a = 255 },
+        .cursor_color = .{ .r = 7, .g = 8, .b = 9, .a = 255 },
+        .ansi16 = linux_mvp_theme.ansi16,
+    };
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell('A', .default, 0, .default, 0),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 1, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 0, .visible = true, .shape = .block },
+    };
+    var owned = try buildPlanFromFrameWithTheme(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, custom_theme);
+    defer owned.deinit();
+
+    try std.testing.expectEqual(custom_theme.default_bg.r, owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(custom_theme.default_fg.g, owned.plan.glyphs[0].fg.g);
+    try std.testing.expectEqual(custom_theme.cursor_color.b, owned.plan.cursor.?.color.b);
 }

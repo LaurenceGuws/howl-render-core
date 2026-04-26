@@ -26,9 +26,14 @@ execution layer. Backends must not modify its semantics or produce alternate int
 - `surface_px`: pixel dimensions of the drawable surface (from surface/host)
 - `cell_px`: pixel dimensions of one terminal cell (from font/cell configuration)
 - `grid`: terminal grid size in cell units (from session/surface state)
+- `frame_theme`: render-core-owned color/default policy input chosen by the composition layer
 
 Host and surface provide these inputs. They do not construct or interpret the plan's command
 lists (`fills`, `glyphs`, `atlas_uploads`, `cursor`).
+
+`frame_theme` is explicit planner input. Render-core owns how default colors, indexed colors,
+RGB colors, and cursor colors are resolved into backend-neutral `Rgba8` values. The host may
+select a named theme/profile, but it must not duplicate color resolution logic.
 
 ## Atlas Policy
 
