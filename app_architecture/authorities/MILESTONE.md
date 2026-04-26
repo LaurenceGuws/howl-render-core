@@ -21,4 +21,4 @@ This document defines the renderer-core development ladder.
 
 ## Current Target
 
-Current target is `M0` scaffold reset closure.
+Current target is `M5` backend capability negotiation.
