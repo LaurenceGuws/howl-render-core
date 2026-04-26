@@ -10,13 +10,14 @@ draw work. They do not plan, reinterpret, or augment plan contents.
 
 Every backend implementation must expose the following operations:
 
-### `init(config: BackendConfig) Backend`
+### `init(config: BackendConfig) !Backend`
 
 Initialize the backend from a declared surface and cell geometry.
 - Transitions state from cold to ready.
 - `config.surface_px` is the current drawable pixel dimensions.
 - `config.cell_px` is the terminal cell pixel dimensions.
-- Must not perform GPU resource allocation beyond establishing a ready state.
+- `config.font_path` is an optional host-provided font path used by text-capable backends.
+- Initialization may fail if required backend resources cannot be loaded.
 
 ### `deinit(*Backend) void`
 
