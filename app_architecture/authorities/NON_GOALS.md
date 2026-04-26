@@ -1,5 +1,6 @@
-# Non-Goals Authority
+# Howl Render Core Non-Goals Authority
 
-- Owning sibling module responsibilities.
-- Owning parent workspace policy.
-- Adding compatibility/fallback/workaround shim paths.
+- Owning GPU device/resource lifecycle for any backend.
+- Owning host presentation or swap-chain policy.
+- Owning session/surface/widget orchestration.
+- Adding compatibility, fallback, or workaround paths.

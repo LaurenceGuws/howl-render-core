@@ -1,12 +1,13 @@
-# Boundary Authority
+# Howl Render Core Boundary Authority
 
 ## Hard Boundaries
 
-- Expose host-neutral/public module APIs only.
-- Keep implementation details internal.
-- No cross-repo internal imports.
+- Expose backend-neutral/public render-core APIs only.
+- Own planning policy, not backend execution.
+- Import no platform, toolkit, or GPU-driver framework types.
 
 ## Forbidden Coupling
 
-- No hidden coupling to sibling module internals.
-- No platform/framework leakage across module boundary unless module is platform-owned.
+- No OpenGL, GLES, Vulkan, Metal, or software raster backend logic.
+- No host, SDL, Android, Cocoa, or platform event coupling.
+- No direct imports of sibling backend internals.

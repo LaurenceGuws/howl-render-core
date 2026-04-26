@@ -1,15 +1,17 @@
-# Scope Authority
+# Howl Render Core Scope Authority
 
-Purpose: define what this module owns and what it does not own.
+Purpose: define what `howl-render-core` owns and what it does not own.
 
 ## In Scope
 
-- Backend-agnostic renderer core logic
-- Stable local API and deterministic behavior for this module
-- Module-level tests and validation evidence
+- backend-neutral render plan types
+- frame-to-plan policy owned once for all backends
+- text, atlas, damage, batching, and capability policy at renderer-core level
+- deterministic tests for backend-neutral rendering behavior
 
 ## Out of Scope
 
-- Cross-module ownership policy (documented in parent architecture docs)
-- Platform app lifecycle ownership unless this module is a host app
-- Compatibility/fallback/workaround shim paths
+- OpenGL, Vulkan, Metal, GLES, or software device/resource execution
+- host window, input, or presentation ownership
+- session or surface lifecycle ownership
+- compatibility, fallback, or workaround paths
