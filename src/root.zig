@@ -4,6 +4,21 @@
 
 const std = @import("std");
 
+// --- Backend lifecycle contract types ---
+
+pub const BackendConfig = struct {
+    surface_px: PixelSize,
+    cell_px: CellSize,
+};
+
+pub const BackendCapability = struct {
+    max_atlas_slots: u32,
+    supports_fill_rect: bool,
+    supports_glyph_quads: bool,
+};
+
+// --- Geometry types ---
+
 pub const PixelSize = struct {
     width: u16,
     height: u16,
