@@ -3,7 +3,11 @@
     .version = "0.0.0",
     .fingerprint = 0xdb357d0e8eaa43fd,
     .minimum_zig_version = "0.15.2",
-    .dependencies = .{},
+    .dependencies = .{
+        .howl_term_surface = .{
+            .path = "../../howl-term-surface",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

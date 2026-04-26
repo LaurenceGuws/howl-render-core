@@ -3,6 +3,7 @@
 //! Reason: keep frame interpretation and plan shape out of backend executors.
 
 const std = @import("std");
+const howl_term_surface = @import("howl_term_surface");
 
 // --- Backend lifecycle contract types ---
 
@@ -442,4 +443,185 @@ test "planner: fill pixel positions match cell geometry" {
     // Cell (0,1): pixel (0,16)
     try std.testing.expectEqual(@as(i32, 0), owned.plan.fills[2].x);
     try std.testing.expectEqual(@as(i32, 16), owned.plan.fills[2].y);
+}
+
+// --- Surface frame adapter ---
+
+const default_fg: Rgba8 = .{ .r = 204, .g = 204, .b = 204, .a = 255 };
+const default_bg: Rgba8 = .{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const default_cursor_color: Rgba8 = .{ .r = 204, .g = 204, .b = 204, .a = 255 };
+
+const ansi16 = [16]Rgba8{
+    .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    .{ .r = 170, .g = 0, .b = 0, .a = 255 },
+    .{ .r = 0, .g = 170, .b = 0, .a = 255 },
+    .{ .r = 170, .g = 85, .b = 0, .a = 255 },
+    .{ .r = 0, .g = 0, .b = 170, .a = 255 },
+    .{ .r = 170, .g = 0, .b = 170, .a = 255 },
+    .{ .r = 0, .g = 170, .b = 170, .a = 255 },
+    .{ .r = 170, .g = 170, .b = 170, .a = 255 },
+    .{ .r = 85, .g = 85, .b = 85, .a = 255 },
+    .{ .r = 255, .g = 85, .b = 85, .a = 255 },
+    .{ .r = 85, .g = 255, .b = 85, .a = 255 },
+    .{ .r = 255, .g = 255, .b = 85, .a = 255 },
+    .{ .r = 85, .g = 85, .b = 255, .a = 255 },
+    .{ .r = 255, .g = 85, .b = 255, .a = 255 },
+    .{ .r = 85, .g = 255, .b = 255, .a = 255 },
+    .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+};
+
+fn colorToRgba8(color: howl_term_surface.Color, is_fg: bool) Rgba8 {
+    return switch (color.kind) {
+        .default => if (is_fg) default_fg else default_bg,
+        .indexed => blk: {
+            const idx: u8 = @intCast(color.value & 0xFF);
+            break :blk if (idx < 16) ansi16[idx] else default_fg;
+        },
+        .rgb => .{
+            .r = @intCast((color.value >> 16) & 0xFF),
+            .g = @intCast((color.value >> 8) & 0xFF),
+            .b = @intCast(color.value & 0xFF),
+            .a = 255,
+        },
+    };
+}
+
+fn mapCursorShape(shape: howl_term_surface.CursorShape) CursorShape {
+    return switch (shape) {
+        .block => .block,
+        .underline => .underline,
+        .beam => .beam,
+        .hollow_block => .hollow_block,
+    };
+}
+
+pub fn buildPlanFromFrame(
+    allocator: std.mem.Allocator,
+    frame: howl_term_surface.FrameData,
+    surface_px: PixelSize,
+    cell_px: CellSize,
+) !OwnedPlan {
+    const cell_inputs = try allocator.alloc(CellInput, frame.grid.cells.len);
+    defer allocator.free(cell_inputs);
+    for (frame.grid.cells, cell_inputs) |src, *dst| {
+        dst.* = .{
+            .codepoint = src.codepoint,
+            .fg = colorToRgba8(src.fg_color, true),
+            .bg = colorToRgba8(src.bg_color, false),
+            .continuation = src.flags.continuation,
+        };
+    }
+    const cursor_input: ?CursorInput = if (frame.cursor.visible) .{
+        .col = frame.cursor.col,
+        .row = frame.cursor.row,
+        .shape = mapCursorShape(frame.cursor.shape),
+        .color = default_cursor_color,
+    } else null;
+    return buildPlan(allocator, .{
+        .surface_px = surface_px,
+        .cell_px = cell_px,
+        .grid = .{ .cells = cell_inputs, .cols = frame.grid.cols, .rows = frame.grid.rows },
+        .cursor = cursor_input,
+    });
+}
+
+// --- Adapter tests ---
+
+fn makeFrameCell(cp: u21, fg_kind: anytype, fg_val: u24, bg_kind: anytype, bg_val: u24) howl_term_surface.Cell {
+    return .{
+        .codepoint = cp,
+        .flags = .{},
+        .fg_color = .{ .kind = fg_kind, .value = fg_val },
+        .bg_color = .{ .kind = bg_kind, .value = bg_val },
+        .attrs = .{},
+    };
+}
+
+test "adapter: default-color cells map to default fill color" {
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell(0, .default, 0, .default, 0),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 1, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
+    };
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), owned.plan.fills.len);
+    try std.testing.expectEqual(default_bg.r, owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(default_bg.g, owned.plan.fills[0].color.g);
+    try std.testing.expectEqual(default_bg.b, owned.plan.fills[0].color.b);
+}
+
+test "adapter: rgb color cells map to exact rgb values" {
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell('A', .rgb, 0xFF8000, .rgb, 0x001020),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 1, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
+    };
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(u8, 0x00), owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(@as(u8, 0x10), owned.plan.fills[0].color.g);
+    try std.testing.expectEqual(@as(u8, 0x20), owned.plan.fills[0].color.b);
+    try std.testing.expectEqual(@as(u8, 0xFF), owned.plan.glyphs[0].fg.r);
+    try std.testing.expectEqual(@as(u8, 0x80), owned.plan.glyphs[0].fg.g);
+    try std.testing.expectEqual(@as(u8, 0x00), owned.plan.glyphs[0].fg.b);
+}
+
+test "adapter: cursor visible maps to cursor draw at correct position" {
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell(0, .default, 0, .default, 0),
+        makeFrameCell(0, .default, 0, .default, 0),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 2, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 1, .visible = true, .shape = .underline },
+    };
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 16, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer owned.deinit();
+
+    try std.testing.expect(owned.plan.cursor != null);
+    try std.testing.expectEqual(@as(u16, 1), owned.plan.cursor.?.cell_col);
+    try std.testing.expectEqual(@as(u16, 0), owned.plan.cursor.?.cell_row);
+    try std.testing.expectEqual(CursorShape.underline, owned.plan.cursor.?.shape);
+}
+
+test "adapter: cursor hidden maps to null cursor draw" {
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell(0, .default, 0, .default, 0),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 1, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
+    };
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer owned.deinit();
+
+    try std.testing.expect(owned.plan.cursor == null);
+}
+
+test "adapter: ansi16 indexed color maps to palette entry" {
+    const cells = [_]howl_term_surface.Cell{
+        makeFrameCell(0, .default, 0, .indexed, 1),
+    };
+    const frame = howl_term_surface.FrameData{
+        .viewport = .{ .cols = 1, .rows = 1, .scroll_row = 0, .is_alternate_screen = false },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .row = 0, .col = 0, .visible = false, .shape = .block },
+    };
+    var owned = try buildPlanFromFrame(std.testing.allocator, frame, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer owned.deinit();
+
+    try std.testing.expectEqual(ansi16[1].r, owned.plan.fills[0].color.r);
+    try std.testing.expectEqual(ansi16[1].g, owned.plan.fills[0].color.g);
+    try std.testing.expectEqual(ansi16[1].b, owned.plan.fills[0].color.b);
 }
