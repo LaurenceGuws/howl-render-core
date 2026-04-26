@@ -51,9 +51,12 @@ pub const FillRect = struct {
 };
 
 pub const GlyphQuad = struct {
-    cell_col: u16,
-    cell_row: u16,
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
     atlas_slot: u32,
+    codepoint: u21,
     fg: Rgba8,
     bg: ?Rgba8 = null,
 };
@@ -74,6 +77,7 @@ pub const CursorDraw = struct {
 
 pub const AtlasUpload = struct {
     slot: u32,
+    codepoint: u21,
     width: u16,
     height: u16,
 };
@@ -109,11 +113,11 @@ test "render plan stats summarize backend-neutral command counts" {
         .{ .x = 0, .y = 0, .width = 8, .height = 16, .color = .{ .r = 0, .g = 0, .b = 0, .a = 255 } },
     };
     const glyphs = [_]GlyphQuad{
-        .{ .cell_col = 1, .cell_row = 2, .atlas_slot = 7, .fg = .{ .r = 255, .g = 255, .b = 255, .a = 255 } },
+        .{ .x = 8, .y = 32, .width = 8, .height = 16, .atlas_slot = 7, .codepoint = 'A', .fg = .{ .r = 255, .g = 255, .b = 255, .a = 255 } },
     };
     const uploads = [_]AtlasUpload{
-        .{ .slot = 7, .width = 8, .height = 16 },
-        .{ .slot = 8, .width = 8, .height = 16 },
+        .{ .slot = 7, .codepoint = 'A', .width = 8, .height = 16 },
+        .{ .slot = 8, .codepoint = 'B', .width = 8, .height = 16 },
     };
 
     const plan = RenderPlan{
@@ -219,10 +223,10 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
     var fills = try std.ArrayList(FillRect).initCapacity(allocator, visible);
     errdefer fills.deinit(allocator);
 
-    var glyphs = try std.ArrayList(GlyphQuad).initCapacity(allocator, visible / 2 + 1);
+    var glyphs = try std.ArrayList(GlyphQuad).initCapacity(allocator, visible);
     errdefer glyphs.deinit(allocator);
 
-    var uploads: std.ArrayList(AtlasUpload) = .empty;
+    var uploads = try std.ArrayList(AtlasUpload).initCapacity(allocator, visible);
     errdefer uploads.deinit(allocator);
 
     for (0..frame.grid.rows) |row| {
@@ -243,12 +247,22 @@ pub fn buildPlan(allocator: std.mem.Allocator, frame: FrameInput) !OwnedPlan {
             });
 
             if (cell.codepoint > 0x20 and !cell.continuation) {
+                const upload = AtlasUpload{
+                    .slot = @as(u32, cell.codepoint),
+                    .codepoint = cell.codepoint,
+                    .width = frame.cell_px.width,
+                    .height = frame.cell_px.height,
+                };
                 try glyphs.append(allocator, .{
-                    .cell_col = @intCast(col),
-                    .cell_row = @intCast(row),
-                    .atlas_slot = @as(u32, cell.codepoint),
+                    .x = cell_x,
+                    .y = cell_y,
+                    .width = frame.cell_px.width,
+                    .height = frame.cell_px.height,
+                    .atlas_slot = upload.slot,
+                    .codepoint = cell.codepoint,
                     .fg = cell.fg,
                 });
+                try uploads.append(allocator, upload);
             }
         }
     }
@@ -389,6 +403,8 @@ test "planner: cursor visible maps to cursor draw" {
     try std.testing.expect(owned.plan.cursor != null);
     try std.testing.expectEqual(CursorShape.block, owned.plan.cursor.?.shape);
     try std.testing.expectEqual(@as(u16, 0), owned.plan.cursor.?.cell_col);
+    try std.testing.expectEqual(@as(usize, 0), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 0), owned.plan.atlas_uploads.len);
 }
 
 test "planner: cursor absent produces null cursor entry" {
@@ -422,6 +438,7 @@ test "planner: same frame produces identical plan" {
 
     try std.testing.expectEqual(a.plan.fills.len, b.plan.fills.len);
     try std.testing.expectEqual(a.plan.glyphs.len, b.plan.glyphs.len);
+    try std.testing.expectEqual(a.plan.atlas_uploads.len, b.plan.atlas_uploads.len);
     try std.testing.expectEqual(a.plan.cursor != null, b.plan.cursor != null);
     for (a.plan.fills, b.plan.fills) |fa, fb| {
         try std.testing.expectEqual(fa.x, fb.x);
@@ -429,9 +446,14 @@ test "planner: same frame produces identical plan" {
         try std.testing.expectEqual(fa.color.r, fb.color.r);
     }
     for (a.plan.glyphs, b.plan.glyphs) |ga, gb| {
-        try std.testing.expectEqual(ga.cell_col, gb.cell_col);
-        try std.testing.expectEqual(ga.cell_row, gb.cell_row);
+        try std.testing.expectEqual(ga.x, gb.x);
+        try std.testing.expectEqual(ga.y, gb.y);
         try std.testing.expectEqual(ga.atlas_slot, gb.atlas_slot);
+        try std.testing.expectEqual(ga.codepoint, gb.codepoint);
+    }
+    for (a.plan.atlas_uploads, b.plan.atlas_uploads) |ua, ub| {
+        try std.testing.expectEqual(ua.slot, ub.slot);
+        try std.testing.expectEqual(ua.codepoint, ub.codepoint);
     }
 }
 
@@ -451,6 +473,7 @@ test "planner: continuation cells are skipped for glyph quads" {
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), owned.plan.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.plan.atlas_uploads.len);
 }
 
 test "planner: fill pixel positions match cell geometry" {
@@ -601,6 +624,11 @@ test "adapter: rgb color cells map to exact rgb values" {
     try std.testing.expectEqual(@as(u8, 0xFF), owned.plan.glyphs[0].fg.r);
     try std.testing.expectEqual(@as(u8, 0x80), owned.plan.glyphs[0].fg.g);
     try std.testing.expectEqual(@as(u8, 0x00), owned.plan.glyphs[0].fg.b);
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.glyphs[0].x);
+    try std.testing.expectEqual(@as(i32, 0), owned.plan.glyphs[0].y);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.plan.glyphs[0].codepoint);
+    try std.testing.expectEqual(@as(usize, 1), owned.plan.atlas_uploads.len);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.plan.atlas_uploads[0].codepoint);
 }
 
 test "adapter: cursor visible maps to cursor draw at correct position" {
@@ -747,4 +775,5 @@ test "adapter: explicit theme overrides default and cursor colors" {
     try std.testing.expectEqual(custom_theme.default_bg.r, owned.plan.fills[0].color.r);
     try std.testing.expectEqual(custom_theme.default_fg.g, owned.plan.glyphs[0].fg.g);
     try std.testing.expectEqual(custom_theme.cursor_color.b, owned.plan.cursor.?.color.b);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.plan.glyphs[0].codepoint);
 }
