@@ -5,6 +5,8 @@
 M0 scaffold reset closed. Active authority target is `M5` backend capability
 negotiation. M1 through M4 execution queues will be published in Sprint 2
 (MVP-S2) as the architect confirms the progression path toward M5.
+Any backend-facing planning-policy evolution must preserve the scoped parity gate:
+renderer parity (GL/GLES), transport-lane parity notes, and host caller-shape parity notes.
 
 ## Read Before Execution
 
