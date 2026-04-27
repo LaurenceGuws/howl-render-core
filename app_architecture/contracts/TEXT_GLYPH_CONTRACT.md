@@ -2,7 +2,7 @@
 
 ## Summary
 
-This contract closes the first real text-path seam for `howl-render-core`.
+This contract closes the first real text-path API for `howl-render-core`.
 It defines what the planner emits, what the backend must execute, and which responsibilities
 stay on each side of the boundary.
 
