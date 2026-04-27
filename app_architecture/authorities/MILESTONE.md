@@ -22,5 +22,5 @@ This document defines the renderer-core development ladder.
 ## Current Target
 
 Current target is `M5` backend capability negotiation, with the primary
-terminal boundary (`howl-term`, currently `howl-term-surface`) as the canonical
+terminal boundary (`howl-term`) as the canonical
 render-core caller.
