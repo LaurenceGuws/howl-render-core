@@ -1,4 +1,4 @@
-//! Responsibility: define backend-neutral render data contracts.
+//! Responsibility: define backend-neutral render data apis.
 //! Ownership: render-core public API.
 //! Reason: keep shared plan types independent from planning and backend execution.
 
@@ -66,7 +66,7 @@ pub const GlyphQuad = struct {
     bg: ?Rgba8 = null,
 };
 
-/// Cursor shape variants supported by the shared plan contract.
+/// Cursor shape variants supported by the shared plan api.
 pub const CursorShape = enum {
     block,
     underline,
@@ -134,7 +134,7 @@ pub const GridInput = struct {
     rows: u16,
 };
 
-/// Cursor input from the surface-facing frame contract.
+/// Cursor input from the surface-facing frame api.
 pub const CursorInput = struct {
     col: u16,
     row: u16,

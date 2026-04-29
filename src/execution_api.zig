@@ -1,5 +1,5 @@
-//! Responsibility: validate backend execution inputs against shared contracts.
-//! Ownership: render-core backend execution contract helpers.
+//! Responsibility: validate backend execution inputs against shared apis.
+//! Ownership: render-core backend execution api helpers.
 //! Reason: keep backend implementations thin and consistent.
 
 const types = @import("types.zig");
