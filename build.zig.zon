@@ -9,7 +9,5 @@
         "build.zig.zon",
         "src",
         "README.md",
-        "app_architecture",
-        "docs",
     },
 }
