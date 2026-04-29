@@ -12,7 +12,7 @@ pub const BackendConfig = struct {
     target_texture: u32 = 0,
 };
 
-/// Runtime capability report used by render-core batch generation.
+/// capability report used by render-core batch generation.
 pub const BackendCapability = struct {
     max_atlas_slots: u32,
     supports_fill_rect: bool,

@@ -5,10 +5,11 @@
 const types = @import("types.zig");
 const render_batch = @import("render_batch.zig");
 const vt_state = @import("vt_state.zig");
+const surface = @import("surface.zig");
 
 /// Configuration shared by renderer backend implementations at initialization.
 pub const BackendConfig = types.BackendConfig;
-/// Runtime capability report used by render-core batch generation.
+/// capability report used by render-core batch generation.
 pub const BackendCapability = types.BackendCapability;
 /// Pixel dimensions for a drawable surface.
 pub const PixelSize = types.PixelSize;
@@ -44,6 +45,16 @@ pub const VtState = types.VtState;
 pub const FrameTheme = types.FrameTheme;
 /// Owned render batch with buffers that must be released by the caller.
 pub const OwnedRenderBatch = types.OwnedRenderBatch;
+pub const SurfaceState = surface.SurfaceState;
+pub const SurfaceColor = surface.Color;
+pub const SurfaceCellFlags = surface.CellFlags;
+pub const SurfaceCellAttrs = surface.CellAttrs;
+pub const SurfaceCell = surface.Cell;
+pub const SurfaceGridModel = surface.GridModel;
+pub const SurfaceViewportInfo = surface.ViewportInfo;
+pub const SurfaceCursorShape = surface.CursorShape;
+pub const SurfaceCursorInfo = surface.CursorInfo;
+pub const SurfaceFrameData = surface.FrameData;
 /// Errors returned when a backend validates a render batch before render.
 pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
 
@@ -65,4 +76,5 @@ test "module wiring: render-core internals compile" {
     _ = types;
     _ = render_batch;
     _ = vt_state;
+    _ = surface;
 }
