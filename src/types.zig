@@ -1,6 +1,6 @@
 //! Responsibility: define backend-neutral render data apis.
 //! Ownership: render-core public API.
-//! Reason: keep shared plan types independent from planning and backend execution.
+//! Reason: keep shared batch types independent from batch generation and backend rendering.
 
 const std = @import("std");
 
@@ -12,7 +12,7 @@ pub const BackendConfig = struct {
     target_texture: u32 = 0,
 };
 
-/// Runtime capability report used by render-core planning.
+/// Runtime capability report used by render-core batch generation.
 pub const BackendCapability = struct {
     max_atlas_slots: u32,
     supports_fill_rect: bool,
@@ -37,7 +37,7 @@ pub const GridSize = struct {
     rows: u16,
 };
 
-/// Eight-bit RGBA color used in render plans.
+/// Eight-bit RGBA color used in render batches.
 pub const Rgba8 = extern struct {
     r: u8,
     g: u8,
@@ -66,7 +66,7 @@ pub const GlyphQuad = struct {
     bg: ?Rgba8 = null,
 };
 
-/// Cursor shape variants supported by the shared plan api.
+/// Cursor shape variants supported by the shared batch api.
 pub const CursorShape = enum {
     block,
     underline,
@@ -90,16 +90,16 @@ pub const AtlasUpload = struct {
     height: u16,
 };
 
-/// Summary counts for a render plan.
-pub const PlanStats = struct {
+/// Summary counts for a render batch.
+pub const RenderBatchStats = struct {
     fills: usize,
     glyphs: usize,
     atlas_uploads: usize,
     has_cursor: bool,
 };
 
-/// Backend-neutral draw plan produced by render-core.
-pub const RenderPlan = struct {
+/// Backend-neutral draw batch produced by render-core.
+pub const RenderBatch = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
     grid: GridSize,
@@ -108,8 +108,8 @@ pub const RenderPlan = struct {
     cursor: ?CursorDraw = null,
     atlas_uploads: []const AtlasUpload = &.{},
 
-    /// Count the draw commands and cursor presence without mutating the plan.
-    pub fn stats(self: RenderPlan) PlanStats {
+    /// Count the draw commands and cursor presence without mutating the batch.
+    pub fn stats(self: RenderBatch) RenderBatchStats {
         return .{
             .fills = self.fills.len,
             .glyphs = self.glyphs.len,
@@ -119,7 +119,7 @@ pub const RenderPlan = struct {
     }
 };
 
-/// Backend-neutral terminal cell input consumed by the planner.
+/// Backend-neutral terminal cell input consumed by the render_batch.
 pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
@@ -127,7 +127,7 @@ pub const CellInput = struct {
     continuation: bool = false,
 };
 
-/// Row-major terminal cell buffer and dimensions consumed by the planner.
+/// Row-major terminal cell buffer and dimensions consumed by the render_batch.
 pub const GridInput = struct {
     cells: []const CellInput,
     cols: u16,
@@ -142,15 +142,15 @@ pub const CursorInput = struct {
     color: Rgba8,
 };
 
-/// Complete frame input consumed by render-core planning.
-pub const FrameInput = struct {
+/// Complete frame input consumed by render-core batch generation.
+pub const VtState = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
     grid: GridInput,
     cursor: ?CursorInput = null,
 };
 
-/// Color theme used when converting frame colors before planning.
+/// Color theme used when converting frame colors before batch generation.
 pub const FrameTheme = struct {
     default_fg: Rgba8,
     default_bg: Rgba8,
@@ -158,16 +158,16 @@ pub const FrameTheme = struct {
     ansi16: [16]Rgba8,
 };
 
-/// Owned render plan with buffers that must be released by the caller.
-pub const OwnedPlan = struct {
-    plan: RenderPlan,
+/// Owned render batch with buffers that must be released by the caller.
+pub const OwnedRenderBatch = struct {
+    batch: RenderBatch,
     _fills: []FillRect,
     _glyphs: []GlyphQuad,
     _uploads: []AtlasUpload,
     _allocator: std.mem.Allocator,
 
-    /// Release all buffers owned by this plan.
-    pub fn deinit(self: *OwnedPlan) void {
+    /// Release all buffers owned by this batch.
+    pub fn deinit(self: *OwnedRenderBatch) void {
         self._allocator.free(self._fills);
         self._allocator.free(self._glyphs);
         self._allocator.free(self._uploads);
@@ -175,7 +175,7 @@ pub const OwnedPlan = struct {
     }
 };
 
-test "render plan stats summarize backend-neutral command counts" {
+test "render batch stats summarize backend-neutral command counts" {
     const fills = [_]FillRect{
         .{ .x = 0, .y = 0, .width = 8, .height = 16, .color = .{ .r = 0, .g = 0, .b = 0, .a = 255 } },
     };
@@ -187,7 +187,7 @@ test "render plan stats summarize backend-neutral command counts" {
         .{ .slot = 8, .codepoint = 'B', .width = 8, .height = 16 },
     };
 
-    const plan = RenderPlan{
+    const batch = RenderBatch{
         .surface_px = .{ .width = 1280, .height = 720 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cols = 160, .rows = 45 },
@@ -197,21 +197,21 @@ test "render plan stats summarize backend-neutral command counts" {
         .atlas_uploads = &uploads,
     };
 
-    const stats = plan.stats();
+    const stats = batch.stats();
     try std.testing.expectEqual(@as(usize, 1), stats.fills);
     try std.testing.expectEqual(@as(usize, 1), stats.glyphs);
     try std.testing.expectEqual(@as(usize, 2), stats.atlas_uploads);
     try std.testing.expect(stats.has_cursor);
 }
 
-test "render plan stats handle empty command sets" {
-    const plan = RenderPlan{
+test "render batch stats handle empty command sets" {
+    const batch = RenderBatch{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cols = 80, .rows = 30 },
     };
 
-    const stats = plan.stats();
+    const stats = batch.stats();
     try std.testing.expectEqual(@as(usize, 0), stats.fills);
     try std.testing.expectEqual(@as(usize, 0), stats.glyphs);
     try std.testing.expectEqual(@as(usize, 0), stats.atlas_uploads);
