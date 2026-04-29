@@ -119,7 +119,7 @@ pub const RenderBatch = struct {
     }
 };
 
-/// Backend-neutral terminal cell input consumed by the render_batch.
+/// Backend-neutral terminal cell input consumed by render batch generation.
 pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
@@ -127,14 +127,14 @@ pub const CellInput = struct {
     continuation: bool = false,
 };
 
-/// Row-major terminal cell buffer and dimensions consumed by the render_batch.
+/// Row-major terminal cell buffer and dimensions consumed by render batch generation.
 pub const GridInput = struct {
     cells: []const CellInput,
     cols: u16,
     rows: u16,
 };
 
-/// Cursor input from the surface-facing frame api.
+/// Cursor input from VT state mapping.
 pub const CursorInput = struct {
     col: u16,
     row: u16,
@@ -142,7 +142,7 @@ pub const CursorInput = struct {
     color: Rgba8,
 };
 
-/// Complete frame input consumed by render-core batch generation.
+/// Complete VT state consumed by render-core batch generation.
 pub const VtState = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -150,7 +150,7 @@ pub const VtState = struct {
     cursor: ?CursorInput = null,
 };
 
-/// Color theme used when converting frame colors before batch generation.
+/// Color theme used while mapping VT state colors before batch generation.
 pub const FrameTheme = struct {
     default_fg: Rgba8,
     default_bg: Rgba8,

@@ -68,14 +68,14 @@ fn mapCursorShape(shape: anytype) types.CursorShape {
 
 pub fn vtStateToRenderBatch(
     allocator: std.mem.Allocator,
-    frame: anytype,
+    state: anytype,
     surface_px: types.PixelSize,
     cell_px: types.CellSize,
     capability: types.BackendCapability,
 ) !types.OwnedRenderBatch {
     return vtStateToRenderBatchWithTheme(
         allocator,
-        frame,
+        state,
         surface_px,
         cell_px,
         default_theme,
@@ -85,16 +85,16 @@ pub fn vtStateToRenderBatch(
 
 pub fn vtStateToRenderBatchWithTheme(
     allocator: std.mem.Allocator,
-    frame: anytype,
+    state: anytype,
     surface_px: types.PixelSize,
     cell_px: types.CellSize,
     t: FrameTheme,
     capability: types.BackendCapability,
 ) !types.OwnedRenderBatch {
-    const cell_inputs = try allocator.alloc(types.CellInput, frame.grid.cells.len);
+    const cell_inputs = try allocator.alloc(types.CellInput, state.grid.cells.len);
     defer allocator.free(cell_inputs);
 
-    for (frame.grid.cells, cell_inputs) |src, *dst| {
+    for (state.grid.cells, cell_inputs) |src, *dst| {
         dst.* = .{
             .codepoint = src.codepoint,
             .fg = colorToRgba8(src.fg_color, true, t),
@@ -103,17 +103,17 @@ pub fn vtStateToRenderBatchWithTheme(
         };
     }
 
-    const cursor_input: ?types.CursorInput = if (frame.cursor.visible) .{
-        .col = frame.cursor.col,
-        .row = frame.cursor.row,
-        .shape = mapCursorShape(frame.cursor.shape),
+    const cursor_input: ?types.CursorInput = if (state.cursor.visible) .{
+        .col = state.cursor.col,
+        .row = state.cursor.row,
+        .shape = mapCursorShape(state.cursor.shape),
         .color = t.cursor_color,
     } else null;
 
     return render_batch.renderBatch(allocator, .{
         .surface_px = surface_px,
         .cell_px = cell_px,
-        .grid = .{ .cells = cell_inputs, .cols = frame.grid.cols, .rows = frame.grid.rows },
+        .grid = .{ .cells = cell_inputs, .cols = state.grid.cols, .rows = state.grid.rows },
         .cursor = cursor_input,
     }, capability);
 }

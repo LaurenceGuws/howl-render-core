@@ -4,7 +4,7 @@
 
 const types = @import("types.zig");
 const render_batch = @import("render_batch.zig");
-const frame_api = @import("vt_state.zig");
+const vt_state = @import("vt_state.zig");
 
 /// Configuration shared by renderer backend implementations at initialization.
 pub const BackendConfig = types.BackendConfig;
@@ -32,30 +32,30 @@ pub const AtlasUpload = types.AtlasUpload;
 pub const RenderBatchStats = types.RenderBatchStats;
 /// Backend-neutral draw batch produced by render-core.
 pub const RenderBatch = types.RenderBatch;
-/// Backend-neutral terminal cell input consumed by the render_batch.
+/// Backend-neutral terminal cell input consumed by render batch generation.
 pub const CellInput = types.CellInput;
-/// Row-major terminal cell buffer and dimensions consumed by the render_batch.
+/// Row-major terminal cell buffer and dimensions consumed by render batch generation.
 pub const GridInput = types.GridInput;
-/// Cursor input from the surface-facing frame api.
+/// Cursor input from VT state mapping.
 pub const CursorInput = types.CursorInput;
-/// Complete frame input consumed by render-core batch generation.
+/// Complete VT state consumed by render-core batch generation.
 pub const VtState = types.VtState;
-/// Color theme used when converting frame colors before batch generation.
+/// Color theme used while mapping VT state colors before batch generation.
 pub const FrameTheme = types.FrameTheme;
 /// Owned render batch with buffers that must be released by the caller.
 pub const OwnedRenderBatch = types.OwnedRenderBatch;
 /// Errors returned when a backend validates a render batch before render.
 pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
 
-/// Default color theme used by frame conversion.
-pub const default_theme = frame_api.default_theme;
+/// Default color theme used by VT state conversion.
+pub const default_theme = vt_state.default_theme;
 
 /// Build an owned backend-neutral draw batch from a complete frame input.
 pub const renderBatch = render_batch.renderBatch;
-/// Build an owned backend-neutral draw batch from a terminal-style frame.
-pub const vtStateToRenderBatch = frame_api.vtStateToRenderBatch;
-/// Build an owned backend-neutral draw batch from a terminal-style frame with explicit theme.
-pub const vtStateToRenderBatchWithTheme = frame_api.vtStateToRenderBatchWithTheme;
+/// Build an owned backend-neutral draw batch from VT state.
+pub const vtStateToRenderBatch = vt_state.vtStateToRenderBatch;
+/// Build an owned backend-neutral draw batch from VT state with explicit theme.
+pub const vtStateToRenderBatchWithTheme = vt_state.vtStateToRenderBatchWithTheme;
 /// Validate a render batch against backend config and capability declarations.
 pub const validateRenderBatch = render_batch.validateRenderBatch;
 /// Summarize command counts in a render batch for backend reporting.
@@ -64,5 +64,5 @@ pub const summarizeRenderBatch = render_batch.summarizeRenderBatch;
 test "module wiring: render-core internals compile" {
     _ = types;
     _ = render_batch;
-    _ = frame_api;
+    _ = vt_state;
 }
