@@ -9,6 +9,7 @@ pub const BackendConfig = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
     font_path: ?[:0]const u8 = null,
+    target_texture: u32 = 0,
 };
 
 /// Runtime capability report used by render-core planning.
