@@ -3,24 +3,166 @@
 //! Reason: keep command ordering and glyph slot assignment shared by all backends.
 
 const std = @import("std");
-const types = @import("types.zig");
+
+pub const BackendConfig = struct {
+    surface_px: PixelSize,
+    cell_px: CellSize,
+    font_path: ?[:0]const u8 = null,
+    target_texture: u32 = 0,
+};
+
+pub const BackendCapability = struct {
+    max_atlas_slots: u32,
+    supports_fill_rect: bool,
+    supports_glyph_quads: bool,
+};
+
+pub const PixelSize = struct {
+    width: u16,
+    height: u16,
+};
+
+pub const CellSize = struct {
+    width: u16,
+    height: u16,
+};
+
+pub const GridSize = struct {
+    cols: u16,
+    rows: u16,
+};
+
+pub const Rgba8 = extern struct {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+};
+
+pub const FillRect = struct {
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+    color: Rgba8,
+};
+
+pub const GlyphQuad = struct {
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+    atlas_slot: u32,
+    codepoint: u21,
+    fg: Rgba8,
+    bg: ?Rgba8 = null,
+};
+
+pub const CursorShape = enum {
+    block,
+    underline,
+    beam,
+    hollow_block,
+};
+
+pub const CursorDraw = struct {
+    cell_col: u16,
+    cell_row: u16,
+    shape: CursorShape,
+    color: Rgba8,
+};
+
+pub const AtlasUpload = struct {
+    slot: u32,
+    codepoint: u21,
+    width: u16,
+    height: u16,
+};
+
+pub const RenderBatchStats = struct {
+    fills: usize,
+    glyphs: usize,
+    atlas_uploads: usize,
+    has_cursor: bool,
+};
+
+pub const RenderBatch = struct {
+    surface_px: PixelSize,
+    cell_px: CellSize,
+    grid: GridSize,
+    fills: []const FillRect = &.{},
+    glyphs: []const GlyphQuad = &.{},
+    cursor: ?CursorDraw = null,
+    atlas_uploads: []const AtlasUpload = &.{},
+
+    pub fn stats(self: RenderBatch) RenderBatchStats {
+        return .{
+            .fills = self.fills.len,
+            .glyphs = self.glyphs.len,
+            .atlas_uploads = self.atlas_uploads.len,
+            .has_cursor = self.cursor != null,
+        };
+    }
+};
+
+pub const CellInput = struct {
+    codepoint: u21,
+    fg: Rgba8,
+    bg: Rgba8,
+    continuation: bool = false,
+};
+
+pub const GridInput = struct {
+    cells: []const CellInput,
+    cols: u16,
+    rows: u16,
+};
+
+pub const CursorInput = struct {
+    col: u16,
+    row: u16,
+    shape: CursorShape,
+    color: Rgba8,
+};
+
+pub const VtState = struct {
+    surface_px: PixelSize,
+    cell_px: CellSize,
+    grid: GridInput,
+    cursor: ?CursorInput = null,
+};
+
+pub const OwnedRenderBatch = struct {
+    batch: RenderBatch,
+    _fills: []FillRect,
+    _glyphs: []GlyphQuad,
+    _uploads: []AtlasUpload,
+    _allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *OwnedRenderBatch) void {
+        self._allocator.free(self._fills);
+        self._allocator.free(self._glyphs);
+        self._allocator.free(self._uploads);
+        self.* = undefined;
+    }
+};
 
 /// Build an owned backend-neutral draw batch from a complete frame input.
 pub fn renderBatch(
     allocator: std.mem.Allocator,
-    frame: types.VtState,
-    capability: types.BackendCapability,
-) !types.OwnedRenderBatch {
+    frame: VtState,
+    capability: BackendCapability,
+) !OwnedRenderBatch {
     const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
     const visible = @min(cell_count, frame.grid.cells.len);
 
-    var fills = try std.ArrayList(types.FillRect).initCapacity(allocator, visible);
+    var fills = try std.ArrayList(FillRect).initCapacity(allocator, visible);
     errdefer fills.deinit(allocator);
 
-    var glyphs = try std.ArrayList(types.GlyphQuad).initCapacity(allocator, visible);
+    var glyphs = try std.ArrayList(GlyphQuad).initCapacity(allocator, visible);
     errdefer glyphs.deinit(allocator);
 
-    var uploads = try std.ArrayList(types.AtlasUpload).initCapacity(allocator, visible);
+    var uploads = try std.ArrayList(AtlasUpload).initCapacity(allocator, visible);
     errdefer uploads.deinit(allocator);
 
     var glyph_slots = std.AutoHashMap(u21, u32).init(allocator);
@@ -75,7 +217,7 @@ pub fn renderBatch(
         }
     }
 
-    const cursor_draw: ?types.CursorDraw = if (frame.cursor) |c| .{
+    const cursor_draw: ?CursorDraw = if (frame.cursor) |c| .{
         .cell_col = c.col,
         .cell_row = c.row,
         .shape = c.shape,
@@ -116,9 +258,9 @@ pub const RenderBatchValidationError = error{
 
 /// Validate a render batch against backend config and capability declarations.
 pub fn validateRenderBatch(
-    config: types.BackendConfig,
-    capability: types.BackendCapability,
-    batch: types.RenderBatch,
+    config: BackendConfig,
+    capability: BackendCapability,
+    batch: RenderBatch,
 ) RenderBatchValidationError!void {
     if (batch.surface_px.width != config.surface_px.width or batch.surface_px.height != config.surface_px.height) {
         return error.SurfaceMismatch;
@@ -140,19 +282,19 @@ pub fn validateRenderBatch(
 }
 
 /// Summarize command counts in a render batch for backend reporting.
-pub fn summarizeRenderBatch(batch: types.RenderBatch) types.RenderBatchStats {
+pub fn summarizeRenderBatch(batch: RenderBatch) RenderBatchStats {
     return batch.stats();
 }
 
-fn makeCell(cp: u21, fg: types.Rgba8, bg: types.Rgba8) types.CellInput {
+fn makeCell(cp: u21, fg: Rgba8, bg: Rgba8) CellInput {
     return .{ .codepoint = cp, .fg = fg, .bg = bg };
 }
 
-const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-const red = types.Rgba8{ .r = 200, .g = 0, .b = 0, .a = 255 };
+const white = Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+const black = Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+const red = Rgba8{ .r = 200, .g = 0, .b = 0, .a = 255 };
 
-fn testCapability(max_atlas_slots: u32) types.BackendCapability {
+fn testCapability(max_atlas_slots: u32) BackendCapability {
     return .{
         .max_atlas_slots = max_atlas_slots,
         .supports_fill_rect = true,
@@ -161,7 +303,7 @@ fn testCapability(max_atlas_slots: u32) types.BackendCapability {
 }
 
 test "render_batch: empty grid produces zero glyphs and fills equal grid size" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell(0, white, black), makeCell(0, white, black),
         makeCell(0, white, black), makeCell(0, white, black),
     };
@@ -177,7 +319,7 @@ test "render_batch: empty grid produces zero glyphs and fills equal grid size" {
 }
 
 test "render_batch: space cells produce no glyph quad" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell(0x20, white, black), makeCell(0x20, white, black),
     };
     var owned = try renderBatch(std.testing.allocator, .{
@@ -192,7 +334,7 @@ test "render_batch: space cells produce no glyph quad" {
 }
 
 test "render_batch: printable cells produce glyph quads matching count" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell(0, white, black),
         makeCell('Z', white, black),
@@ -211,7 +353,7 @@ test "render_batch: printable cells produce glyph quads matching count" {
 }
 
 test "render_batch: repeated codepoints dedupe atlas uploads per slot" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell('A', white, black),
         makeCell('A', white, black),
@@ -229,7 +371,7 @@ test "render_batch: repeated codepoints dedupe atlas uploads per slot" {
 }
 
 test "render_batch: exactly at capacity keeps all unique glyph slots" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell('B', white, black),
     };
@@ -247,7 +389,7 @@ test "render_batch: exactly at capacity keeps all unique glyph slots" {
 }
 
 test "render_batch: over capacity drops new codepoints deterministically" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell('B', white, black),
         makeCell('C', white, black),
@@ -271,7 +413,7 @@ test "render_batch: over capacity drops new codepoints deterministically" {
 }
 
 test "render_batch: fill count equals total cell count" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('H', white, black), makeCell('i', white, black),
         makeCell(0, white, black),   makeCell(0, white, black),
         makeCell('!', white, black), makeCell(0x20, white, black),
@@ -288,7 +430,7 @@ test "render_batch: fill count equals total cell count" {
 }
 
 test "render_batch: cursor visible maps to cursor draw" {
-    const cells = [_]types.CellInput{makeCell(0, white, black)};
+    const cells = [_]CellInput{makeCell(0, white, black)};
     var owned = try renderBatch(std.testing.allocator, .{
         .surface_px = .{ .width = 8, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -298,23 +440,23 @@ test "render_batch: cursor visible maps to cursor draw" {
     defer owned.deinit();
 
     try std.testing.expect(owned.batch.cursor != null);
-    try std.testing.expectEqual(types.CursorShape.block, owned.batch.cursor.?.shape);
+    try std.testing.expectEqual(CursorShape.block, owned.batch.cursor.?.shape);
     try std.testing.expectEqual(@as(u16, 0), owned.batch.cursor.?.cell_col);
     try std.testing.expectEqual(@as(usize, 0), owned.batch.glyphs.len);
     try std.testing.expectEqual(@as(usize, 0), owned.batch.atlas_uploads.len);
 }
 
 test "validation rejects surface mismatch" {
-    const config = types.BackendConfig{
+    const config = BackendConfig{
         .surface_px = .{ .width = 1280, .height = 720 },
         .cell_px = .{ .width = 8, .height = 16 },
     };
-    const cap = types.BackendCapability{
+    const cap = BackendCapability{
         .max_atlas_slots = 32,
         .supports_fill_rect = true,
         .supports_glyph_quads = true,
     };
-    const batch = types.RenderBatch{
+    const batch = RenderBatch{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cols = 80, .rows = 30 },
@@ -324,20 +466,20 @@ test "validation rejects surface mismatch" {
 }
 
 test "validation rejects atlas slots outside capability range" {
-    const uploads = [_]types.AtlasUpload{
+    const uploads = [_]AtlasUpload{
         .{ .slot = 1, .codepoint = 'A', .width = 8, .height = 16 },
         .{ .slot = 2, .codepoint = 'B', .width = 8, .height = 16 },
     };
-    const config = types.BackendConfig{
+    const config = BackendConfig{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
     };
-    const cap = types.BackendCapability{
+    const cap = BackendCapability{
         .max_atlas_slots = 2,
         .supports_fill_rect = true,
         .supports_glyph_quads = true,
     };
-    const batch = types.RenderBatch{
+    const batch = RenderBatch{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cols = 80, .rows = 30 },
@@ -348,7 +490,7 @@ test "validation rejects atlas slots outside capability range" {
 }
 
 test "summary mirrors render-batch stats" {
-    const batch = types.RenderBatch{
+    const batch = RenderBatch{
         .surface_px = .{ .width = 800, .height = 600 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cols = 100, .rows = 37 },
@@ -364,7 +506,7 @@ test "summary mirrors render-batch stats" {
 }
 
 test "render_batch: cursor absent produces null cursor entry" {
-    const cells = [_]types.CellInput{makeCell(0, white, black)};
+    const cells = [_]CellInput{makeCell(0, white, black)};
     var owned = try renderBatch(std.testing.allocator, .{
         .surface_px = .{ .width = 8, .height = 16 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -376,11 +518,11 @@ test "render_batch: cursor absent produces null cursor entry" {
 }
 
 test "render_batch: same frame produces identical batch" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black), makeCell('B', red, black),
         makeCell(0, white, black),   makeCell('C', white, black),
     };
-    const frame = types.VtState{
+    const frame = VtState{
         .surface_px = .{ .width = 32, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .grid = .{ .cells = &cells, .cols = 2, .rows = 2 },
@@ -416,7 +558,7 @@ test "render_batch: same frame produces identical batch" {
 test "render_batch: continuation cells are skipped for glyph quads" {
     var cont = makeCell('A', white, black);
     cont.continuation = true;
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell('A', white, black),
         cont,
         makeCell('B', white, black),
@@ -433,7 +575,7 @@ test "render_batch: continuation cells are skipped for glyph quads" {
 }
 
 test "render_batch: fill pixel positions match cell geometry" {
-    const cells = [_]types.CellInput{
+    const cells = [_]CellInput{
         makeCell(0, white, black), makeCell(0, white, black),
         makeCell(0, white, black), makeCell(0, white, black),
     };

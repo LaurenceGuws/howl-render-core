@@ -3,10 +3,14 @@
 //! Reason: remove duplicated frame-mapping logic across render backends.
 
 const std = @import("std");
-const types = @import("types.zig");
 const render_batch = @import("render_batch.zig");
 
-pub const FrameTheme = types.FrameTheme;
+pub const FrameTheme = struct {
+    default_fg: render_batch.Rgba8,
+    default_bg: render_batch.Rgba8,
+    cursor_color: render_batch.Rgba8,
+    ansi16: [16]render_batch.Rgba8,
+};
 pub const default_theme = FrameTheme{
     .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
     .default_bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
@@ -31,7 +35,7 @@ pub const default_theme = FrameTheme{
     },
 };
 
-fn indexed256(idx: u8, t: FrameTheme) types.Rgba8 {
+fn indexed256(idx: u8, t: FrameTheme) render_batch.Rgba8 {
     if (idx < 16) return t.ansi16[idx];
     if (idx < 232) {
         const i: u32 = idx - 16;
@@ -44,7 +48,7 @@ fn indexed256(idx: u8, t: FrameTheme) types.Rgba8 {
     return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
 }
 
-fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
+fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_batch.Rgba8 {
     return switch (color.kind) {
         .default => if (is_fg) t.default_fg else t.default_bg,
         .indexed => indexed256(@intCast(color.value & 0xFF), t),
@@ -57,7 +61,7 @@ fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
     };
 }
 
-fn mapCursorShape(shape: anytype) types.CursorShape {
+fn mapCursorShape(shape: anytype) render_batch.CursorShape {
     return switch (shape) {
         .block => .block,
         .underline => .underline,
@@ -69,10 +73,10 @@ fn mapCursorShape(shape: anytype) types.CursorShape {
 pub fn vtStateToRenderBatch(
     allocator: std.mem.Allocator,
     state: anytype,
-    surface_px: types.PixelSize,
-    cell_px: types.CellSize,
-    capability: types.BackendCapability,
-) !types.OwnedRenderBatch {
+    surface_px: render_batch.PixelSize,
+    cell_px: render_batch.CellSize,
+    capability: render_batch.BackendCapability,
+) !render_batch.OwnedRenderBatch {
     return vtStateToRenderBatchWithTheme(
         allocator,
         state,
@@ -86,12 +90,12 @@ pub fn vtStateToRenderBatch(
 pub fn vtStateToRenderBatchWithTheme(
     allocator: std.mem.Allocator,
     state: anytype,
-    surface_px: types.PixelSize,
-    cell_px: types.CellSize,
+    surface_px: render_batch.PixelSize,
+    cell_px: render_batch.CellSize,
     t: FrameTheme,
-    capability: types.BackendCapability,
-) !types.OwnedRenderBatch {
-    const cell_inputs = try allocator.alloc(types.CellInput, state.grid.cells.len);
+    capability: render_batch.BackendCapability,
+) !render_batch.OwnedRenderBatch {
+    const cell_inputs = try allocator.alloc(render_batch.CellInput, state.grid.cells.len);
     defer allocator.free(cell_inputs);
 
     for (state.grid.cells, cell_inputs) |src, *dst| {
@@ -103,7 +107,7 @@ pub fn vtStateToRenderBatchWithTheme(
         };
     }
 
-    const cursor_input: ?types.CursorInput = if (state.cursor.visible) .{
+    const cursor_input: ?render_batch.CursorInput = if (state.cursor.visible) .{
         .col = state.cursor.col,
         .row = state.cursor.row,
         .shape = mapCursorShape(state.cursor.shape),
