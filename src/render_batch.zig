@@ -4,6 +4,7 @@
 
 const std = @import("std");
 
+/// Shared backend configuration used for batch generation and validation.
 pub const BackendConfig = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -11,27 +12,32 @@ pub const BackendConfig = struct {
     target_texture: u32 = 0,
 };
 
+/// Backend capability flags consumed by render-core policy.
 pub const BackendCapability = struct {
     max_atlas_slots: u32,
     supports_fill_rect: bool,
     supports_glyph_quads: bool,
 };
 
+/// Pixel dimensions.
 pub const PixelSize = struct {
     width: u16,
     height: u16,
 };
 
+/// Cell dimensions in pixels.
 pub const CellSize = struct {
     width: u16,
     height: u16,
 };
 
+/// Grid dimensions in cells.
 pub const GridSize = struct {
     cols: u16,
     rows: u16,
 };
 
+/// 8-bit RGBA color.
 pub const Rgba8 = extern struct {
     r: u8,
     g: u8,
@@ -39,6 +45,7 @@ pub const Rgba8 = extern struct {
     a: u8,
 };
 
+/// Filled rectangle draw command.
 pub const FillRect = struct {
     x: i32,
     y: i32,
@@ -47,6 +54,7 @@ pub const FillRect = struct {
     color: Rgba8,
 };
 
+/// Glyph quad draw command.
 pub const GlyphQuad = struct {
     x: i32,
     y: i32,
@@ -58,6 +66,7 @@ pub const GlyphQuad = struct {
     bg: ?Rgba8 = null,
 };
 
+/// Cursor shape vocabulary.
 pub const CursorShape = enum {
     block,
     underline,
@@ -65,6 +74,7 @@ pub const CursorShape = enum {
     hollow_block,
 };
 
+/// Cursor draw command.
 pub const CursorDraw = struct {
     cell_col: u16,
     cell_row: u16,
@@ -72,6 +82,7 @@ pub const CursorDraw = struct {
     color: Rgba8,
 };
 
+/// Atlas upload command.
 pub const AtlasUpload = struct {
     slot: u32,
     codepoint: u21,
@@ -79,6 +90,7 @@ pub const AtlasUpload = struct {
     height: u16,
 };
 
+/// Render-batch aggregate stats.
 pub const RenderBatchStats = struct {
     fills: usize,
     glyphs: usize,
@@ -86,6 +98,7 @@ pub const RenderBatchStats = struct {
     has_cursor: bool,
 };
 
+/// Backend-neutral render batch payload.
 pub const RenderBatch = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -95,6 +108,7 @@ pub const RenderBatch = struct {
     cursor: ?CursorDraw = null,
     atlas_uploads: []const AtlasUpload = &.{},
 
+    /// Summarize render batch command counts.
     pub fn stats(self: RenderBatch) RenderBatchStats {
         return .{
             .fills = self.fills.len,
@@ -105,6 +119,7 @@ pub const RenderBatch = struct {
     }
 };
 
+/// Input cell payload used during batch generation.
 pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
@@ -112,12 +127,14 @@ pub const CellInput = struct {
     continuation: bool = false,
 };
 
+/// Input grid payload used during batch generation.
 pub const GridInput = struct {
     cells: []const CellInput,
     cols: u16,
     rows: u16,
 };
 
+/// Input cursor payload used during batch generation.
 pub const CursorInput = struct {
     col: u16,
     row: u16,
@@ -125,6 +142,7 @@ pub const CursorInput = struct {
     color: Rgba8,
 };
 
+/// Renderer-facing VT state input.
 pub const VtState = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
@@ -132,6 +150,7 @@ pub const VtState = struct {
     cursor: ?CursorInput = null,
 };
 
+/// Owned render batch with allocator-managed buffers.
 pub const OwnedRenderBatch = struct {
     batch: RenderBatch,
     _fills: []FillRect,
@@ -139,6 +158,7 @@ pub const OwnedRenderBatch = struct {
     _uploads: []AtlasUpload,
     _allocator: std.mem.Allocator,
 
+    /// Release owned batch buffers.
     pub fn deinit(self: *OwnedRenderBatch) void {
         self._allocator.free(self._fills);
         self._allocator.free(self._glyphs);
