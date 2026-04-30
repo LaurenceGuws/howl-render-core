@@ -147,6 +147,108 @@ pub const OwnedRenderBatch = struct {
     }
 };
 
+fn tryAppendProceduralGlyph(
+    fills: *std.ArrayList(FillRect),
+    allocator: std.mem.Allocator,
+    cell: CellInput,
+    codepoint: u21,
+    cell_x: i32,
+    cell_y: i32,
+    cell_w: u16,
+    cell_h: u16,
+) !bool {
+    if (codepoint < 0x2500 or codepoint > 0x259F) return false;
+    const th_h: u16 = @max(1, cell_h / 8);
+    const th_v: u16 = @max(1, cell_w / 8);
+
+    switch (codepoint) {
+        0x2500 => { // ─
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            return true;
+        },
+        0x2502 => { // │
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x250C => { // ┌
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2510 => { // ┐
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2514 => { // └
+            try appendHBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2518 => { // ┘
+            try appendHBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x251C => { // ├
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2524 => { // ┤
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x252C, 0x2534, 0x253C => { // ┬ ┴ ┼
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2580 => { // ▀
+            try fills.append(allocator, .{ .x = cell_x, .y = cell_y, .width = cell_w, .height = @max(1, cell_h / 2), .color = cell.fg });
+            return true;
+        },
+        0x2584 => { // ▄
+            const hh: u16 = @max(1, cell_h / 2);
+            try fills.append(allocator, .{ .x = cell_x, .y = cell_y + @as(i32, @intCast(cell_h - hh)), .width = cell_w, .height = hh, .color = cell.fg });
+            return true;
+        },
+        0x2588 => { // █
+            try fills.append(allocator, .{ .x = cell_x, .y = cell_y, .width = cell_w, .height = cell_h, .color = cell.fg });
+            return true;
+        },
+        0x258C => { // ▌
+            try fills.append(allocator, .{ .x = cell_x, .y = cell_y, .width = @max(1, cell_w / 2), .height = cell_h, .color = cell.fg });
+            return true;
+        },
+        0x2590 => { // ▐
+            const hw: u16 = @max(1, cell_w / 2);
+            try fills.append(allocator, .{ .x = cell_x + @as(i32, @intCast(cell_w - hw)), .y = cell_y, .width = hw, .height = cell_h, .color = cell.fg });
+            return true;
+        },
+        else => return false,
+    }
+}
+
+fn appendH(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const yy = y + @as(i32, @intCast((h - t) / 2));
+    try fills.append(allocator, .{ .x = x, .y = yy, .width = w, .height = t, .color = color });
+}
+
+fn appendHBottom(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    try fills.append(allocator, .{ .x = x, .y = y + @as(i32, @intCast(h - t)), .width = w, .height = t, .color = color });
+}
+
+fn appendV(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const xx = x + @as(i32, @intCast((w - t) / 2));
+    try fills.append(allocator, .{ .x = xx, .y = y, .width = t, .height = h, .color = color });
+}
+
+fn appendVRight(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    try fills.append(allocator, .{ .x = x + @as(i32, @intCast(w - t)), .y = y, .width = t, .height = h, .color = color });
+}
+
 /// Build an owned backend-neutral draw batch from a complete frame input.
 pub fn renderBatch(
     allocator: std.mem.Allocator,
@@ -187,6 +289,18 @@ pub fn renderBatch(
                 .height = frame.cell_px.height,
                 .color = cell.bg,
             });
+
+            const procedural = try tryAppendProceduralGlyph(
+                &fills,
+                allocator,
+                cell,
+                cell.codepoint,
+                cell_x,
+                cell_y,
+                frame.cell_px.width,
+                frame.cell_px.height,
+            );
+            if (procedural) continue;
 
             if (glyphs_enabled and cell.codepoint > 0x20 and !cell.continuation) {
                 const slot = if (glyph_slots.get(cell.codepoint)) |existing| existing else blk: {
@@ -572,6 +686,23 @@ test "render_batch: continuation cells are skipped for glyph quads" {
 
     try std.testing.expectEqual(@as(usize, 2), owned.batch.glyphs.len);
     try std.testing.expectEqual(@as(usize, 2), owned.batch.atlas_uploads.len);
+}
+
+test "render_batch: box drawing chars render procedurally without atlas upload" {
+    const cells = [_]CellInput{
+        makeCell(0x2500, white, black), // ─
+        makeCell(0x2502, white, black), // │
+    };
+    var owned = try renderBatch(std.testing.allocator, .{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 8 },
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
+    }, testCapability(8));
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), owned.batch.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 0), owned.batch.atlas_uploads.len);
+    try std.testing.expect(owned.batch.fills.len > 2);
 }
 
 test "render_batch: fill pixel positions match cell geometry" {
