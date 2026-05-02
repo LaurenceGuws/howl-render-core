@@ -83,6 +83,16 @@ pub const RenderCore = struct {
     pub fn summarizeRenderBatch(_: *const RenderCore, batch: RenderBatch) RenderBatchStats {
         return render_batch.summarizeRenderBatch(batch);
     }
+
+    /// Derive grid dimensions from pixel-space area and cell-size policy.
+    pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
+        const cell_w: u16 = if (cell_px.width == 0) 1 else cell_px.width;
+        const cell_h: u16 = if (cell_px.height == 0) 1 else cell_px.height;
+        return .{
+            .cols = @max(1, @divTrunc(grid_px.width, cell_w)),
+            .rows = @max(1, @divTrunc(grid_px.height, cell_h)),
+        };
+    }
 };
 
 test "render-core object: validate and summarize surface" {
