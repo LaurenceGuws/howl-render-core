@@ -2,7 +2,7 @@
     .name = .howl_render_core,
     .version = "0.0.0",
     .fingerprint = 0xdb357d0e8eaa43fd,
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .dependencies = .{},
     .paths = .{
         "build.zig",
