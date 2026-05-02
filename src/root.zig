@@ -1,18 +1,57 @@
-//! Responsibility: export the render-core object surface.
+//! Responsibility: export the render-core package surface.
 //! Ownership: package API boundary.
-//! Reason: keep exports boring, stable, and object-first.
+//! Reason: keep exports explicit and stable.
 
-/// Canonical render-core package object.
-pub const RenderCore = struct {
-    /// Primary render-core facade.
-    pub const RenderCore = @import("render_core.zig").RenderCore;
+pub const RenderCore = @import("render_core.zig").RenderCore;
+pub const BackendConfig = RenderCore.BackendConfig;
+pub const BackendCapability = RenderCore.BackendCapability;
+pub const PixelSize = RenderCore.PixelSize;
+pub const CellSize = RenderCore.CellSize;
+pub const GridSize = RenderCore.GridSize;
+pub const Rgba8 = RenderCore.Rgba8;
+pub const FillRect = RenderCore.FillRect;
+pub const GlyphQuad = RenderCore.GlyphQuad;
+pub const CursorShape = RenderCore.CursorShape;
+pub const CursorDraw = RenderCore.CursorDraw;
+pub const AtlasUpload = RenderCore.AtlasUpload;
+pub const RenderBatchStats = RenderCore.RenderBatchStats;
+pub const RenderBatch = RenderCore.RenderBatch;
+pub const CellInput = RenderCore.CellInput;
+pub const GridInput = RenderCore.GridInput;
+pub const CursorInput = RenderCore.CursorInput;
+pub const VtState = RenderCore.VtState;
+pub const FrameTheme = RenderCore.FrameTheme;
+pub const OwnedRenderBatch = RenderCore.OwnedRenderBatch;
+pub const SurfaceState = RenderCore.SurfaceState;
+pub const SurfaceColor = RenderCore.SurfaceColor;
+pub const SurfaceCellFlags = RenderCore.SurfaceCellFlags;
+pub const SurfaceCellAttrs = RenderCore.SurfaceCellAttrs;
+pub const SurfaceCell = RenderCore.SurfaceCell;
+pub const SurfaceGridModel = RenderCore.SurfaceGridModel;
+pub const SurfaceViewportInfo = RenderCore.SurfaceViewportInfo;
+pub const SurfaceCursorShape = RenderCore.SurfaceCursorShape;
+pub const SurfaceCursorInfo = RenderCore.SurfaceCursorInfo;
+pub const SurfaceFrameData = RenderCore.SurfaceFrameData;
+pub const RenderBatchValidationError = RenderCore.RenderBatchValidationError;
+pub const RenderBatchBuildError = RenderCore.RenderBatchBuildError;
+pub const FrameGeometryError = RenderCore.FrameGeometryError;
+pub const defaultTheme = RenderCore.defaultTheme;
 
-    /// Internal text-stack helpers exposed behind one namespace.
-    pub const TextStack = struct {
-        pub const atlas = @import("text_stack/atlas.zig");
-        pub const shaping = @import("text_stack/shaping.zig");
-        pub const fallback = @import("text_stack/fallback.zig");
-        pub const system_fallback = @import("text_stack/system_fallback.zig");
-        pub const special_glyphs = @import("text_stack/special_glyphs.zig");
-    };
+pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
+    return RenderCore.init(config, capability);
+}
+
+pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
+    return RenderCore.deriveGridSize(grid_px, cell_px);
+}
+
+pub fn deriveGridForFrame(render_px: PixelSize, grid_px: PixelSize, cell_px: CellSize) FrameGeometryError!GridSize {
+    return RenderCore.deriveGridForFrame(render_px, grid_px, cell_px);
+}
+
+pub const TextStack = struct {
+    pub const atlas = @import("text_stack/atlas.zig");
+    pub const shaping = @import("text_stack/shaping.zig");
+    pub const fallback = @import("text_stack/fallback.zig");
+    pub const special_glyphs = @import("text_stack/special_glyphs.zig");
 };
