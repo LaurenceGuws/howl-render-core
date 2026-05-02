@@ -3,7 +3,7 @@
 //! Reason: keep exports boring, stable, and object-first.
 
 /// Canonical render-core package object.
-pub const RenderCoreModule = struct {
+pub const RenderCore = struct {
     /// Primary render-core facade.
     pub const RenderCore = @import("render_core.zig").RenderCore;
 

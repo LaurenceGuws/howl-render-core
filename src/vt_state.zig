@@ -76,7 +76,7 @@ pub fn vtStateToRenderBatch(
     surface_px: render_batch.PixelSize,
     cell_px: render_batch.CellSize,
     capability: render_batch.BackendCapability,
-) !render_batch.OwnedRenderBatch {
+) render_batch.RenderBatchBuildError!render_batch.OwnedRenderBatch {
     return vtStateToRenderBatchWithTheme(
         allocator,
         state,
@@ -94,7 +94,7 @@ pub fn vtStateToRenderBatchWithTheme(
     cell_px: render_batch.CellSize,
     t: FrameTheme,
     capability: render_batch.BackendCapability,
-) !render_batch.OwnedRenderBatch {
+) render_batch.RenderBatchBuildError!render_batch.OwnedRenderBatch {
     const cell_inputs = try allocator.alloc(render_batch.CellInput, state.grid.cells.len);
     defer allocator.free(cell_inputs);
 

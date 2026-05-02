@@ -269,12 +269,16 @@ fn appendVRight(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x
     try fills.append(allocator, .{ .x = x + @as(i32, @intCast(w - t)), .y = y, .width = t, .height = h, .color = color });
 }
 
+pub const RenderBatchBuildError = error{
+    OutOfMemory,
+};
+
 /// Build an owned backend-neutral draw batch from a complete frame input.
 pub fn renderBatch(
     allocator: std.mem.Allocator,
     frame: VtState,
     capability: BackendCapability,
-) !OwnedRenderBatch {
+) RenderBatchBuildError!OwnedRenderBatch {
     const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
     const visible = @min(cell_count, frame.grid.cells.len);
 

@@ -38,6 +38,7 @@ pub const RenderCore = struct {
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
     pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
+    pub const RenderBatchBuildError = render_batch.RenderBatchBuildError;
     pub const defaultTheme = vt_state.default_theme;
 
     config: render_batch.BackendConfig,
@@ -50,7 +51,7 @@ pub const RenderCore = struct {
         };
     }
 
-    pub fn renderBatch(self: *const RenderCore, allocator: std.mem.Allocator, frame: VtState) !OwnedRenderBatch {
+    pub fn renderBatch(self: *const RenderCore, allocator: std.mem.Allocator, frame: VtState) RenderBatchBuildError!OwnedRenderBatch {
         return render_batch.renderBatch(allocator, frame, self.capability);
     }
 
@@ -60,7 +61,7 @@ pub const RenderCore = struct {
         state: anytype,
         surface_px: PixelSize,
         cell_px: CellSize,
-    ) !OwnedRenderBatch {
+    ) RenderBatchBuildError!OwnedRenderBatch {
         return vt_state.vtStateToRenderBatch(allocator, state, surface_px, cell_px, self.capability);
     }
 
@@ -71,7 +72,7 @@ pub const RenderCore = struct {
         surface_px: PixelSize,
         cell_px: CellSize,
         theme: FrameTheme,
-    ) !OwnedRenderBatch {
+    ) RenderBatchBuildError!OwnedRenderBatch {
         return vt_state.vtStateToRenderBatchWithTheme(allocator, state, surface_px, cell_px, theme, self.capability);
     }
 
