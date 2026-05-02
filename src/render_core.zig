@@ -39,6 +39,10 @@ pub const RenderCore = struct {
     pub const SurfaceFrameData = surface.FrameData;
     pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
     pub const RenderBatchBuildError = render_batch.RenderBatchBuildError;
+    pub const FrameGeometryError = error{
+        InvalidSurfaceSize,
+        InvalidGridSize,
+    };
     pub const defaultTheme = vt_state.default_theme;
 
     config: render_batch.BackendConfig,
@@ -92,6 +96,13 @@ pub const RenderCore = struct {
             .cols = @max(1, @divTrunc(grid_px.width, cell_w)),
             .rows = @max(1, @divTrunc(grid_px.height, cell_h)),
         };
+    }
+
+    /// Validate frame geometry inputs and derive grid dimensions.
+    pub fn deriveGridForFrame(render_px: PixelSize, grid_px: PixelSize, cell_px: CellSize) FrameGeometryError!GridSize {
+        if (render_px.width == 0 or render_px.height == 0) return error.InvalidSurfaceSize;
+        if (grid_px.width == 0 or grid_px.height == 0) return error.InvalidGridSize;
+        return deriveGridSize(grid_px, cell_px);
     }
 };
 
