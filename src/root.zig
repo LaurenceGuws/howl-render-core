@@ -62,6 +62,7 @@ pub const RenderBatchValidationError = RenderCore.RenderBatchValidationError;
 pub const RenderBatchBuildError = RenderCore.RenderBatchBuildError;
 pub const FrameGeometryError = RenderCore.FrameGeometryError;
 pub const defaultTheme = RenderCore.defaultTheme;
+pub const TextStack = @import("TextStack.zig").TextStack;
 
 pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
     return RenderCore.init(config, capability);
@@ -74,13 +75,6 @@ pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
 pub fn deriveGridForFrame(render_px: PixelSize, grid_px: PixelSize, cell_px: CellSize) FrameGeometryError!GridSize {
     return RenderCore.deriveGridForFrame(render_px, grid_px, cell_px);
 }
-
-pub const TextStack = struct {
-    pub const atlas = @import("text_stack/atlas.zig");
-    pub const shaping = @import("text_stack/shaping.zig");
-    pub const fallback = @import("text_stack/fallback.zig");
-    pub const special_glyphs = @import("text_stack/special_glyphs.zig");
-};
 
 test {
     _ = @import("test/root.zig");
