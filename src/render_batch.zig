@@ -8,6 +8,7 @@ const std = @import("std");
 pub const BackendConfig = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
+    font_size_px: u16 = 16,
     font_path: ?[:0]const u8 = null,
     target_texture: u32 = 0,
 };
