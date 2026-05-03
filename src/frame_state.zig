@@ -51,7 +51,7 @@ pub const GridModel = struct {
 pub const ViewportInfo = struct {
     cols: u16,
     rows: u16,
-    scroll_row: u16 = 0,
+    scroll_row: usize = 0,
     is_alternate_screen: bool = false,
 };
 
