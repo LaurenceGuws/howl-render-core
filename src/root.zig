@@ -2,7 +2,7 @@
 //! Ownership: package API boundary.
 //! Reason: keep exports explicit and stable.
 
-/// Canonical render-core package object.
+/// Canonical render-core package owner.
 pub const RenderCore = @import("render_core.zig").RenderCore;
 pub const BackendConfig = RenderCore.BackendConfig;
 pub const BackendCapability = RenderCore.BackendCapability;

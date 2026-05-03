@@ -1,6 +1,6 @@
 //! Responsibility: own the public text-stack support surface.
 //! Ownership: render-core text shaping/raster support boundary.
-//! Reason: keep root exports boring while leaf modules stay grouped.
+//! Reason: keep root exports boring while text-stack units stay grouped.
 
 /// Canonical public text-stack support surface.
 pub const TextStack = struct {

@@ -1,7 +1,8 @@
-//! Responsibility: glyph fallback raster helpers.
+//! Responsibility: own shared fallback raster policy for backend owners.
 //! Ownership: render-core text stack.
 //! Reason: keep fallback raster policy consistent across GL/GLES implementations.
 
+/// Rasterize the fallback placeholder used for unresolved glyphs.
 pub fn rasterAsciiOrPlaceholder(dst: []u8, cell_w: u16, codepoint: u21, gw: u16, gh: u16) void {
     _ = codepoint;
     rasterPlaceholder(dst, cell_w, gw, gh);

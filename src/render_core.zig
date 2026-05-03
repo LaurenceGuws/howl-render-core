@@ -1,4 +1,4 @@
-//! Responsibility: provide a single render-core object surface.
+//! Responsibility: provide a single render-core owner surface.
 //! Ownership: render-core orchestration API.
 //! Reason: keep hosts/backends on one coherent entrypoint.
 
