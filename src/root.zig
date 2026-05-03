@@ -2,6 +2,7 @@
 //! Ownership: package API boundary.
 //! Reason: keep exports explicit and stable.
 
+/// Canonical render-core package object.
 pub const RenderCore = @import("render_core.zig").RenderCore;
 pub const BackendConfig = RenderCore.BackendConfig;
 pub const BackendCapability = RenderCore.BackendCapability;
@@ -62,16 +63,20 @@ pub const RenderBatchValidationError = RenderCore.RenderBatchValidationError;
 pub const RenderBatchBuildError = RenderCore.RenderBatchBuildError;
 pub const FrameGeometryError = RenderCore.FrameGeometryError;
 pub const defaultTheme = RenderCore.defaultTheme;
+/// Public text-stack support surface.
 pub const TextStack = @import("TextStack.zig").TextStack;
 
+/// Construct a render-core object from backend policy inputs.
 pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
     return RenderCore.init(config, capability);
 }
 
+/// Derive grid dimensions from pixel geometry and cell size.
 pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
     return RenderCore.deriveGridSize(grid_px, cell_px);
 }
 
+/// Validate frame geometry and derive grid dimensions.
 pub fn deriveGridForFrame(render_px: PixelSize, grid_px: PixelSize, cell_px: CellSize) FrameGeometryError!GridSize {
     return RenderCore.deriveGridForFrame(render_px, grid_px, cell_px);
 }
