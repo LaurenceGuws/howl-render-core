@@ -81,3 +81,7 @@ pub const TextStack = struct {
     pub const fallback = @import("text_stack/fallback.zig");
     pub const special_glyphs = @import("text_stack/special_glyphs.zig");
 };
+
+test {
+    _ = @import("test/root.zig");
+}
