@@ -40,6 +40,7 @@ pub const Cell = struct {
     fg_color: Color = .{ .kind = .default, .value = 0 },
     bg_color: Color = .{ .kind = .default, .value = 0 },
     attrs: CellAttrs = .{},
+    link_id: u32 = 0,
 };
 
 pub const GridModel = struct {

@@ -34,8 +34,10 @@ classDiagram
 
 ## Ownership Rules
 - `RenderCore` owns backend-neutral batch shapes and validation rules.
-- `TextStack` owns shared atlas math, shaping policy, fallback policy, and special glyph logic.
+- `TextStack` owns shared atlas math, line/run/group text vocabulary, fallback policy, metrics policy, and special glyph logic.
 - Backend repos should depend on these contracts, not re-invent them privately.
+- `GlyphQuad` is final GPU submission data. It is not the shaping input model.
+- Font and glyph decisions should flow through a kitty-style text path: cell text -> resolved runs -> shaped glyph groups -> sprite/atlas positions -> glyph quads.
 
 ## Lifecycle
 ```mermaid
@@ -66,6 +68,9 @@ sequenceDiagram
 - `vtStateToRenderBatch*` allocates owned batch buffers that callers must release.
 - `validateRenderBatch` is the backend-facing contract check before render.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.
+- Text contracts must represent whole cell text and shaped groups, not only isolated codepoints.
+- Fallback contracts must validate whole cell text against selected faces.
+- GL and GLES should consume the same metrics, resolver, and sprite-key contracts.
 
 ## Non-Goals
 - GPU resource ownership.
