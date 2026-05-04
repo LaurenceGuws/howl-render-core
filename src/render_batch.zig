@@ -201,32 +201,32 @@ fn tryAppendProceduralGlyph(
             return true;
         },
         0x250C => { // ┌
-            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
-            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            try appendHRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
         0x2510 => { // ┐
-            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
-            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            try appendHLeft(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
         0x2514 => { // └
-            try appendHBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
-            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            try appendHRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVTop(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
         0x2518 => { // ┘
-            try appendHBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
-            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            try appendHLeft(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVTop(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
         0x251C => { // ├
-            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
-            try appendVRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            try appendHRight(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
         0x2524 => { // ┤
-            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendHLeft(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
             try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
@@ -266,6 +266,19 @@ fn appendH(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32
     try fills.append(allocator, .{ .x = x, .y = yy, .width = w, .height = t, .color = color });
 }
 
+fn appendHLeft(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const yy = y + @as(i32, @intCast((h - t) / 2));
+    const ww = @max(@divFloor(w + t, 2), 1);
+    try fills.append(allocator, .{ .x = x, .y = yy, .width = ww, .height = t, .color = color });
+}
+
+fn appendHRight(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const yy = y + @as(i32, @intCast((h - t) / 2));
+    const xx = x + @as(i32, @intCast((w - t) / 2));
+    const ww = w - @as(u16, @intCast((w - t) / 2));
+    try fills.append(allocator, .{ .x = xx, .y = yy, .width = ww, .height = t, .color = color });
+}
+
 fn appendHBottom(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
     try fills.append(allocator, .{ .x = x, .y = y + @as(i32, @intCast(h - t)), .width = w, .height = t, .color = color });
 }
@@ -273,6 +286,19 @@ fn appendHBottom(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, 
 fn appendV(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
     const xx = x + @as(i32, @intCast((w - t) / 2));
     try fills.append(allocator, .{ .x = xx, .y = y, .width = t, .height = h, .color = color });
+}
+
+fn appendVTop(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const xx = x + @as(i32, @intCast((w - t) / 2));
+    const hh = @max(@divFloor(h + t, 2), 1);
+    try fills.append(allocator, .{ .x = xx, .y = y, .width = t, .height = hh, .color = color });
+}
+
+fn appendVBottom(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
+    const xx = x + @as(i32, @intCast((w - t) / 2));
+    const yy = y + @as(i32, @intCast((h - t) / 2));
+    const hh = h - @as(u16, @intCast((h - t) / 2));
+    try fills.append(allocator, .{ .x = xx, .y = yy, .width = t, .height = hh, .color = color });
 }
 
 fn appendVRight(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x: i32, y: i32, w: u16, h: u16, t: u16, color: Rgba8) !void {
