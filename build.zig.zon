@@ -5,10 +5,10 @@
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .freetype = .{
-            .path = "../vendor/freetype-zig",
+            .path = "vendor/freetype-zig",
         },
         .harfbuzz = .{
-            .path = "../vendor/harfbuzz-zig",
+            .path = "vendor/harfbuzz-zig",
         },
     },
     .paths = .{
