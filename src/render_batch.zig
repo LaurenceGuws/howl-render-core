@@ -230,7 +230,17 @@ fn tryAppendProceduralGlyph(
             try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
         },
-        0x252C, 0x2534, 0x253C => { // ┬ ┴ ┼
+        0x252C => { // ┬
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVBottom(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x2534 => { // ┴
+            try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
+            try appendVTop(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
+            return true;
+        },
+        0x253C => { // ┼
             try appendH(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_h, cell.fg);
             try appendV(fills, allocator, cell_x, cell_y, cell_w, cell_h, th_v, cell.fg);
             return true;
@@ -725,6 +735,35 @@ test "render_batch: box drawing chars render procedurally without atlas upload" 
     try std.testing.expectEqual(@as(usize, 0), owned.batch.glyphs.len);
     try std.testing.expectEqual(@as(usize, 0), owned.batch.atlas_uploads.len);
     try std.testing.expect(owned.batch.fills.len > 2);
+}
+
+test "render_batch: tee glyphs only draw vertical half stems" {
+    const cells = [_]CellInput{
+        makeCell(0x252C, white, black), // ┬
+        makeCell(0x2534, white, black), // ┴
+        makeCell(0x253C, white, black), // ┼
+    };
+    var owned = try renderBatch(std.testing.allocator, .{
+        .surface_px = .{ .width = 24, .height = 24 },
+        .cell_px = .{ .width = 8, .height = 8 },
+        .grid = .{ .cells = &cells, .cols = 3, .rows = 1 },
+    }, testCapability(8));
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 9), owned.batch.fills.len);
+    const tee_down_v = owned.batch.fills[2];
+    const tee_up_v = owned.batch.fills[5];
+    const cross_v = owned.batch.fills[8];
+
+    try std.testing.expectEqual(@as(i32, 3), tee_down_v.x);
+    try std.testing.expectEqual(@as(i32, 3), tee_down_v.y);
+    try std.testing.expectEqual(@as(c_int, 5), tee_down_v.height);
+    try std.testing.expectEqual(@as(i32, 11), tee_up_v.x);
+    try std.testing.expectEqual(@as(i32, 0), tee_up_v.y);
+    try std.testing.expectEqual(@as(c_int, 4), tee_up_v.height);
+    try std.testing.expectEqual(@as(i32, 19), cross_v.x);
+    try std.testing.expectEqual(@as(i32, 0), cross_v.y);
+    try std.testing.expectEqual(@as(c_int, 8), cross_v.height);
 }
 
 test "render_batch: fill pixel positions match cell geometry" {
