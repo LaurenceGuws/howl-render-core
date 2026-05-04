@@ -115,6 +115,7 @@ pub const Backend = struct {
     atlas_slot_codepoint: []u21 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
+    atlas_next_slot: u32 = 0,
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
@@ -292,6 +293,23 @@ pub const Backend = struct {
         return self.renderBatch(owned.batch);
     }
 
+    pub fn prepareFrameState(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+    ) BackendError!render_core.OwnedRenderBatch {
+        try self.resize(surface_px, cell_px);
+        const rc = render_core.init(self.config, self.capabilities());
+        return rc.vtStateToRenderBatch(
+            allocator,
+            state,
+            surface_px,
+            cell_px,
+        );
+    }
+
     fn beginTargetPass(self: *Backend) BackendError!void {
         if (self.target_texture == null) return error.TargetTextureUnset;
         if (self.target_fbo == 0) {
@@ -387,14 +405,10 @@ pub const Backend = struct {
         try self.ensureAtlasStorage();
         var committed: usize = 0;
         for (batch.atlas_uploads) |upload| {
-            if (upload.slot >= self.capabilities().max_atlas_slots) continue;
-            if (self.slotCached(upload.slot, upload.codepoint, upload.width, upload.height)) continue;
-            if (self.copyFromMatchingSlot(upload.slot, upload.codepoint, upload.width, upload.height)) {
-                self.markSlotCached(upload.slot, upload.codepoint, upload.width, upload.height);
-                continue;
-            }
-            self.rasterizeSlot(upload.slot, upload.codepoint, upload.width, upload.height);
-            self.markSlotCached(upload.slot, upload.codepoint, upload.width, upload.height);
+            if (self.findCachedSlot(upload.codepoint, upload.width, upload.height) != null) continue;
+            const slot = self.allocateSlot() orelse continue;
+            self.rasterizeSlot(slot, upload.codepoint, upload.width, upload.height);
+            self.markSlotCached(slot, upload.codepoint, upload.width, upload.height);
             committed += 1;
         }
         return committed;
@@ -434,6 +448,7 @@ pub const Backend = struct {
         self.atlas_cell_w = need_w;
         self.atlas_cell_h = need_h;
         self.atlas_slot_stride = need_stride;
+        self.atlas_next_slot = 0;
     }
 
     fn slotCached(self: *const Backend, slot: u32, codepoint: u21, width: u16, height: u16) bool {
@@ -444,32 +459,36 @@ pub const Backend = struct {
             self.atlas_slot_height[idx] == height;
     }
 
+    fn findCachedSlot(self: *const Backend, codepoint: u21, width: u16, height: u16) ?u32 {
+        var idx: usize = 0;
+        while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
+            if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
+            if (self.atlas_slot_codepoint[idx] != codepoint) continue;
+            if (self.atlas_slot_width[idx] != width or self.atlas_slot_height[idx] != height) continue;
+            return @intCast(idx);
+        }
+        return null;
+    }
+
+    fn allocateSlot(self: *Backend) ?u32 {
+        var idx: usize = 0;
+        while (idx < self.atlas_slot_width.len) : (idx += 1) {
+            if (self.atlas_slot_width[idx] == 0 and self.atlas_slot_height[idx] == 0) {
+                return @intCast(idx);
+            }
+        }
+        if (self.atlas_slot_width.len == 0) return null;
+        const slot = self.atlas_next_slot;
+        self.atlas_next_slot = (self.atlas_next_slot + 1) % self.capabilities().max_atlas_slots;
+        return slot;
+    }
+
     fn markSlotCached(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
         const idx = @as(usize, slot);
         if (idx >= self.atlas_slot_codepoint.len) return;
         self.atlas_slot_codepoint[idx] = codepoint;
         self.atlas_slot_width[idx] = width;
         self.atlas_slot_height[idx] = height;
-    }
-
-    fn copyFromMatchingSlot(self: *Backend, dst_slot: u32, codepoint: u21, width: u16, height: u16) bool {
-        if (self.atlas_pixels.len == 0) return false;
-        const dst_idx = @as(usize, dst_slot);
-        if (dst_idx >= self.atlas_slot_codepoint.len) return false;
-        var src_idx: usize = 0;
-        while (src_idx < self.atlas_slot_codepoint.len) : (src_idx += 1) {
-            if (src_idx == dst_idx) continue;
-            if (self.atlas_slot_codepoint[src_idx] != codepoint) continue;
-            if (self.atlas_slot_width[src_idx] != width or self.atlas_slot_height[src_idx] != height) continue;
-            const src_off = src_idx * self.atlas_slot_stride;
-            const dst_off = dst_idx * self.atlas_slot_stride;
-            @memcpy(
-                self.atlas_pixels[dst_off .. dst_off + self.atlas_slot_stride],
-                self.atlas_pixels[src_off .. src_off + self.atlas_slot_stride],
-            );
-            return true;
-        }
-        return false;
     }
 
     fn rasterizeSlot(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
@@ -682,12 +701,11 @@ fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: ren
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     }
-    const slot = @as(usize, glyph.atlas_slot);
-    const cap_slots = backend.capabilities().max_atlas_slots;
-    if (slot >= cap_slots) {
+    const cached_slot = backend.findCachedSlot(glyph.codepoint, glyph.width, glyph.height) orelse {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
-    }
+    };
+    const slot = @as(usize, cached_slot);
     const slot_index = slot * backend.atlas_slot_stride;
     if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
@@ -791,7 +809,7 @@ test "backend executes valid batch and reports stats" {
     try std.testing.expectEqual(@as(u64, 1), report.pass_index);
 }
 
-test "backend propagates atlas slot validation errors" {
+test "backend accepts backend-owned atlas uploads" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 800, .height = 600 },
         .cell_px = .{ .width = 10, .height = 20 },
@@ -799,7 +817,7 @@ test "backend propagates atlas slot validation errors" {
     defer backend.deinit();
 
     const uploads = [_]render_core.AtlasUpload{
-        .{ .slot = 5000, .codepoint = 'A', .width = 10, .height = 20 },
+        .{ .codepoint = 'A', .width = 10, .height = 20 },
     };
     const batch = render_core.RenderBatch{
         .surface_px = .{ .width = 800, .height = 600 },
@@ -808,7 +826,8 @@ test "backend propagates atlas slot validation errors" {
         .atlas_uploads = &uploads,
     };
 
-    try std.testing.expectError(error.AtlasSlotOutOfRange, backend.renderBatch(batch));
+    const report = try backend.renderBatch(batch);
+    try std.testing.expectEqual(@as(usize, 1), report.stats.atlas_uploads);
 }
 
 test "backend resize updates config dimensions" {

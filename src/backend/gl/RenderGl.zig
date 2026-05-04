@@ -98,6 +98,7 @@ pub fn deriveGridForFrame(
 /// GL backend implementation consuming render-core apis.
 pub const Backend = struct {
     const MaxFallbackFonts = 24;
+    const AtlasTexCols: usize = 64;
 
     config: render_core.BackendConfig,
     pass_count: u64 = 0,
@@ -109,6 +110,10 @@ pub const Backend = struct {
     atlas_slot_codepoint: []u21 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
+    atlas_next_slot: u32 = 0,
+    atlas_texture: u32 = 0,
+    atlas_tex_width: u16 = 0,
+    atlas_tex_height: u16 = 0,
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
@@ -154,6 +159,10 @@ pub const Backend = struct {
         if (self.ft_lib != null) {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
+        }
+        if (self.atlas_texture != 0 and hasCurrentContext()) {
+            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+            self.atlas_texture = 0;
         }
         if (self.target_fbo != 0 and hasCurrentContext()) {
             c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
@@ -291,22 +300,63 @@ pub const Backend = struct {
         return self.renderBatch(owned.batch);
     }
 
+    pub fn prepareFrameState(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+    ) BackendError!render_core.OwnedRenderBatch {
+        try self.resize(surface_px, cell_px);
+        const rc = render_core.init(self.config, self.capabilities());
+        return rc.vtStateToRenderBatch(
+            allocator,
+            state,
+            surface_px,
+            cell_px,
+        );
+    }
+
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
         if (batch.atlas_uploads.len == 0) return 0;
         try self.ensureAtlasStorage();
+        if (hasCurrentContext()) try self.ensureAtlasTexture();
         var committed: usize = 0;
         for (batch.atlas_uploads) |upload| {
-            if (upload.slot >= self.capabilities().max_atlas_slots) continue;
-            if (self.slotCached(upload.slot, upload.codepoint, upload.width, upload.height)) continue;
-            if (self.copyFromMatchingSlot(upload.slot, upload.codepoint, upload.width, upload.height)) {
-                self.markSlotCached(upload.slot, upload.codepoint, upload.width, upload.height);
-                continue;
-            }
-            self.rasterizeSlot(upload.slot, upload.codepoint, upload.width, upload.height);
-            self.markSlotCached(upload.slot, upload.codepoint, upload.width, upload.height);
+            if (self.findCachedSlot(upload.codepoint, upload.width, upload.height) != null) continue;
+            const slot = self.allocateSlot() orelse continue;
+            self.rasterizeSlot(slot, upload.codepoint, upload.width, upload.height);
+            self.markSlotCached(slot, upload.codepoint, upload.width, upload.height);
+            if (hasCurrentContext()) self.uploadAtlasSlot(slot);
             committed += 1;
         }
         return committed;
+    }
+
+    fn uploadAtlasSlot(self: *Backend, slot: u32) void {
+        if (self.atlas_texture == 0 or self.atlas_pixels.len == 0) return;
+        const slot_idx = @as(usize, slot);
+        const slot_off = slot_idx * self.atlas_slot_stride;
+        if (slot_off + self.atlas_slot_stride > self.atlas_pixels.len) return;
+        const cols = @min(self.capabilities().max_atlas_slots, AtlasTexCols);
+        const cell_w = @as(usize, self.atlas_cell_w);
+        const cell_h = @as(usize, self.atlas_cell_h);
+        const x = (slot_idx % cols) * cell_w;
+        const y = (slot_idx / cols) * cell_h;
+        c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
+        c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+        c.glTexSubImage2D(
+            c.GL_TEXTURE_2D,
+            0,
+            @as(c_int, @intCast(x)),
+            @as(c_int, @intCast(y)),
+            @as(c_int, @intCast(cell_w)),
+            @as(c_int, @intCast(cell_h)),
+            c.GL_ALPHA,
+            c.GL_UNSIGNED_BYTE,
+            self.atlas_pixels[slot_off..].ptr,
+        );
+        c.glBindTexture(c.GL_TEXTURE_2D, 0);
     }
 
     fn ensureAtlasStorage(self: *Backend) BackendError!void {
@@ -343,6 +393,50 @@ pub const Backend = struct {
         self.atlas_cell_w = need_w;
         self.atlas_cell_h = need_h;
         self.atlas_slot_stride = need_stride;
+        self.atlas_next_slot = 0;
+        if (self.atlas_texture != 0 and hasCurrentContext()) {
+            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+            self.atlas_texture = 0;
+        }
+        self.atlas_tex_width = 0;
+        self.atlas_tex_height = 0;
+    }
+
+    fn ensureAtlasTexture(self: *Backend) BackendError!void {
+        if (!hasCurrentContext()) return;
+        const max_slots = self.capabilities().max_atlas_slots;
+        const cols: usize = @min(max_slots, AtlasTexCols);
+        const rows: usize = std.math.divCeil(usize, max_slots, cols) catch unreachable;
+        const need_w: u16 = @intCast(@as(usize, self.atlas_cell_w) * cols);
+        const need_h: u16 = @intCast(@as(usize, self.atlas_cell_h) * rows);
+        if (self.atlas_texture != 0 and self.atlas_tex_width == need_w and self.atlas_tex_height == need_h) return;
+
+        if (self.atlas_texture != 0) {
+            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+            self.atlas_texture = 0;
+        }
+
+        c.glGenTextures(1, @ptrCast(&self.atlas_texture));
+        c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
+        c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+        c.glTexImage2D(
+            c.GL_TEXTURE_2D,
+            0,
+            c.GL_ALPHA,
+            @as(c_int, @intCast(need_w)),
+            @as(c_int, @intCast(need_h)),
+            0,
+            c.GL_ALPHA,
+            c.GL_UNSIGNED_BYTE,
+            null,
+        );
+        c.glBindTexture(c.GL_TEXTURE_2D, 0);
+        self.atlas_tex_width = need_w;
+        self.atlas_tex_height = need_h;
     }
 
     fn slotCached(self: *const Backend, slot: u32, codepoint: u21, width: u16, height: u16) bool {
@@ -353,32 +447,36 @@ pub const Backend = struct {
             self.atlas_slot_height[idx] == height;
     }
 
+    fn findCachedSlot(self: *const Backend, codepoint: u21, width: u16, height: u16) ?u32 {
+        var idx: usize = 0;
+        while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
+            if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
+            if (self.atlas_slot_codepoint[idx] != codepoint) continue;
+            if (self.atlas_slot_width[idx] != width or self.atlas_slot_height[idx] != height) continue;
+            return @intCast(idx);
+        }
+        return null;
+    }
+
+    fn allocateSlot(self: *Backend) ?u32 {
+        var idx: usize = 0;
+        while (idx < self.atlas_slot_width.len) : (idx += 1) {
+            if (self.atlas_slot_width[idx] == 0 and self.atlas_slot_height[idx] == 0) {
+                return @intCast(idx);
+            }
+        }
+        if (self.atlas_slot_width.len == 0) return null;
+        const slot = self.atlas_next_slot;
+        self.atlas_next_slot = (self.atlas_next_slot + 1) % self.capabilities().max_atlas_slots;
+        return slot;
+    }
+
     fn markSlotCached(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
         const idx = @as(usize, slot);
         if (idx >= self.atlas_slot_codepoint.len) return;
         self.atlas_slot_codepoint[idx] = codepoint;
         self.atlas_slot_width[idx] = width;
         self.atlas_slot_height[idx] = height;
-    }
-
-    fn copyFromMatchingSlot(self: *Backend, dst_slot: u32, codepoint: u21, width: u16, height: u16) bool {
-        if (self.atlas_pixels.len == 0) return false;
-        const dst_idx = @as(usize, dst_slot);
-        if (dst_idx >= self.atlas_slot_codepoint.len) return false;
-        var src_idx: usize = 0;
-        while (src_idx < self.atlas_slot_codepoint.len) : (src_idx += 1) {
-            if (src_idx == dst_idx) continue;
-            if (self.atlas_slot_codepoint[src_idx] != codepoint) continue;
-            if (self.atlas_slot_width[src_idx] != width or self.atlas_slot_height[src_idx] != height) continue;
-            const src_off = src_idx * self.atlas_slot_stride;
-            const dst_off = dst_idx * self.atlas_slot_stride;
-            @memcpy(
-                self.atlas_pixels[dst_off .. dst_off + self.atlas_slot_stride],
-                self.atlas_pixels[src_off .. src_off + self.atlas_slot_stride],
-            );
-            return true;
-        }
-        return false;
     }
 
     fn rasterizeSlot(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
@@ -687,24 +785,54 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     c.glDisable(c.GL_DEPTH_TEST);
     c.glEnable(c.GL_BLEND);
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
+    c.glMatrixMode(c.GL_PROJECTION);
+    c.glPushMatrix();
+    c.glLoadIdentity();
+    c.glOrtho(
+        0.0,
+        @as(f64, @floatFromInt(batch.surface_px.width)),
+        @as(f64, @floatFromInt(batch.surface_px.height)),
+        0.0,
+        -1.0,
+        1.0,
+    );
+    c.glMatrixMode(c.GL_MODELVIEW);
+    c.glPushMatrix();
+    c.glLoadIdentity();
+    c.glDisable(c.GL_TEXTURE_2D);
+    defer {
+        c.glDisable(c.GL_TEXTURE_2D);
+        c.glPopMatrix();
+        c.glMatrixMode(c.GL_PROJECTION);
+        c.glPopMatrix();
+        c.glMatrixMode(c.GL_MODELVIEW);
+    }
     defer c.glDisable(c.GL_BLEND);
 
     for (batch.fills) |fill| drawRect(batch.surface_px, fill.x, fill.y, fill.width, fill.height, fill.color);
+    if (backend.atlas_texture != 0) {
+        c.glEnable(c.GL_TEXTURE_2D);
+        c.glBindTexture(c.GL_TEXTURE_2D, backend.atlas_texture);
+        c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_MODULATE);
+    }
     for (batch.glyphs) |glyph| drawGlyph(backend, batch.surface_px, glyph);
+    if (backend.atlas_texture != 0) {
+        c.glBindTexture(c.GL_TEXTURE_2D, 0);
+        c.glDisable(c.GL_TEXTURE_2D);
+    }
     if (batch.cursor) |cursor| drawCursor(batch, cursor);
 }
 
 fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) void {
-    if (backend.atlas_pixels.len == 0) {
+    if (backend.atlas_texture == 0 or backend.atlas_pixels.len == 0) {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     }
-    const slot = @as(usize, glyph.atlas_slot);
-    const cap_slots = backend.capabilities().max_atlas_slots;
-    if (slot >= cap_slots) {
+    const cached_slot = backend.findCachedSlot(glyph.codepoint, glyph.width, glyph.height) orelse {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
-    }
+    };
+    const slot = @as(usize, cached_slot);
     const slot_index = slot * backend.atlas_slot_stride;
     if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
@@ -717,21 +845,21 @@ fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: ren
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     }
-    var drew_any = false;
+    var has_alpha = false;
     for (0..gh) |yy| {
         for (0..gw) |xx| {
-            const idx = yy * @as(usize, backend.atlas_cell_w) + xx;
-            const alpha = src[idx];
-            if (alpha == 0) continue;
-            drew_any = true;
-            var color = glyph.fg;
-            color.a = @intCast((@as(u16, color.a) * @as(u16, alpha)) / 255);
-            drawRect(surface, glyph.x + @as(i32, @intCast(xx)), glyph.y + @as(i32, @intCast(yy)), 1, 1, color);
+            if (src[yy * @as(usize, backend.atlas_cell_w) + xx] != 0) {
+                has_alpha = true;
+                break;
+            }
         }
+        if (has_alpha) break;
     }
-    if (!drew_any) {
+    if (!has_alpha) {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
+        return;
     }
+    drawTexturedGlyph(backend, surface, glyph, cached_slot, gw, gh);
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
@@ -761,23 +889,43 @@ fn drawCursor(batch: render_core.RenderBatch, cursor: render_core.CursorDraw) vo
 }
 
 fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16, color: render_core.Rgba8) void {
-    const clipped = clip_rect.clipRect(surface, x, y, width, height) orelse return;
-    const inv_255 = 1.0 / 255.0;
-    c.glEnable(c.GL_SCISSOR_TEST);
-    defer c.glDisable(c.GL_SCISSOR_TEST);
-    c.glScissor(
-        clipped.x,
-        clipped.y,
-        clipped.w,
-        clipped.h,
-    );
-    c.glClearColor(
-        @as(f32, @floatFromInt(color.r)) * inv_255,
-        @as(f32, @floatFromInt(color.g)) * inv_255,
-        @as(f32, @floatFromInt(color.b)) * inv_255,
-        @as(f32, @floatFromInt(color.a)) * inv_255,
-    );
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return;
+    c.glDisable(c.GL_TEXTURE_2D);
+    c.glColor4ub(color.r, color.g, color.b, color.a);
+    c.glBegin(c.GL_QUADS);
+    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
+    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
+    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
+    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
+    c.glEnd();
+}
+
+fn drawTexturedGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad, atlas_slot: u32, gw: u16, gh: u16) void {
+    const clipped = clip_rect.clipRectTopOrigin(surface, glyph.x, glyph.y, gw, gh) orelse return;
+    const cols = @min(backend.capabilities().max_atlas_slots, Backend.AtlasTexCols);
+    const slot = @as(usize, atlas_slot);
+    const slot_x = (slot % cols) * @as(usize, backend.atlas_cell_w);
+    const slot_y = (slot / cols) * @as(usize, backend.atlas_cell_h);
+
+    const clip_dx: usize = @intCast(@max(clipped.x - glyph.x, 0));
+    const clip_dy: usize = @intCast(@max(clipped.y - glyph.y, 0));
+    const tex_u0 = @as(f32, @floatFromInt(slot_x + clip_dx)) / @as(f32, @floatFromInt(backend.atlas_tex_width));
+    const tex_v0 = @as(f32, @floatFromInt(slot_y + clip_dy)) / @as(f32, @floatFromInt(backend.atlas_tex_height));
+    const tex_u1 = @as(f32, @floatFromInt(slot_x + clip_dx + @as(usize, @intCast(clipped.w)))) / @as(f32, @floatFromInt(backend.atlas_tex_width));
+    const tex_v1 = @as(f32, @floatFromInt(slot_y + clip_dy + @as(usize, @intCast(clipped.h)))) / @as(f32, @floatFromInt(backend.atlas_tex_height));
+
+    c.glEnable(c.GL_TEXTURE_2D);
+    c.glColor4ub(glyph.fg.r, glyph.fg.g, glyph.fg.b, glyph.fg.a);
+    c.glBegin(c.GL_QUADS);
+    c.glTexCoord2f(tex_u0, tex_v0);
+    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
+    c.glTexCoord2f(tex_u1, tex_v0);
+    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
+    c.glTexCoord2f(tex_u1, tex_v1);
+    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
+    c.glTexCoord2f(tex_u0, tex_v1);
+    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
+    c.glEnd();
 }
 
 test "backend executes valid batch and increments pass index" {

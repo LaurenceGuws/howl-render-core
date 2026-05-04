@@ -1,6 +1,6 @@
 //! Responsibility: build backend-neutral render batches from frame input.
 //! Ownership: render-core batch generation policy.
-//! Reason: keep command ordering and glyph slot assignment shared by all backends.
+//! Reason: keep command ordering shared while atlas residency stays backend-owned.
 
 const std = @import("std");
 
@@ -61,7 +61,6 @@ pub const GlyphQuad = struct {
     y: i32,
     width: u16,
     height: u16,
-    atlas_slot: u32,
     codepoint: u21,
     fg: Rgba8,
     bg: ?Rgba8 = null,
@@ -85,7 +84,6 @@ pub const CursorDraw = struct {
 
 /// Atlas upload command.
 pub const AtlasUpload = struct {
-    slot: u32,
     codepoint: u21,
     width: u16,
     height: u16,
@@ -304,11 +302,10 @@ pub fn renderBatch(
     var uploads = try std.ArrayList(AtlasUpload).initCapacity(allocator, visible);
     errdefer uploads.deinit(allocator);
 
-    var glyph_slots = std.AutoHashMap(u21, u32).init(allocator);
-    defer glyph_slots.deinit();
+    var uploaded_codepoints = std.AutoHashMap(u21, void).init(allocator);
+    defer uploaded_codepoints.deinit();
 
     const glyphs_enabled = capability.supports_glyph_quads and capability.max_atlas_slots > 0;
-    var next_slot: u32 = 0;
 
     for (0..frame.grid.rows) |row| {
         if (!full_redraw and !frame.damage.dirty_rows[row]) continue;
@@ -344,30 +341,22 @@ pub fn renderBatch(
             if (procedural) continue;
 
             if (glyphs_enabled and cell.codepoint > 0x20 and !cell.continuation) {
-                const slot = if (glyph_slots.get(cell.codepoint)) |existing| existing else blk: {
-                    if (next_slot >= capability.max_atlas_slots) break :blk null;
-                    const assigned = next_slot;
-                    try glyph_slots.put(cell.codepoint, assigned);
-                    next_slot += 1;
+                if (!uploaded_codepoints.contains(cell.codepoint)) {
+                    try uploaded_codepoints.put(cell.codepoint, {});
                     try uploads.append(allocator, .{
-                        .slot = assigned,
                         .codepoint = cell.codepoint,
                         .width = frame.cell_px.width,
                         .height = frame.cell_px.height,
-                    });
-                    break :blk assigned;
-                };
-                if (slot) |assigned_slot| {
-                    try glyphs.append(allocator, .{
-                        .x = cell_x,
-                        .y = cell_y,
-                        .width = frame.cell_px.width,
-                        .height = frame.cell_px.height,
-                        .atlas_slot = assigned_slot,
-                        .codepoint = cell.codepoint,
-                        .fg = cell.fg,
                     });
                 }
+                try glyphs.append(allocator, .{
+                    .x = cell_x,
+                    .y = cell_y,
+                    .width = frame.cell_px.width,
+                    .height = frame.cell_px.height,
+                    .codepoint = cell.codepoint,
+                    .fg = cell.fg,
+                });
             }
         }
     }
@@ -429,11 +418,6 @@ pub fn validateRenderBatch(
     }
     if (!capability.supports_glyph_quads and batch.glyphs.len > 0) {
         return error.GlyphUnsupported;
-    }
-    for (batch.atlas_uploads) |upload| {
-        if (upload.slot >= capability.max_atlas_slots) {
-            return error.AtlasSlotOutOfRange;
-        }
     }
 }
 
@@ -526,7 +510,7 @@ test "render_batch: repeated codepoints dedupe atlas uploads per slot" {
     try std.testing.expectEqual(@as(usize, 2), owned.batch.atlas_uploads.len);
 }
 
-test "render_batch: exactly at capacity keeps all unique glyph slots" {
+test "render_batch: exactly at capacity keeps all unique glyph uploads" {
     const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell('B', white, black),
@@ -540,11 +524,9 @@ test "render_batch: exactly at capacity keeps all unique glyph slots" {
 
     try std.testing.expectEqual(@as(usize, 2), owned.batch.glyphs.len);
     try std.testing.expectEqual(@as(usize, 2), owned.batch.atlas_uploads.len);
-    try std.testing.expectEqual(@as(u32, 0), owned.batch.glyphs[0].atlas_slot);
-    try std.testing.expectEqual(@as(u32, 1), owned.batch.glyphs[1].atlas_slot);
 }
 
-test "render_batch: over capacity drops new codepoints deterministically" {
+test "render_batch: over capacity still emits glyphs and deduped uploads" {
     const cells = [_]CellInput{
         makeCell('A', white, black),
         makeCell('B', white, black),
@@ -558,14 +540,12 @@ test "render_batch: over capacity drops new codepoints deterministically" {
     }, testCapability(2));
     defer owned.deinit();
 
-    try std.testing.expectEqual(@as(usize, 3), owned.batch.glyphs.len);
-    try std.testing.expectEqual(@as(usize, 2), owned.batch.atlas_uploads.len);
+    try std.testing.expectEqual(@as(usize, 4), owned.batch.glyphs.len);
+    try std.testing.expectEqual(@as(usize, 3), owned.batch.atlas_uploads.len);
     try std.testing.expectEqual(@as(u21, 'A'), owned.batch.glyphs[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'B'), owned.batch.glyphs[1].codepoint);
-    try std.testing.expectEqual(@as(u21, 'A'), owned.batch.glyphs[2].codepoint);
-    try std.testing.expectEqual(@as(u32, 0), owned.batch.glyphs[0].atlas_slot);
-    try std.testing.expectEqual(@as(u32, 1), owned.batch.glyphs[1].atlas_slot);
-    try std.testing.expectEqual(@as(u32, 0), owned.batch.glyphs[2].atlas_slot);
+    try std.testing.expectEqual(@as(u21, 'C'), owned.batch.glyphs[2].codepoint);
+    try std.testing.expectEqual(@as(u21, 'A'), owned.batch.glyphs[3].codepoint);
 }
 
 test "render_batch: fill count equals total cell count" {
@@ -619,30 +599,6 @@ test "validation rejects surface mismatch" {
     };
 
     try std.testing.expectError(error.SurfaceMismatch, validateRenderBatch(config, cap, batch));
-}
-
-test "validation rejects atlas slots outside capability range" {
-    const uploads = [_]AtlasUpload{
-        .{ .slot = 1, .codepoint = 'A', .width = 8, .height = 16 },
-        .{ .slot = 2, .codepoint = 'B', .width = 8, .height = 16 },
-    };
-    const config = BackendConfig{
-        .surface_px = .{ .width = 640, .height = 480 },
-        .cell_px = .{ .width = 8, .height = 16 },
-    };
-    const cap = BackendCapability{
-        .max_atlas_slots = 2,
-        .supports_fill_rect = true,
-        .supports_glyph_quads = true,
-    };
-    const batch = RenderBatch{
-        .surface_px = .{ .width = 640, .height = 480 },
-        .cell_px = .{ .width = 8, .height = 16 },
-        .grid = .{ .cols = 80, .rows = 30 },
-        .atlas_uploads = &uploads,
-    };
-
-    try std.testing.expectError(error.AtlasSlotOutOfRange, validateRenderBatch(config, cap, batch));
 }
 
 test "summary mirrors render-batch stats" {
@@ -702,11 +658,9 @@ test "render_batch: same frame produces identical batch" {
     for (a.batch.glyphs, b.batch.glyphs) |ga, gb| {
         try std.testing.expectEqual(ga.x, gb.x);
         try std.testing.expectEqual(ga.y, gb.y);
-        try std.testing.expectEqual(ga.atlas_slot, gb.atlas_slot);
         try std.testing.expectEqual(ga.codepoint, gb.codepoint);
     }
     for (a.batch.atlas_uploads, b.batch.atlas_uploads) |ua, ub| {
-        try std.testing.expectEqual(ua.slot, ub.slot);
         try std.testing.expectEqual(ua.codepoint, ub.codepoint);
     }
 }

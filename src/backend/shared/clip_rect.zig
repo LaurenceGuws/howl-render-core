@@ -8,7 +8,7 @@ pub const ClipRect = struct {
     h: c_int,
 };
 
-pub fn clipRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
+pub fn clipRectTopOrigin(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
     if (width == 0 or height == 0) return null;
     const sw: i32 = @intCast(surface.width);
     const sh: i32 = @intCast(surface.height);
@@ -18,11 +18,22 @@ pub fn clipRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, heig
     const y1 = std.math.clamp(y + @as(i32, @intCast(height)), 0, sh);
     if (x1 <= x0 or y1 <= y0) return null;
 
-    const bottom_y = sh - y1;
     return .{
         .x = @intCast(x0),
-        .y = @intCast(bottom_y),
+        .y = @intCast(y0),
         .w = @intCast(x1 - x0),
         .h = @intCast(y1 - y0),
+    };
+}
+
+pub fn clipRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
+    const clipped = clipRectTopOrigin(surface, x, y, width, height) orelse return null;
+    const sh: i32 = @intCast(surface.height);
+    const bottom_y = sh - (clipped.y + clipped.h);
+    return .{
+        .x = clipped.x,
+        .y = @intCast(bottom_y),
+        .w = clipped.w,
+        .h = clipped.h,
     };
 }
