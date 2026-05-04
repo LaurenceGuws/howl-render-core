@@ -696,27 +696,6 @@ pub const Backend = struct {
                 if (glyph_id != 0) return .{ .codepoint = codepoint, .face_id = primary_face_id, .glyph_id = glyph_id };
             }
         }
-
-        const lib = self.ft_lib orelse return null;
-        var i: usize = 0;
-        while (i < self.fallback_font_paths_len) : (i += 1) {
-            const font_path = self.fallback_font_paths[i] orelse continue;
-            var face: FtFace = undefined;
-            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
-            defer _ = c.FT_Done_Face(face);
-            if (!setFacePixelHeight(self, face)) continue;
-
-            var fallback_hb: ?HbFont = null;
-            defer if (fallback_hb != null and builtin.target.abi != .android) {
-                c.hb_font_destroy(@ptrCast(fallback_hb.?));
-            };
-            if (builtin.target.abi != .android) {
-                fallback_hb = @ptrCast(c.hb_ft_font_create_referenced(face));
-            }
-
-            const glyph_id = shapeGlyphId(fallback_hb, face, codepoint);
-            if (glyph_id != 0) return .{ .codepoint = codepoint, .face_id = fallbackFaceId(i), .glyph_id = glyph_id };
-        }
         return null;
     }
 
