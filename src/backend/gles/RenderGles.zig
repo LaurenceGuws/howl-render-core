@@ -79,7 +79,6 @@ pub const RenderGles = struct {
     pub fn init(config: Config) Backend {
         return Backend.init(config);
     }
-
 };
 
 /// Derive grid dimensions through the shared render-core policy.
@@ -189,6 +188,7 @@ pub const Backend = struct {
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
         self.config.font_path = font_path;
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
@@ -198,11 +198,13 @@ pub const Backend = struct {
         while (i < n) : (i += 1) self.fallback_font_paths[i] = paths[i];
         while (i < MaxFallbackFonts) : (i += 1) self.fallback_font_paths[i] = null;
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn setFontSizePx(self: *Backend, font_size_px: u16) void {
         self.config.font_size_px = @max(font_size_px, 1);
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn deriveFrameLayout(
@@ -515,7 +517,7 @@ pub const Backend = struct {
 
         if (self.config.font_path) |font_path| {
             if (c.FT_New_Face(lib, font_path, 0, &face) == 0) {
-                _ = c.FT_Set_Pixel_Sizes(face, self.atlas_cell_w, self.atlas_cell_h);
+                _ = setFacePixelHeight(self, face);
                 self.ft_lib = lib;
                 self.ft_face = face;
                 self.hb_font = c.hb_ft_font_create(face, null);
@@ -543,7 +545,7 @@ pub const Backend = struct {
             return false;
         }
 
-        _ = c.FT_Set_Pixel_Sizes(face, self.atlas_cell_w, self.atlas_cell_h);
+        _ = setFacePixelHeight(self, face);
         self.ft_lib = lib;
         self.ft_face = face;
         self.hb_font = c.hb_ft_font_create(face, null);
@@ -565,21 +567,53 @@ pub const Backend = struct {
         }
     }
 
+    fn clearAtlasCache(self: *Backend) void {
+        if (self.atlas_pixels.len > 0) @memset(self.atlas_pixels, 0);
+        if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
+        if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
+        if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
+        self.atlas_next_slot = 0;
+    }
+
     fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) bool {
         if (!self.ensureFont()) return false;
-        const face = self.ft_face.?;
-        if (c.FT_Set_Pixel_Sizes(face, self.atlas_cell_w, self.atlas_cell_h) != 0) return false;
-        const glyph_id = shapeGlyphId(self.hb_font, face, codepoint);
-        if (glyph_id == 0) {
-            self.resolve_stage = .missing_glyph;
-            self.resolve_counters.missing_glyphs += 1;
-            return false;
+        if (self.ft_face) |face| {
+            if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, gw, gh)) {
+                self.resolve_stage = .loaded_exact_match;
+                return true;
+            }
         }
-        if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) {
-            self.resolve_stage = .missing_glyph;
-            self.resolve_counters.missing_glyphs += 1;
-            return false;
+
+        const lib = self.ft_lib orelse return false;
+        var i: usize = 0;
+        while (i < self.fallback_font_paths_len) : (i += 1) {
+            const font_path = self.fallback_font_paths[i] orelse continue;
+            var face: FtFace = undefined;
+            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
+            defer _ = c.FT_Done_Face(face);
+
+            if (!setFacePixelHeight(self, face)) continue;
+            const fallback_hb = c.hb_ft_font_create(face, null) orelse continue;
+            defer c.hb_font_destroy(fallback_hb);
+
+            if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, gw, gh)) {
+                self.resolve_stage = .discovery_fallback;
+                self.resolve_counters.fallback_hits += 1;
+                return true;
+            }
         }
+
+        self.resolve_stage = .missing_glyph;
+        self.resolve_counters.fallback_misses += 1;
+        self.resolve_counters.missing_glyphs += 1;
+        return false;
+    }
+
+    fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, gw: u16, gh: u16) bool {
+        if (!setFacePixelHeight(self, face)) return false;
+        const glyph_id = shapeGlyphId(hb_font, face, codepoint);
+        if (glyph_id == 0) return false;
+        if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return false;
         const glyph = face.*.glyph;
         if (glyph == null) return false;
         const bitmap = glyph.*.bitmap;
@@ -588,17 +622,14 @@ pub const Backend = struct {
         const bh: usize = @intCast(bitmap.rows);
         const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
         const pitch_is_negative = bitmap.pitch < 0;
-        const advance_px: i32 = @intCast(@divTrunc(glyph.*.advance.x, 64));
-        const ascender_px: i32 = @intCast(@divTrunc(face.*.size.*.metrics.ascender, 64));
-        const baseline_y: i32 = std.math.clamp(ascender_px, 0, @as(i32, @intCast(gh)));
-        const origin_x: i32 = @divTrunc(@as(i32, @intCast(gw)) - advance_px, 2);
+        const baseline_y = computeBaselineFromFace(face, gh);
         const bmp_left: i32 = glyph.*.bitmap_left;
         const bmp_top: i32 = glyph.*.bitmap_top;
 
         var wrote_any = false;
         for (0..bh) |yy| {
             for (0..bw) |xx| {
-                const dx_i = origin_x + bmp_left + @as(i32, @intCast(xx));
+                const dx_i = @max(0, bmp_left) + @as(i32, @intCast(xx));
                 const dy_i = baseline_y - bmp_top + @as(i32, @intCast(yy));
                 if (dx_i < 0 or dy_i < 0) continue;
                 const dx: usize = @intCast(dx_i);
@@ -611,28 +642,8 @@ pub const Backend = struct {
                 wrote_any = true;
             }
         }
-        if (!wrote_any) {
-            // Fallback placement: center bitmap box in cell when metric placement clips out.
-            const off_x: i32 = @divTrunc(@as(i32, @intCast(gw)) - @as(i32, @intCast(@min(bw, gw))), 2);
-            const off_y: i32 = @divTrunc(@as(i32, @intCast(gh)) - @as(i32, @intCast(@min(bh, gh))), 2);
-            for (0..bh) |yy| {
-                for (0..bw) |xx| {
-                    const dx_i = off_x + @as(i32, @intCast(xx));
-                    const dy_i = off_y + @as(i32, @intCast(yy));
-                    if (dx_i < 0 or dy_i < 0) continue;
-                    const dx: usize = @intCast(dx_i);
-                    const dy: usize = @intCast(dy_i);
-                    if (dx >= gw or dy >= gh) continue;
-                    const src_y = if (pitch_is_negative) (bh - 1 - yy) else yy;
-                    const src_idx = src_y * pitch_abs + xx;
-                    const dst_idx = dy * @as(usize, self.atlas_cell_w) + dx;
-                    dst[dst_idx] = bitmap.buffer[src_idx];
-                    wrote_any = true;
-                }
-            }
-        }
         self.resolve_counters.shaped_clusters += 1;
-        return true;
+        return wrote_any;
     }
 };
 
@@ -652,6 +663,22 @@ fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
         }
     }
     return c.FT_Get_Char_Index(face, codepoint);
+}
+
+fn setFacePixelHeight(self: *const Backend, face: FtFace) bool {
+    return c.FT_Set_Pixel_Sizes(face, 0, @max(self.config.font_size_px, 1)) == 0;
+}
+
+fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
+    const metrics = face.*.size.*.metrics;
+    const ascender_raw = @as(f32, @floatFromInt(metrics.ascender)) / 64.0;
+    const descent_raw = @abs(@as(f32, @floatFromInt(metrics.descender)) / 64.0);
+    const line_height_raw = @max(@as(f32, @floatFromInt(metrics.height)) / 64.0, 1.0);
+    const line_gap_raw = @max(0.0, line_height_raw - (ascender_raw + descent_raw));
+    const baseline_from_top_raw = ascender_raw + line_gap_raw / 2.0;
+    const scaled_baseline = baseline_from_top_raw * (@as(f32, @floatFromInt(cell_h)) / line_height_raw);
+    const rounded = @as(i32, @intFromFloat(std.math.round(scaled_baseline)));
+    return std.math.clamp(rounded, 1, @as(i32, @intCast(cell_h)));
 }
 
 fn cellSizeFromFace(face: FtFace, font_size_px: u16) render_core.CellSize {

@@ -78,7 +78,6 @@ pub const RenderGl = struct {
     pub fn init(config: Config) Backend {
         return Backend.init(config);
     }
-
 };
 
 /// Derive grid dimensions through the shared render-core policy.
@@ -196,6 +195,7 @@ pub const Backend = struct {
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
         self.config.font_path = font_path;
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
@@ -205,11 +205,13 @@ pub const Backend = struct {
         while (i < n) : (i += 1) self.fallback_font_paths[i] = paths[i];
         while (i < MaxFallbackFonts) : (i += 1) self.fallback_font_paths[i] = null;
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn setFontSizePx(self: *Backend, font_size_px: u16) void {
         self.config.font_size_px = @max(font_size_px, 1);
         self.resetLoadedFace();
+        self.clearAtlasCache();
     }
 
     pub fn deriveFrameLayout(
@@ -561,6 +563,14 @@ pub const Backend = struct {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
         }
+    }
+
+    fn clearAtlasCache(self: *Backend) void {
+        if (self.atlas_pixels.len > 0) @memset(self.atlas_pixels, 0);
+        if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
+        if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
+        if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
+        self.atlas_next_slot = 0;
     }
 
     fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) bool {
