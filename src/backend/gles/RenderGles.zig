@@ -22,6 +22,22 @@ const FtLibrary = c.FT_Library;
 const FtFace = c.FT_Face;
 const HbFont = *c.hb_font_t;
 
+const primary_face_id: u32 = 1;
+
+const ResolvedGlyphKey = struct {
+    codepoint: u21,
+    face_id: u32,
+    glyph_id: u32,
+};
+
+fn fallbackFaceId(index: usize) u32 {
+    return @intCast(index + 2);
+}
+
+fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
+    return .{ .codepoint = codepoint, .face_id = 0, .glyph_id = codepoint };
+}
+
 /// Shared cell-size alias.
 pub const CellSize = render_core.CellSize;
 /// Shared surface color alias.
@@ -112,6 +128,8 @@ pub const Backend = struct {
     atlas_cell_h: u16 = 0,
     atlas_slot_stride: usize = 0,
     atlas_slot_codepoint: []u21 = &.{},
+    atlas_slot_face_id: []u32 = &.{},
+    atlas_slot_glyph_id: []u32 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
     atlas_next_slot: u32 = 0,
@@ -135,6 +153,14 @@ pub const Backend = struct {
         if (self.atlas_slot_codepoint.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_codepoint);
             self.atlas_slot_codepoint = &.{};
+        }
+        if (self.atlas_slot_face_id.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_face_id);
+            self.atlas_slot_face_id = &.{};
+        }
+        if (self.atlas_slot_glyph_id.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_glyph_id);
+            self.atlas_slot_glyph_id = &.{};
         }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
@@ -407,10 +433,11 @@ pub const Backend = struct {
         try self.ensureAtlasStorage();
         var committed: usize = 0;
         for (batch.atlas_uploads) |upload| {
-            if (self.findCachedSlot(upload.codepoint, upload.width, upload.height) != null) continue;
+            const key = self.resolveGlyphKey(upload.codepoint) orelse missingGlyphKey(upload.codepoint);
+            if (self.findCachedSlot(key, upload.width, upload.height) != null) continue;
             const slot = self.allocateSlot() orelse continue;
             self.rasterizeSlot(slot, upload.codepoint, upload.width, upload.height);
-            self.markSlotCached(slot, upload.codepoint, upload.width, upload.height);
+            self.markSlotCached(slot, key, upload.width, upload.height);
             committed += 1;
         }
         return committed;
@@ -430,6 +457,14 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.atlas_slot_codepoint);
             self.atlas_slot_codepoint = &.{};
         }
+        if (self.atlas_slot_face_id.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_face_id);
+            self.atlas_slot_face_id = &.{};
+        }
+        if (self.atlas_slot_glyph_id.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_glyph_id);
+            self.atlas_slot_glyph_id = &.{};
+        }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
             self.atlas_slot_width = &.{};
@@ -443,6 +478,10 @@ pub const Backend = struct {
         @memset(self.atlas_pixels, 0);
         self.atlas_slot_codepoint = try std.heap.c_allocator.alloc(u21, max_slots);
         @memset(self.atlas_slot_codepoint, 0);
+        self.atlas_slot_face_id = try std.heap.c_allocator.alloc(u32, max_slots);
+        @memset(self.atlas_slot_face_id, 0);
+        self.atlas_slot_glyph_id = try std.heap.c_allocator.alloc(u32, max_slots);
+        @memset(self.atlas_slot_glyph_id, 0);
         self.atlas_slot_width = try std.heap.c_allocator.alloc(u16, max_slots);
         @memset(self.atlas_slot_width, 0);
         self.atlas_slot_height = try std.heap.c_allocator.alloc(u16, max_slots);
@@ -453,15 +492,28 @@ pub const Backend = struct {
         self.atlas_next_slot = 0;
     }
 
-    fn slotCached(self: *const Backend, slot: u32, codepoint: u21, width: u16, height: u16) bool {
+    fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {
         const idx = @as(usize, slot);
         if (idx >= self.atlas_slot_codepoint.len) return false;
-        return self.atlas_slot_codepoint[idx] == codepoint and
+        if (idx >= self.atlas_slot_face_id.len or idx >= self.atlas_slot_glyph_id.len) return false;
+        return self.atlas_slot_codepoint[idx] == key.codepoint and
+            self.atlas_slot_face_id[idx] == key.face_id and
+            self.atlas_slot_glyph_id[idx] == key.glyph_id and
             self.atlas_slot_width[idx] == width and
             self.atlas_slot_height[idx] == height;
     }
 
-    fn findCachedSlot(self: *const Backend, codepoint: u21, width: u16, height: u16) ?u32 {
+    fn findCachedSlot(self: *const Backend, key: ResolvedGlyphKey, width: u16, height: u16) ?u32 {
+        var idx: usize = 0;
+        while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
+            if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
+            if (!self.slotCached(@intCast(idx), key, width, height)) continue;
+            return @intCast(idx);
+        }
+        return null;
+    }
+
+    fn findCachedSlotForDraw(self: *const Backend, codepoint: u21, width: u16, height: u16) ?u32 {
         var idx: usize = 0;
         while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
             if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
@@ -485,10 +537,12 @@ pub const Backend = struct {
         return slot;
     }
 
-    fn markSlotCached(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
+    fn markSlotCached(self: *Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) void {
         const idx = @as(usize, slot);
         if (idx >= self.atlas_slot_codepoint.len) return;
-        self.atlas_slot_codepoint[idx] = codepoint;
+        self.atlas_slot_codepoint[idx] = key.codepoint;
+        if (idx < self.atlas_slot_face_id.len) self.atlas_slot_face_id[idx] = key.face_id;
+        if (idx < self.atlas_slot_glyph_id.len) self.atlas_slot_glyph_id[idx] = key.glyph_id;
         self.atlas_slot_width[idx] = width;
         self.atlas_slot_height[idx] = height;
     }
@@ -570,6 +624,8 @@ pub const Backend = struct {
     fn clearAtlasCache(self: *Backend) void {
         if (self.atlas_pixels.len > 0) @memset(self.atlas_pixels, 0);
         if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
+        if (self.atlas_slot_face_id.len > 0) @memset(self.atlas_slot_face_id, 0);
+        if (self.atlas_slot_glyph_id.len > 0) @memset(self.atlas_slot_glyph_id, 0);
         if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
         if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
         self.atlas_next_slot = 0;
@@ -607,6 +663,33 @@ pub const Backend = struct {
         self.resolve_counters.fallback_misses += 1;
         self.resolve_counters.missing_glyphs += 1;
         return false;
+    }
+
+    fn resolveGlyphKey(self: *Backend, codepoint: u21) ?ResolvedGlyphKey {
+        _ = self.ensureFont();
+        if (self.ft_face) |face| {
+            if (setFacePixelHeight(self, face)) {
+                const glyph_id = shapeGlyphId(self.hb_font, face, codepoint);
+                if (glyph_id != 0) return .{ .codepoint = codepoint, .face_id = primary_face_id, .glyph_id = glyph_id };
+            }
+        }
+
+        const lib = self.ft_lib orelse return null;
+        var i: usize = 0;
+        while (i < self.fallback_font_paths_len) : (i += 1) {
+            const font_path = self.fallback_font_paths[i] orelse continue;
+            var face: FtFace = undefined;
+            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
+            defer _ = c.FT_Done_Face(face);
+            if (!setFacePixelHeight(self, face)) continue;
+
+            const fallback_hb = c.hb_ft_font_create(face, null) orelse continue;
+            defer c.hb_font_destroy(fallback_hb);
+
+            const glyph_id = shapeGlyphId(fallback_hb, face, codepoint);
+            if (glyph_id != 0) return .{ .codepoint = codepoint, .face_id = fallbackFaceId(i), .glyph_id = glyph_id };
+        }
+        return null;
     }
 
     fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, gw: u16, gh: u16) bool {
@@ -728,7 +811,7 @@ fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: ren
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     }
-    const cached_slot = backend.findCachedSlot(glyph.codepoint, glyph.width, glyph.height) orelse {
+    const cached_slot = backend.findCachedSlotForDraw(glyph.codepoint, glyph.width, glyph.height) orelse {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     };
