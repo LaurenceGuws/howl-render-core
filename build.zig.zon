@@ -1,9 +1,16 @@
 .{
-    .name = .howl_render_core,
+    .name = .howl_render,
     .version = "0.0.0",
-    .fingerprint = 0xdb357d0e8eaa43fd,
+    .fingerprint = 0x42f92313dafc86f0,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .freetype = .{
+            .path = "../vendor/freetype-zig",
+        },
+        .harfbuzz = .{
+            .path = "../vendor/harfbuzz-zig",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

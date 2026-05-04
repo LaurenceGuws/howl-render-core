@@ -1,7 +1,7 @@
 const std = @import("std");
-const root = @import("howl_render_core");
+const root = @import("howl_render");
 
-test "render-core package surface remains available" {
+test "renderer package surface remains available" {
     _ = root.RenderCore;
     _ = root.TextStack;
     _ = root.BackendConfig;
@@ -9,7 +9,7 @@ test "render-core package surface remains available" {
     _ = root.ResolveResult;
 }
 
-test "render-core root helpers forward deterministically" {
+test "renderer root helpers forward deterministically" {
     const grid = root.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
     try std.testing.expectEqual(@as(u16, 10), grid.cols);
     try std.testing.expectEqual(@as(u16, 3), grid.rows);

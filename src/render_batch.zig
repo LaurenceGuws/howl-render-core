@@ -97,6 +97,7 @@ pub const RenderBatchStats = struct {
     glyphs: usize,
     atlas_uploads: usize,
     has_cursor: bool,
+    full_redraw: bool,
 };
 
 /// Backend-neutral render batch payload.
@@ -104,6 +105,7 @@ pub const RenderBatch = struct {
     surface_px: PixelSize,
     cell_px: CellSize,
     grid: GridSize,
+    full_redraw: bool = true,
     fills: []const FillRect = &.{},
     glyphs: []const GlyphQuad = &.{},
     cursor: ?CursorDraw = null,
@@ -116,6 +118,7 @@ pub const RenderBatch = struct {
             .glyphs = self.glyphs.len,
             .atlas_uploads = self.atlas_uploads.len,
             .has_cursor = self.cursor != null,
+            .full_redraw = self.full_redraw,
         };
     }
 };
@@ -149,6 +152,14 @@ pub const VtState = struct {
     cell_px: CellSize,
     grid: GridInput,
     cursor: ?CursorInput = null,
+    damage: Damage = .{},
+};
+
+pub const Damage = struct {
+    full: bool = true,
+    dirty_rows: []const bool = &.{},
+    dirty_cols_start: []const u16 = &.{},
+    dirty_cols_end: []const u16 = &.{},
 };
 
 /// Owned render batch with allocator-managed buffers.
@@ -282,6 +293,7 @@ pub fn renderBatch(
 ) RenderBatchBuildError!OwnedRenderBatch {
     const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
     const visible = @min(cell_count, frame.grid.cells.len);
+    const full_redraw = frame.damage.full or frame.damage.dirty_rows.len != @as(usize, frame.grid.rows) or frame.damage.dirty_cols_start.len != @as(usize, frame.grid.rows) or frame.damage.dirty_cols_end.len != @as(usize, frame.grid.rows);
 
     var fills = try std.ArrayList(FillRect).initCapacity(allocator, visible);
     errdefer fills.deinit(allocator);
@@ -299,7 +311,11 @@ pub fn renderBatch(
     var next_slot: u32 = 0;
 
     for (0..frame.grid.rows) |row| {
-        for (0..frame.grid.cols) |col| {
+        if (!full_redraw and !frame.damage.dirty_rows[row]) continue;
+        const col_start: usize = if (full_redraw) 0 else @as(usize, frame.damage.dirty_cols_start[row]);
+        const col_end_exclusive: usize = if (full_redraw) frame.grid.cols else @min(@as(usize, frame.damage.dirty_cols_end[row]) + 1, @as(usize, frame.grid.cols));
+        if (col_start >= col_end_exclusive) continue;
+        for (col_start..col_end_exclusive) |col| {
             const idx = row * @as(usize, frame.grid.cols) + col;
             if (idx >= visible) break;
             const cell = frame.grid.cells[idx];
@@ -374,6 +390,7 @@ pub fn renderBatch(
             .surface_px = frame.surface_px,
             .cell_px = frame.cell_px,
             .grid = .{ .cols = frame.grid.cols, .rows = frame.grid.rows },
+            .full_redraw = full_redraw,
             .fills = fills_owned,
             .glyphs = glyphs_owned,
             .cursor = cursor_draw,

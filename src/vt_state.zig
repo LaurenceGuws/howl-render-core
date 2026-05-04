@@ -119,5 +119,11 @@ pub fn vtStateToRenderBatchWithTheme(
         .cell_px = cell_px,
         .grid = .{ .cells = cell_inputs, .cols = state.grid.cols, .rows = state.grid.rows },
         .cursor = cursor_input,
+        .damage = .{
+            .full = state.damage.full,
+            .dirty_rows = state.damage.dirty_rows,
+            .dirty_cols_start = state.damage.dirty_cols_start,
+            .dirty_cols_end = state.damage.dirty_cols_end,
+        },
     }, capability);
 }

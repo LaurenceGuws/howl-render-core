@@ -48,6 +48,13 @@ pub const GridModel = struct {
     rows: u16,
 };
 
+pub const DamageInfo = struct {
+    full: bool = true,
+    dirty_rows: []const bool = &.{},
+    dirty_cols_start: []const u16 = &.{},
+    dirty_cols_end: []const u16 = &.{},
+};
+
 pub const ViewportInfo = struct {
     cols: u16,
     rows: u16,
@@ -73,4 +80,5 @@ pub const FrameData = struct {
     viewport: ViewportInfo,
     grid: GridModel,
     cursor: CursorInfo,
+    damage: DamageInfo = .{},
 };

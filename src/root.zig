@@ -1,84 +1,90 @@
-//! Responsibility: export the render-core package surface.
-//! Ownership: package API boundary.
-//! Reason: keep exports explicit and stable.
+//! Responsibility: export the unified renderer package surface.
+//! Ownership: renderer API boundary and backend selection.
+//! Reason: keep one renderer package while selecting backend at compile time.
 
-/// Canonical render-core package owner.
-pub const RenderCore = @import("render_core.zig").RenderCore;
-pub const BackendConfig = RenderCore.BackendConfig;
-pub const BackendCapability = RenderCore.BackendCapability;
-pub const PixelSize = RenderCore.PixelSize;
-pub const CellSize = RenderCore.CellSize;
-pub const GridSize = RenderCore.GridSize;
-pub const Rgba8 = RenderCore.Rgba8;
-pub const FillRect = RenderCore.FillRect;
-pub const GlyphQuad = RenderCore.GlyphQuad;
-pub const CursorShape = RenderCore.CursorShape;
-pub const CursorDraw = RenderCore.CursorDraw;
-pub const AtlasUpload = RenderCore.AtlasUpload;
-pub const RenderBatchStats = RenderCore.RenderBatchStats;
-pub const RenderBatch = RenderCore.RenderBatch;
-pub const CellInput = RenderCore.CellInput;
-pub const GridInput = RenderCore.GridInput;
-pub const CursorInput = RenderCore.CursorInput;
-pub const VtState = RenderCore.VtState;
-pub const FrameTheme = RenderCore.FrameTheme;
-pub const OwnedRenderBatch = RenderCore.OwnedRenderBatch;
-pub const SurfaceState = RenderCore.SurfaceState;
-pub const SurfaceColor = RenderCore.SurfaceColor;
-pub const SurfaceCellFlags = RenderCore.SurfaceCellFlags;
-pub const SurfaceCellAttrs = RenderCore.SurfaceCellAttrs;
-pub const SurfaceCell = RenderCore.SurfaceCell;
-pub const SurfaceGridModel = RenderCore.SurfaceGridModel;
-pub const SurfaceViewportInfo = RenderCore.SurfaceViewportInfo;
-pub const SurfaceCursorShape = RenderCore.SurfaceCursorShape;
-pub const SurfaceCursorInfo = RenderCore.SurfaceCursorInfo;
-pub const SurfaceFrameData = RenderCore.SurfaceFrameData;
-pub const BackendCaps = RenderCore.BackendCaps;
-pub const FontStyle = RenderCore.FontStyle;
-pub const TextPresentation = RenderCore.TextPresentation;
-pub const FontMetrics = RenderCore.FontMetrics;
-pub const CellMetrics = RenderCore.CellMetrics;
-pub const TextCluster = RenderCore.TextCluster;
-pub const ShapedGlyph = RenderCore.ShapedGlyph;
-pub const ShapedRun = RenderCore.ShapedRun;
-pub const MissingGlyphReason = RenderCore.MissingGlyphReason;
-pub const MissingGlyph = RenderCore.MissingGlyph;
-pub const ResolveStage = RenderCore.ResolveStage;
-pub const ResolveRequest = RenderCore.ResolveRequest;
-pub const ResolveHit = RenderCore.ResolveHit;
-pub const ResolveMiss = RenderCore.ResolveMiss;
-pub const ResolveResult = RenderCore.ResolveResult;
-pub const ResolveCounters = RenderCore.ResolveCounters;
-pub const ShapeRequest = RenderCore.ShapeRequest;
-pub const ShapeOutput = RenderCore.ShapeOutput;
-pub const RasterizeRequest = RenderCore.RasterizeRequest;
-pub const RasterizeOutput = RenderCore.RasterizeOutput;
-pub const ShapeClustersFn = RenderCore.ShapeClustersFn;
-pub const RasterizeGlyphFn = RenderCore.RasterizeGlyphFn;
-pub const ResolveFallbackFaceFn = RenderCore.ResolveFallbackFaceFn;
-pub const ShapeClustersOp = RenderCore.ShapeClustersOp;
-pub const RasterizeGlyphOp = RenderCore.RasterizeGlyphOp;
-pub const ResolveFallbackFaceOp = RenderCore.ResolveFallbackFaceOp;
-pub const RenderBatchValidationError = RenderCore.RenderBatchValidationError;
-pub const RenderBatchBuildError = RenderCore.RenderBatchBuildError;
-pub const FrameGeometryError = RenderCore.FrameGeometryError;
-pub const defaultTheme = RenderCore.defaultTheme;
-/// Public text-stack support surface.
-pub const TextStack = @import("TextStack.zig").TextStack;
+const build_options = @import("build_options");
+const core = @import("core_api.zig");
+const backend = switch (build_options.render_backend) {
+    .gl => @import("backend/gl/root.zig"),
+    .gles => @import("backend/gles/root.zig"),
+};
 
-/// Construct a render-core object from backend policy inputs.
+pub const RenderCore = core.RenderCore;
+pub const BackendConfig = core.BackendConfig;
+pub const BackendCapability = core.BackendCapability;
+pub const PixelSize = core.PixelSize;
+pub const CellSize = core.CellSize;
+pub const GridSize = core.GridSize;
+pub const Rgba8 = core.Rgba8;
+pub const FillRect = core.FillRect;
+pub const GlyphQuad = core.GlyphQuad;
+pub const CursorShape = core.CursorShape;
+pub const CursorDraw = core.CursorDraw;
+pub const AtlasUpload = core.AtlasUpload;
+pub const RenderBatchStats = core.RenderBatchStats;
+pub const RenderBatch = core.RenderBatch;
+pub const CellInput = core.CellInput;
+pub const GridInput = core.GridInput;
+pub const CursorInput = core.CursorInput;
+pub const VtState = core.VtState;
+pub const FrameTheme = core.FrameTheme;
+pub const OwnedRenderBatch = core.OwnedRenderBatch;
+pub const SurfaceState = core.SurfaceState;
+pub const SurfaceColor = core.SurfaceColor;
+pub const SurfaceCellFlags = core.SurfaceCellFlags;
+pub const SurfaceCellAttrs = core.SurfaceCellAttrs;
+pub const SurfaceCell = core.SurfaceCell;
+pub const SurfaceGridModel = core.SurfaceGridModel;
+pub const SurfaceViewportInfo = core.SurfaceViewportInfo;
+pub const SurfaceCursorShape = core.SurfaceCursorShape;
+pub const SurfaceCursorInfo = core.SurfaceCursorInfo;
+pub const SurfaceFrameData = core.SurfaceFrameData;
+pub const BackendCaps = core.BackendCaps;
+pub const FontStyle = core.FontStyle;
+pub const TextPresentation = core.TextPresentation;
+pub const FontMetrics = core.FontMetrics;
+pub const CellMetrics = core.CellMetrics;
+pub const TextCluster = core.TextCluster;
+pub const ShapedGlyph = core.ShapedGlyph;
+pub const ShapedRun = core.ShapedRun;
+pub const MissingGlyphReason = core.MissingGlyphReason;
+pub const MissingGlyph = core.MissingGlyph;
+pub const ResolveStage = core.ResolveStage;
+pub const ResolveRequest = core.ResolveRequest;
+pub const ResolveHit = core.ResolveHit;
+pub const ResolveMiss = core.ResolveMiss;
+pub const ResolveResult = core.ResolveResult;
+pub const ResolveCounters = core.ResolveCounters;
+pub const ShapeRequest = core.ShapeRequest;
+pub const ShapeOutput = core.ShapeOutput;
+pub const RasterizeRequest = core.RasterizeRequest;
+pub const RasterizeOutput = core.RasterizeOutput;
+pub const ShapeClustersFn = core.ShapeClustersFn;
+pub const RasterizeGlyphFn = core.RasterizeGlyphFn;
+pub const ResolveFallbackFaceFn = core.ResolveFallbackFaceFn;
+pub const ShapeClustersOp = core.ShapeClustersOp;
+pub const RasterizeGlyphOp = core.RasterizeGlyphOp;
+pub const ResolveFallbackFaceOp = core.ResolveFallbackFaceOp;
+pub const RenderBatchValidationError = core.RenderBatchValidationError;
+pub const RenderBatchBuildError = core.RenderBatchBuildError;
+pub const FrameGeometryError = core.FrameGeometryError;
+pub const defaultTheme = core.defaultTheme;
+pub const TextStack = core.TextStack;
+
+pub const Backend = backend.Backend;
+pub const BackendError = backend.BackendError;
+pub const RenderReport = backend.RenderReport;
+
 pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
-    return RenderCore.init(config, capability);
+    return core.init(config, capability);
 }
 
-/// Derive grid dimensions from pixel geometry and cell size.
 pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
-    return RenderCore.deriveGridSize(grid_px, cell_px);
+    return backend.deriveGridSize(grid_px, cell_px);
 }
 
-/// Validate frame geometry and derive grid dimensions.
 pub fn deriveGridForFrame(render_px: PixelSize, grid_px: PixelSize, cell_px: CellSize) FrameGeometryError!GridSize {
-    return RenderCore.deriveGridForFrame(render_px, grid_px, cell_px);
+    return backend.deriveGridForFrame(render_px, grid_px, cell_px);
 }
 
 test {
