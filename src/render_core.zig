@@ -8,6 +8,7 @@ const vt_state = @import("vt_state.zig");
 const surface = @import("frame_state.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
+const text_stack = @import("TextStack.zig");
 
 pub const RenderCore = struct {
     pub const BackendConfig = render_batch.BackendConfig;
@@ -39,6 +40,12 @@ pub const RenderCore = struct {
     pub const SurfaceCursorShape = surface.CursorShape;
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
+    pub const SurfaceHandle = struct {
+        texture_id: u32,
+        width: u16,
+        height: u16,
+        epoch: u64,
+    };
     pub const BackendCaps = text_contract.BackendCaps;
     pub const FontStyle = text_contract.FontStyle;
     pub const TextPresentation = text_contract.TextPresentation;
@@ -65,6 +72,7 @@ pub const RenderCore = struct {
     pub const ShapeClustersOp = text_pipeline.ShapeClustersOp;
     pub const RasterizeGlyphOp = text_pipeline.RasterizeGlyphOp;
     pub const ResolveFallbackFaceOp = text_pipeline.ResolveFallbackFaceOp;
+    pub const TextStack = text_stack.TextStack;
     pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
     pub const RenderBatchBuildError = render_batch.RenderBatchBuildError;
     pub const FrameGeometryError = error{

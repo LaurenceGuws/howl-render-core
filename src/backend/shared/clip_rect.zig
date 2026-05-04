@@ -1,5 +1,5 @@
 const std = @import("std");
-const render_core = @import("../../core_api.zig");
+const render_core = @import("../../render_core.zig").RenderCore;
 
 pub const ClipRect = struct {
     x: c_int,

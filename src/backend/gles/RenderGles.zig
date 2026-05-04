@@ -4,7 +4,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-const render_core = @import("../../core_api.zig");
+const render_core = @import("../../render_core.zig").RenderCore;
 const clip_rect = @import("../shared/clip_rect.zig");
 const c = @cImport({
     if (builtin.target.abi == .android) {
@@ -58,6 +58,8 @@ pub const SurfaceCursorInfo = render_core.SurfaceCursorInfo;
 pub const SurfaceViewportInfo = render_core.SurfaceViewportInfo;
 /// Shared surface frame-data alias.
 pub const SurfaceFrameData = render_core.SurfaceFrameData;
+/// Shared retained surface handle alias.
+pub const SurfaceHandle = render_core.SurfaceHandle;
 
 /// Error set returned by backend lifecycle and render functions.
 pub const BackendError = error{
@@ -121,6 +123,7 @@ pub const Backend = struct {
     target_texture: ?u32 = null,
     owns_target_texture: bool = false,
     target_fbo: u32 = 0,
+    surface_epoch: u64 = 1,
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
     fallback_font_paths_len: usize = 0,
     atlas_pixels: []u8 = &.{},
@@ -199,16 +202,27 @@ pub const Backend = struct {
     pub fn bindTargetTexture(self: *Backend, texture: u32) BackendError!void {
         if (self.closed) return error.BackendClosed;
         if (texture == 0) return error.TargetTextureUnset;
+        const texture_changed = self.target_texture == null or self.target_texture.? != texture;
         if (self.owns_target_texture and self.target_texture != null and self.target_texture.? != texture and hasCurrentContext()) {
             var old_texture = self.target_texture.?;
             c.glDeleteTextures(1, @ptrCast(&old_texture));
         }
         self.target_texture = texture;
         self.owns_target_texture = false;
+        if (texture_changed) self.surface_epoch +%= 1;
     }
 
     pub fn targetTexture(self: *const Backend) u32 {
         return self.target_texture orelse 0;
+    }
+
+    pub fn surfaceHandle(self: *const Backend) SurfaceHandle {
+        return .{
+            .texture_id = self.target_texture orelse 0,
+            .width = @max(self.config.surface_px.width, 1),
+            .height = @max(self.config.surface_px.height, 1),
+            .epoch = self.surface_epoch,
+        };
     }
 
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
@@ -270,6 +284,7 @@ pub const Backend = struct {
         const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
         self.config.surface_px = surface_px;
         self.config.cell_px = cell_px;
+        if (surface_changed) self.surface_epoch +%= 1;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             self.resizeOwnedTargetTexture();
         }
@@ -284,6 +299,7 @@ pub const Backend = struct {
         if (hasCurrentContext()) {
             if (self.target_texture == null and self.config.target_texture != 0) {
                 self.target_texture = self.config.target_texture;
+                self.surface_epoch +%= 1;
             }
             try self.ensureOwnedTargetTexture();
             if (self.target_texture == null) return error.TargetTextureUnset;
@@ -364,6 +380,7 @@ pub const Backend = struct {
         if (texture == 0) return error.TargetTextureUnset;
         self.target_texture = texture;
         self.owns_target_texture = true;
+        self.surface_epoch +%= 1;
         self.resizeOwnedTargetTexture();
     }
 
@@ -433,8 +450,13 @@ pub const Backend = struct {
         try self.ensureAtlasStorage();
         var committed: usize = 0;
         for (batch.atlas_uploads) |upload| {
+            if (self.findCachedSlotForDraw(upload.codepoint, upload.width, upload.height) != null) {
+                continue;
+            }
             const key = self.resolveGlyphKey(upload.codepoint) orelse missingGlyphKey(upload.codepoint);
-            if (self.findCachedSlot(key, upload.width, upload.height) != null) continue;
+            if (self.findCachedSlot(key, upload.width, upload.height) != null) {
+                continue;
+            }
             const slot = self.allocateSlot() orelse continue;
             self.rasterizeSlot(slot, upload.codepoint, upload.width, upload.height);
             self.markSlotCached(slot, key, upload.width, upload.height);
