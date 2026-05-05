@@ -1,0 +1,189 @@
+//! Responsibility: define font resolution inputs and outputs.
+//! Ownership: render-core text engine.
+//! Reason: keep fallback and symbol-route semantics backend independent.
+
+const std = @import("std");
+const contract = @import("../text_contract.zig");
+const pipeline = @import("../text_pipeline.zig");
+const font_session = @import("font_session.zig");
+const symbol_map = @import("symbol_map.zig");
+
+pub const ResolveCellRequest = struct {
+    text: contract.CellText,
+    style: contract.FontStyle,
+    presentation: contract.TextPresentation,
+};
+
+pub const ResolveCellResult = union(enum) {
+    hit: contract.ResolvedRun,
+    miss: contract.MissingGlyph,
+    sprite_route: contract.SpecialSpriteRoute,
+};
+
+pub const OwnedResolvedRuns = struct {
+    allocator: std.mem.Allocator,
+    runs: []contract.ResolvedRun,
+    missing: []contract.MissingGlyph,
+    sprite_routes: []SpriteRouteHit,
+
+    pub fn deinit(self: *OwnedResolvedRuns) void {
+        self.allocator.free(self.runs);
+        self.allocator.free(self.missing);
+        self.allocator.free(self.sprite_routes);
+        self.* = undefined;
+    }
+};
+
+pub const SpriteRouteHit = struct {
+    cluster_index: u32,
+    route: contract.SpecialSpriteRoute,
+};
+
+pub fn resolveClusters(
+    allocator: std.mem.Allocator,
+    session: font_session.FontSession,
+    clusters: []const contract.CellCluster,
+    text_cache: contract.LineTextCache,
+) !OwnedResolvedRuns {
+    var runs = std.ArrayList(contract.ResolvedRun).empty;
+    errdefer runs.deinit(allocator);
+    var missing_list = std.ArrayList(contract.MissingGlyph).empty;
+    errdefer missing_list.deinit(allocator);
+    var sprite_routes = std.ArrayList(SpriteRouteHit).empty;
+    errdefer sprite_routes.deinit(allocator);
+
+    var idx: usize = 0;
+    while (idx < clusters.len) {
+        const cluster = clusters[idx];
+        const route = symbol_map.builtinRoute(cluster.first_cp);
+        if (route) |r| {
+            try sprite_routes.append(allocator, .{ .cluster_index = @intCast(idx), .route = r });
+            idx += 1;
+            continue;
+        }
+
+        const text = textForCluster(text_cache, cluster);
+        const face = resolveFace(session, cluster, text) orelse {
+            try missing_list.append(allocator, .{
+                .codepoint = cluster.first_cp,
+                .style = cluster.style,
+                .presentation = cluster.presentation,
+                .reason = .no_fallback_face,
+            });
+            idx += 1;
+            continue;
+        };
+
+        const start = idx;
+        idx += 1;
+        while (idx < clusters.len) : (idx += 1) {
+            const next = clusters[idx];
+            if (symbol_map.builtinRoute(next.first_cp) != null) break;
+            const next_face = resolveFace(session, next, textForCluster(text_cache, next)) orelse break;
+            if (next_face.id.value != face.id.value or next.style != cluster.style or next.presentation != cluster.presentation) break;
+        }
+
+        try runs.append(allocator, resolvedRun(@intCast(start), @intCast(idx - start), face.id, cluster.style, cluster.presentation));
+    }
+
+    return .{
+        .allocator = allocator,
+        .runs = try runs.toOwnedSlice(allocator),
+        .missing = try missing_list.toOwnedSlice(allocator),
+        .sprite_routes = try sprite_routes.toOwnedSlice(allocator),
+    };
+}
+
+fn resolveFace(session: font_session.FontSession, cluster: contract.CellCluster, text: contract.CellText) ?font_session.FontFaceRecord {
+    if (session.findSymbol(cluster.first_cp)) |face| return face;
+    if (session.findStyle(cluster.style, cluster.presentation, text)) |face| return face;
+    return session.findFallback(cluster.style, cluster.presentation, text);
+}
+
+fn textForCluster(cache: contract.LineTextCache, cluster: contract.CellCluster) contract.CellText {
+    const idx = @as(usize, @intCast(cluster.text_id.value));
+    if (idx < cache.texts.len) return cache.texts[idx];
+    return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
+}
+
+fn resolvedRun(cluster_start: u32, cluster_count: u32, face_id: contract.FontFaceId, style: contract.FontStyle, presentation: contract.TextPresentation) contract.ResolvedRun {
+    return .{ .run = .{
+        .cluster_start = cluster_start,
+        .cluster_count = cluster_count,
+        .font = .{
+            .face_id = face_id,
+            .style = style,
+            .presentation = presentation,
+        },
+    } };
+}
+
+pub fn missing(req: ResolveCellRequest, reason: contract.MissingGlyphReason) ResolveCellResult {
+    return .{ .miss = .{
+        .codepoint = req.text.first_cp,
+        .style = req.style,
+        .presentation = req.presentation,
+        .reason = reason,
+    } };
+}
+
+pub fn stageForRoute(route: contract.SpecialSpriteRoute) pipeline.ResolveStage {
+    return switch (route) {
+        .blank => .blank,
+        .box, .block, .braille, .powerline, .legacy_computing => .sprite_route,
+    };
+}
+
+test "resolver groups adjacent primary clusters and separates sprite routes" {
+    const clusters = [_]contract.CellCluster{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'a', .style = .regular, .presentation = .any },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .first_cp = 'b', .style = .regular, .presentation = .any },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .first_cp = 0x2500, .style = .regular, .presentation = .any },
+    };
+    const texts = [_]contract.CellText{
+        .{ .id = .{ .value = 0 }, .first_cp = 'a', .codepoints = &.{'a'} },
+        .{ .id = .{ .value = 1 }, .first_cp = 'b', .codepoints = &.{'b'} },
+        .{ .id = .{ .value = 2 }, .first_cp = 0x2500, .codepoints = &.{0x2500} },
+    };
+    var resolved = try resolveClusters(std.testing.allocator, .{}, &clusters, .{ .texts = &texts });
+    defer resolved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
+    try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.cluster_count);
+    try std.testing.expectEqual(@as(usize, 1), resolved.sprite_routes.len);
+    try std.testing.expectEqual(contract.SpecialSpriteRoute.box, resolved.sprite_routes[0].route);
+}
+
+test "resolver falls back when primary cannot cover whole cell text" {
+    const faces = [_]font_session.FontFaceRecord{
+        .{ .id = .{ .value = 1 }, .role = .primary, .coverage = .{ .range = .{ .first = 'a', .last = 'z' } } },
+        .{ .id = .{ .value = 2 }, .role = .fallback, .coverage = .all },
+    };
+    const session = font_session.FontSession{ .faces = &faces };
+    const clusters = [_]contract.CellCluster{.{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'i', .style = .regular, .presentation = .any }};
+    const texts = [_]contract.CellText{.{ .id = .{ .value = 0 }, .first_cp = 'i', .codepoints = &.{ 'i', 0x0332 } }};
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    defer resolved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
+    try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
+}
+
+test "resolver uses face provider validation" {
+    const Provider = struct {
+        fn has(ctx: *anyopaque, face_id: contract.FontFaceId, text: contract.CellText) bool {
+            _ = ctx;
+            if (face_id.value == 1 and text.codepoints.len > 1) return false;
+            return true;
+        }
+    };
+    const faces = [_]font_session.FontFaceRecord{
+        .{ .id = .{ .value = 1 }, .role = .primary, .coverage = .all },
+        .{ .id = .{ .value = 2 }, .role = .fallback, .coverage = .all },
+    };
+    var dummy: u8 = 0;
+    const session = font_session.FontSession{ .faces = &faces, .provider = .{ .ctx = &dummy, .has_cell_text = Provider.has } };
+    const clusters = [_]contract.CellCluster{.{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any }};
+    const texts = [_]contract.CellText{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{ 'x', 0x0332 } }};
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    defer resolved.deinit();
+    try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
+}

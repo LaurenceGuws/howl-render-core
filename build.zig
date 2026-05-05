@@ -97,11 +97,32 @@ pub fn build(b: *std.Build) void {
         run_mod_tests.has_side_effects = true;
     }
 
+    const core_mod = b.addModule("howl_render_core_pure", .{
+        .root_source_file = b.path("src/render_core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const core_tests = b.addTest(.{
+        .name = "test-core",
+        .root_module = core_mod,
+        .filters = b.args orelse &.{},
+    });
+    core_tests.use_llvm = true;
+    const run_core_tests = b.addRunArtifact(core_tests);
+    if (b.args != null) {
+        run_core_tests.has_side_effects = true;
+    }
+
     const test_step = b.step("test", "Run all tests");
+    const test_core_step = b.step("test:core", "Run pure render-core tests");
+    const test_core_build_step = b.step("test:core:build", "Build pure render-core tests");
     const test_unit_step = b.step("test:unit", "Run unit tests");
     const test_unit_build_step = b.step("test:unit:build", "Build unit tests");
+    test_core_build_step.dependOn(&b.addInstallArtifact(core_tests, .{}).step);
+    test_core_step.dependOn(&run_core_tests.step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(test_core_step);
     test_step.dependOn(test_unit_step);
 
     const benchmark_mod = b.createModule(.{

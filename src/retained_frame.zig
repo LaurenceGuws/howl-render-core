@@ -265,6 +265,10 @@ fn buildRowCache(
             cell_px.width,
             cell_px.height,
         );
+        const decorations = render_batch.cellDecorations(cell, cell_x, cell_y, cell_px);
+        for (decorations.rects[0..decorations.len]) |rect| {
+            try row_cache.fills.append(allocator, rect);
+        }
         if (procedural) continue;
         if (glyphs_enabled and cell.codepoint > 0x20 and !cell.continuation) {
             try row_cache.glyphs.append(allocator, .{
@@ -285,6 +289,8 @@ fn mapCell(src: frame_state.Cell, theme: vt_state.FrameTheme) render_batch.CellI
         .codepoint = src.codepoint,
         .fg = colorToRgba8(src.fg_color, true, theme),
         .bg = colorToRgba8(src.bg_color, false, theme),
+        .underline = src.attrs.underline,
+        .strikethrough = src.attrs.strikethrough,
         .continuation = src.flags.continuation,
     };
 }

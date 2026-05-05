@@ -15,6 +15,7 @@ const c = @cImport({
     }
     @cInclude("GLES2/gl2.h");
     @cInclude("time.h");
+    @cInclude("stdio.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
     @cInclude("hb.h");
@@ -44,6 +45,13 @@ fn monotonicNs() u64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
+}
+
+fn stdoutLog(comptime fmt: []const u8, args: anytype) void {
+    var buf: [256]u8 = undefined;
+    const line = std.fmt.bufPrintZ(&buf, fmt ++ "\n", args) catch return;
+    _ = c.printf("%s", line.ptr);
+    _ = c.fflush(c.stdout);
 }
 
 /// Shared cell-size alias.
@@ -305,7 +313,10 @@ pub const Backend = struct {
         if (self.closed) return error.BackendClosed;
         const rc = render_core.init(self.config, self.capabilities());
         try rc.validateRenderBatch(batch);
+        const upload_start_ns = monotonicNs();
         const committed_uploads = try self.uploadAtlas(batch);
+        const upload_us = @divTrunc(monotonicNs() - upload_start_ns, std.time.ns_per_us);
+        var draw_us: u64 = 0;
         if (hasCurrentContext()) {
             if (self.target_texture == null and self.config.target_texture != 0) {
                 self.target_texture = self.config.target_texture;
@@ -315,10 +326,13 @@ pub const Backend = struct {
             if (self.target_texture == null) return error.TargetTextureUnset;
             try self.beginTargetPass();
             defer self.endTargetPass();
+            const draw_start_ns = monotonicNs();
             drawBatch(self, batch);
+            draw_us = @divTrunc(monotonicNs() - draw_start_ns, std.time.ns_per_us);
         } else if (!builtin.is_test) {
             return error.NoContext;
         }
+        stdoutLog("ts_ns={} BACKEND_FRAME gles uploads={} committed={} upload_us={} draw_us={} glyphs={} fills={}", .{ monotonicNs(), batch.atlas_uploads.len, committed_uploads, upload_us, draw_us, batch.glyphs.len, batch.fills.len });
         self.pass_count += 1;
         return .{
             .stats = rc.summarizeRenderBatch(batch),
@@ -468,10 +482,8 @@ pub const Backend = struct {
             return cellSizeFromFace(face, self.config.font_size_px);
         }
 
-        return .{
-            .width = @max(@divFloor(font_px, 2), 1),
-            .height = font_px,
-        };
+        const cell = render_core.TextStack.Metrics.defaultCellMetrics(font_px);
+        return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
     }
 
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
@@ -752,15 +764,20 @@ pub const Backend = struct {
         const bh: usize = @intCast(bitmap.rows);
         const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
         const pitch_is_negative = bitmap.pitch < 0;
-        const baseline_y = computeBaselineFromFace(face, gh);
-        const bmp_left: i32 = glyph.*.bitmap_left;
-        const bmp_top: i32 = glyph.*.bitmap_top;
+        const placement = render_core.TextStack.Metrics.bitmapPlacement(
+            .{ .cell_w_px = gw, .cell_h_px = gh, .baseline_px = @intCast(computeBaselineFromFace(face, gh)) },
+            faceMetricsInput(face, 1),
+            glyph.*.bitmap_left,
+            glyph.*.bitmap_top,
+            @intCast(bitmap.width),
+            @intCast(bitmap.rows),
+        );
 
         var wrote_any = false;
         for (0..bh) |yy| {
             for (0..bw) |xx| {
-                const dx_i = @max(0, bmp_left) + @as(i32, @intCast(xx));
-                const dy_i = baseline_y - bmp_top + @as(i32, @intCast(yy));
+                const dx_i = placement.x_px + @as(i32, @intCast(xx));
+                const dy_i = placement.y_px + @as(i32, @intCast(yy));
                 if (dx_i < 0 or dy_i < 0) continue;
                 const dx: usize = @intCast(dx_i);
                 const dy: usize = @intCast(dy_i);
@@ -800,37 +817,31 @@ fn setFacePixelHeight(self: *const Backend, face: FtFace) bool {
 }
 
 fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
-    const metrics = face.*.size.*.metrics;
-    const ascender_raw = @as(f32, @floatFromInt(metrics.ascender)) / 64.0;
-    const descent_raw = @abs(@as(f32, @floatFromInt(metrics.descender)) / 64.0);
-    const line_height_raw = @max(@as(f32, @floatFromInt(metrics.height)) / 64.0, 1.0);
-    const line_gap_raw = @max(0.0, line_height_raw - (ascender_raw + descent_raw));
-    const baseline_from_top_raw = ascender_raw + line_gap_raw / 2.0;
-    const scaled_baseline = baseline_from_top_raw * (@as(f32, @floatFromInt(cell_h)) / line_height_raw);
-    const rounded = @as(i32, @intFromFloat(std.math.round(scaled_baseline)));
-    return std.math.clamp(rounded, 1, @as(i32, @intCast(cell_h)));
+    return render_core.TextStack.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
 }
 
 fn cellSizeFromFace(face: FtFace, font_size_px: u16) render_core.CellSize {
-    const metrics = face.*.size.*.metrics;
-    const height_px = metricCeilPx(metrics.height, font_size_px);
-
-    var width_px = metricCeilPx(metrics.max_advance, 0);
-    if (c.FT_Load_Char(face, 'M', c.FT_LOAD_DEFAULT) == 0 and face.*.glyph != null) {
-        const advance_x = face.*.glyph.*.advance.x;
-        width_px = @max(width_px, metricCeilPx(advance_x, 0));
-    }
-
-    return .{
-        .width = @max(width_px, 1),
-        .height = @max(height_px, 1),
-    };
+    const cell = cellMetricsFromFace(face, font_size_px);
+    return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
 }
 
-fn metricCeilPx(metric_26_6: anytype, fallback: u16) u16 {
-    const raw: i32 = @intCast(metric_26_6);
-    if (raw <= 0) return @max(fallback, 1);
-    return @intCast(@max(@divTrunc(raw + 63, 64), 1));
+fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render_core.CellMetrics {
+    return render_core.TextStack.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
+}
+
+fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.TextStack.Metrics.FaceMetrics26Dot6 {
+    const metrics = face.*.size.*.metrics;
+    var max_advance: i32 = @intCast(metrics.max_advance);
+    if (c.FT_Load_Char(face, 'M', c.FT_LOAD_DEFAULT) == 0 and face.*.glyph != null) {
+        max_advance = @max(max_advance, @as(i32, @intCast(face.*.glyph.*.advance.x)));
+    }
+    return .{
+        .ascender = @intCast(metrics.ascender),
+        .descender = @intCast(metrics.descender),
+        .height = @intCast(metrics.height),
+        .max_advance = max_advance,
+        .fallback_font_px = @max(font_size_px, 1),
+    };
 }
 
 fn hasCurrentContext() bool {
@@ -941,18 +952,18 @@ fn drawCursor(batch: render_core.RenderBatch, cursor: render_core.CursorDraw) vo
     const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(batch.cell_px.height));
     const cell_w: u16 = batch.cell_px.width;
     const cell_h: u16 = batch.cell_px.height;
-    const beam_w: u16 = if (cell_w >= 2) 2 else 1;
-    const underline_h: u16 = if (cell_h >= 2) 2 else 1;
+    const cursor_geom = render_core.TextStack.Metrics.cursorGeometry(.{ .cell_w_px = cell_w, .cell_h_px = cell_h, .baseline_px = @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)) });
 
     switch (cursor.shape) {
         .block => drawRect(batch.surface_px, base_x, base_y, cell_w, cell_h, cursor.color),
-        .beam => drawRect(batch.surface_px, base_x, base_y, beam_w, cell_h, cursor.color),
-        .underline => drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - underline_h)), cell_w, underline_h, cursor.color),
+        .beam => drawRect(batch.surface_px, base_x, base_y, cursor_geom.beam_w_px, cell_h, cursor.color),
+        .underline => drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - cursor_geom.underline_h_px)), cell_w, cursor_geom.underline_h_px, cursor.color),
         .hollow_block => {
-            drawRect(batch.surface_px, base_x, base_y, cell_w, 1, cursor.color);
-            drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - 1)), cell_w, 1, cursor.color);
-            drawRect(batch.surface_px, base_x, base_y, 1, cell_h, cursor.color);
-            drawRect(batch.surface_px, base_x + @as(i32, @intCast(cell_w - 1)), base_y, 1, cell_h, cursor.color);
+            const stroke = cursor_geom.hollow_stroke_px;
+            drawRect(batch.surface_px, base_x, base_y, cell_w, stroke, cursor.color);
+            drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - stroke)), cell_w, stroke, cursor.color);
+            drawRect(batch.surface_px, base_x, base_y, stroke, cell_h, cursor.color);
+            drawRect(batch.surface_px, base_x + @as(i32, @intCast(cell_w - stroke)), base_y, stroke, cell_h, cursor.color);
         },
     }
 }

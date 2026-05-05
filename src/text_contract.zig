@@ -3,6 +3,7 @@
 //! Reason: keep shaping/fallback/metrics vocabulary stable across render variants.
 
 const std = @import("std");
+pub const Rgba8 = @import("rgba.zig").Rgba8;
 
 pub const BackendCaps = struct {
     has_freetype: bool = false,
@@ -30,12 +31,205 @@ pub const FontMetrics = struct {
     line_gap_px: f32,
     underline_pos_px: f32,
     underline_thickness_px: f32,
+    strikethrough_pos_px: f32,
+    strikethrough_thickness_px: f32,
 };
 
 pub const CellMetrics = struct {
     cell_w_px: u16,
     cell_h_px: u16,
     baseline_px: i16,
+};
+
+pub const GridMetrics = struct {
+    cols: u16,
+    rows: u16 = 1,
+};
+
+pub const FontFaceId = extern struct {
+    value: u32,
+};
+
+pub const CellTextId = extern struct {
+    value: u32,
+};
+
+pub const SpriteKey = extern struct {
+    value: u64,
+};
+
+pub const CellText = struct {
+    id: CellTextId,
+    first_cp: u32,
+    codepoints: []const u32,
+};
+
+pub const LineTextCache = struct {
+    texts: []const CellText = &.{},
+};
+
+pub const RenderableCell = struct {
+    text_id: CellTextId,
+    first_cell: u32,
+    cell_span: u8,
+    style: FontStyle,
+    presentation: TextPresentation,
+    fg: Rgba8,
+    bg: Rgba8,
+    underline: bool = false,
+    strikethrough: bool = false,
+    continuation: bool = false,
+};
+
+pub const CellCluster = struct {
+    text_id: CellTextId,
+    first_cell: u32,
+    cell_span: u8,
+    first_cp: u32,
+    style: FontStyle,
+    presentation: TextPresentation,
+};
+
+pub const RunFont = struct {
+    face_id: FontFaceId,
+    style: FontStyle,
+    presentation: TextPresentation,
+    scale: u8 = 1,
+    subscale_n: u8 = 0,
+    subscale_d: u8 = 0,
+    multicell_y: u8 = 0,
+    alignment: u8 = 0,
+};
+
+pub const TextRun = struct {
+    cluster_start: u32,
+    cluster_count: u32,
+    font: RunFont,
+};
+
+pub const ResolvedRun = struct {
+    run: TextRun,
+    features_id: u32 = 0,
+};
+
+pub const GlyphInstance = struct {
+    face_id: FontFaceId,
+    glyph_id: u32,
+    cluster_index: u32,
+    x_offset_px: f32 = 0,
+    y_offset_px: f32 = 0,
+    x_advance_px: f32 = 0,
+};
+
+pub const GlyphPlacement = struct {
+    x_offset_px: f32 = 0,
+    y_offset_px: f32 = 0,
+    advance_px: f32 = 0,
+};
+
+pub const GlyphGroupKind = enum(u3) {
+    normal,
+    ligature,
+    icon,
+    emoji,
+    box_fallback,
+    missing,
+};
+
+pub const GlyphGroup = struct {
+    first_cell: u32,
+    cell_span: u8,
+    glyphs: []const GlyphInstance,
+    placement: GlyphPlacement = .{},
+    sprite_key: SpriteKey,
+    kind: GlyphGroupKind,
+};
+
+pub const SpriteColorMode = enum(u2) {
+    alpha,
+    color,
+};
+
+pub const SpritePosition = struct {
+    slot: u32,
+    key: SpriteKey,
+    rendered: bool = false,
+    colored: bool = false,
+};
+
+pub const TextSpriteDraw = struct {
+    sprite: SpritePosition,
+    x_px: i32,
+    y_px: i32,
+    width_px: u16,
+    height_px: u16,
+    placement: GlyphPlacement = .{},
+    color: Rgba8,
+    first_cell: u32,
+    cell_span: u8,
+};
+
+pub const TextBackgroundDraw = struct {
+    x_px: i32,
+    y_px: i32,
+    width_px: u16,
+    height_px: u16,
+    color: Rgba8,
+    first_cell: u32,
+    cell_span: u8,
+};
+
+pub const TextCursorDraw = struct {
+    x_px: i32,
+    y_px: i32,
+    width_px: u16,
+    height_px: u16,
+    color: Rgba8,
+};
+
+pub const DecorationKind = enum(u2) {
+    underline,
+    strikethrough,
+};
+
+pub const TextDecorationDraw = struct {
+    kind: DecorationKind,
+    x_px: i32,
+    y_px: i32,
+    width_px: u16,
+    height_px: u16,
+    color: Rgba8,
+    first_cell: u32,
+    cell_span: u8,
+};
+
+pub const SpriteRasterRequest = struct {
+    key: SpriteKey,
+    group: GlyphGroup,
+    placement: GlyphPlacement = .{},
+    width_px: u16,
+    height_px: u16,
+    baseline_px: i16 = 0,
+    color_mode: SpriteColorMode = .alpha,
+};
+
+pub const TextScene = struct {
+    cells: []const RenderableCell,
+    background_draws: []const TextBackgroundDraw = &.{},
+    sprite_draws: []const TextSpriteDraw,
+    decoration_draws: []const TextDecorationDraw = &.{},
+    cursor_draws: []const TextCursorDraw = &.{},
+    raster_requests: []const SpriteRasterRequest = &.{},
+    missing: []const MissingGlyph,
+};
+
+pub const SpecialSpriteRoute = enum(u3) {
+    blank,
+    box,
+    block,
+    braille,
+    powerline,
+    legacy_computing,
 };
 
 pub const TextCluster = struct {
@@ -82,4 +276,6 @@ test "text contract defaults are deterministic" {
     try std.testing.expect(!caps.has_harfbuzz);
     const cluster = TextCluster{ .grapheme_utf8 = "a", .first_cp = 97 };
     try std.testing.expectEqual(@as(u8, 1), cluster.cell_span);
+    const text = CellText{ .id = .{ .value = 1 }, .first_cp = 'A', .codepoints = &.{ 'A' } };
+    try std.testing.expectEqual(@as(u32, 'A'), text.codepoints[0]);
 }

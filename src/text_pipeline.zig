@@ -5,13 +5,17 @@
 const std = @import("std");
 const contract = @import("text_contract.zig");
 
-pub const ResolveStage = enum(u4) {
+pub const ResolveStage = enum(u5) {
+    blank,
     style_policy,
     codepoint_override,
     sprite_route,
+    symbol_map,
     loaded_exact_match,
     regular_style_retry,
+    configured_fallback,
     discovery_fallback,
+    emoji_fallback,
     regular_any_presentation,
     missing_glyph,
 };
@@ -20,6 +24,7 @@ pub const ResolveRequest = struct {
     codepoint: u32,
     style: contract.FontStyle,
     presentation: contract.TextPresentation,
+    text_id: ?contract.CellTextId = null,
 };
 
 pub const ResolveHit = struct {
@@ -43,6 +48,55 @@ pub const ResolveCounters = struct {
     fallback_hits: u64 = 0,
     fallback_misses: u64 = 0,
     shaped_clusters: u64 = 0,
+    resolved_runs: u64 = 0,
+    sprite_routes: u64 = 0,
+};
+
+pub const TextEngineCounters = struct {
+    cell_texts: u64 = 0,
+    clusters: u64 = 0,
+    resolved_runs: u64 = 0,
+    shaped_runs: u64 = 0,
+    shaped_glyphs: u64 = 0,
+    glyph_groups: u64 = 0,
+    sprite_cache_hits: u64 = 0,
+    sprite_cache_misses: u64 = 0,
+    rasterized_sprites: u64 = 0,
+    missing_glyphs: u64 = 0,
+};
+
+pub const BuildRunsRequest = struct {
+    cells: []const contract.RenderableCell,
+    text_cache: contract.LineTextCache,
+    cell_metrics: contract.CellMetrics,
+};
+
+pub const BuildRunsOutput = struct {
+    allocator: std.mem.Allocator,
+    clusters: []contract.CellCluster,
+    runs: []contract.ResolvedRun,
+
+    pub fn deinit(self: *BuildRunsOutput) void {
+        self.allocator.free(self.clusters);
+        self.allocator.free(self.runs);
+        self.* = undefined;
+    }
+};
+
+pub const GroupGlyphsRequest = struct {
+    run: contract.ResolvedRun,
+    glyphs: []const contract.GlyphInstance,
+    clusters: []const contract.CellCluster,
+};
+
+pub const GroupGlyphsOutput = struct {
+    allocator: std.mem.Allocator,
+    groups: []contract.GlyphGroup,
+
+    pub fn deinit(self: *GroupGlyphsOutput) void {
+        self.allocator.free(self.groups);
+        self.* = undefined;
+    }
 };
 
 pub const ShapeRequest = struct {
@@ -70,6 +124,7 @@ pub const RasterizeRequest = struct {
     glyph_id: u32,
     atlas_key: u64,
     cell_metrics: contract.CellMetrics,
+    sprite_key: ?contract.SpriteKey = null,
 };
 
 pub const RasterizeOutput = struct {
@@ -194,6 +249,8 @@ test "text pipeline ops dispatch and own output buffers" {
             .line_gap_px = 2,
             .underline_pos_px = 1,
             .underline_thickness_px = 1,
+            .strikethrough_pos_px = 6,
+            .strikethrough_thickness_px = 1,
         },
         .cell_metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
     };

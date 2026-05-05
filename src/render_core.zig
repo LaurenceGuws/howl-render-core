@@ -30,6 +30,7 @@ pub const RenderCore = struct {
     pub const CursorInput = render_batch.CursorInput;
     pub const VtState = render_batch.VtState;
     pub const FrameTheme = vt_state.FrameTheme;
+    pub const OwnedTextSceneInput = vt_state.OwnedTextSceneInput;
     pub const OwnedRenderBatch = render_batch.OwnedRenderBatch;
     pub const SurfaceState = surface.SurfaceState;
     pub const SurfaceColor = surface.Color;
@@ -53,6 +54,31 @@ pub const RenderCore = struct {
     pub const TextPresentation = text_contract.TextPresentation;
     pub const FontMetrics = text_contract.FontMetrics;
     pub const CellMetrics = text_contract.CellMetrics;
+    pub const GridMetrics = text_contract.GridMetrics;
+    pub const FontFaceId = text_contract.FontFaceId;
+    pub const CellTextId = text_contract.CellTextId;
+    pub const SpriteKey = text_contract.SpriteKey;
+    pub const CellText = text_contract.CellText;
+    pub const LineTextCache = text_contract.LineTextCache;
+    pub const RenderableCell = text_contract.RenderableCell;
+    pub const CellCluster = text_contract.CellCluster;
+    pub const RunFont = text_contract.RunFont;
+    pub const TextRun = text_contract.TextRun;
+    pub const ResolvedRun = text_contract.ResolvedRun;
+    pub const GlyphInstance = text_contract.GlyphInstance;
+    pub const GlyphPlacement = text_contract.GlyphPlacement;
+    pub const GlyphGroupKind = text_contract.GlyphGroupKind;
+    pub const GlyphGroup = text_contract.GlyphGroup;
+    pub const SpriteColorMode = text_contract.SpriteColorMode;
+    pub const SpritePosition = text_contract.SpritePosition;
+    pub const TextSpriteDraw = text_contract.TextSpriteDraw;
+    pub const TextBackgroundDraw = text_contract.TextBackgroundDraw;
+    pub const TextCursorDraw = text_contract.TextCursorDraw;
+    pub const DecorationKind = text_contract.DecorationKind;
+    pub const TextDecorationDraw = text_contract.TextDecorationDraw;
+    pub const SpriteRasterRequest = text_contract.SpriteRasterRequest;
+    pub const TextScene = text_contract.TextScene;
+    pub const SpecialSpriteRoute = text_contract.SpecialSpriteRoute;
     pub const TextCluster = text_contract.TextCluster;
     pub const ShapedGlyph = text_contract.ShapedGlyph;
     pub const ShapedRun = text_contract.ShapedRun;
@@ -64,6 +90,11 @@ pub const RenderCore = struct {
     pub const ResolveMiss = text_pipeline.ResolveMiss;
     pub const ResolveResult = text_pipeline.ResolveResult;
     pub const ResolveCounters = text_pipeline.ResolveCounters;
+    pub const TextEngineCounters = text_pipeline.TextEngineCounters;
+    pub const BuildRunsRequest = text_pipeline.BuildRunsRequest;
+    pub const BuildRunsOutput = text_pipeline.BuildRunsOutput;
+    pub const GroupGlyphsRequest = text_pipeline.GroupGlyphsRequest;
+    pub const GroupGlyphsOutput = text_pipeline.GroupGlyphsOutput;
     pub const ShapeRequest = text_pipeline.ShapeRequest;
     pub const ShapeOutput = text_pipeline.ShapeOutput;
     pub const RasterizeRequest = text_pipeline.RasterizeRequest;
@@ -116,6 +147,14 @@ pub const RenderCore = struct {
         theme: FrameTheme,
     ) RenderBatchBuildError!OwnedRenderBatch {
         return vt_state.vtStateToRenderBatchWithTheme(allocator, state, surface_px, cell_px, theme, self.capability);
+    }
+
+    pub fn vtStateToTextSceneInput(
+        _: *const RenderCore,
+        allocator: std.mem.Allocator,
+        state: anytype,
+    ) !OwnedTextSceneInput {
+        return vt_state.vtStateToTextSceneInput(allocator, state);
     }
 
     pub fn validateRenderBatch(self: *const RenderCore, batch: RenderBatch) RenderBatchValidationError!void {

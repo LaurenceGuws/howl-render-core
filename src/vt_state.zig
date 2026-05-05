@@ -3,7 +3,10 @@
 //! Reason: remove duplicated frame-mapping logic across render backends.
 
 const std = @import("std");
+const frame_state = @import("frame_state.zig");
 const render_batch = @import("render_batch.zig");
+const text_engine = @import("text_stack/engine.zig");
+const text_scene = @import("text_stack/scene.zig");
 
 pub const FrameTheme = struct {
     default_fg: render_batch.Rgba8,
@@ -70,6 +73,26 @@ fn mapCursorShape(shape: anytype) render_batch.CursorShape {
     };
 }
 
+fn mapTextSceneCursorShape(shape: anytype) text_scene.CursorShape {
+    const name = @tagName(shape);
+    if (std.mem.eql(u8, name, "underline")) return .underline;
+    if (std.mem.eql(u8, name, "beam")) return .beam;
+    if (std.mem.eql(u8, name, "hollow_block")) return .hollow_block;
+    return .block;
+}
+
+pub const OwnedTextSceneInput = struct {
+    allocator: std.mem.Allocator,
+    cells: []render_batch.CellInput,
+    grid: @import("text_contract.zig").GridMetrics,
+    options: text_engine.AnalysisOptions,
+
+    pub fn deinit(self: *OwnedTextSceneInput) void {
+        self.allocator.free(self.cells);
+        self.* = undefined;
+    }
+};
+
 pub fn vtStateToRenderBatch(
     allocator: std.mem.Allocator,
     state: anytype,
@@ -103,6 +126,8 @@ pub fn vtStateToRenderBatchWithTheme(
             .codepoint = src.codepoint,
             .fg = colorToRgba8(src.fg_color, true, t),
             .bg = colorToRgba8(src.bg_color, false, t),
+            .underline = src.attrs.underline,
+            .strikethrough = src.attrs.strikethrough,
             .continuation = src.flags.continuation,
         };
     }
@@ -126,4 +151,75 @@ pub fn vtStateToRenderBatchWithTheme(
             .dirty_cols_end = state.damage.dirty_cols_end,
         },
     }, capability);
+}
+
+pub fn vtStateToTextSceneInput(
+    allocator: std.mem.Allocator,
+    state: anytype,
+) !OwnedTextSceneInput {
+    return vtStateToTextSceneInputWithTheme(allocator, state, default_theme);
+}
+
+pub fn vtStateToTextSceneInputWithTheme(
+    allocator: std.mem.Allocator,
+    state: anytype,
+    t: FrameTheme,
+) !OwnedTextSceneInput {
+    const cell_inputs = try allocator.alloc(render_batch.CellInput, state.grid.cells.len);
+    errdefer allocator.free(cell_inputs);
+
+    for (state.grid.cells, cell_inputs) |src, *dst| {
+        dst.* = .{
+            .codepoint = src.codepoint,
+            .fg = colorToRgba8(src.fg_color, true, t),
+            .bg = colorToRgba8(src.bg_color, false, t),
+            .underline = src.attrs.underline,
+            .strikethrough = src.attrs.strikethrough,
+            .continuation = src.flags.continuation,
+        };
+    }
+
+    const cursor: ?text_scene.CursorInput = if (state.cursor.visible) .{
+        .cell_col = state.cursor.col,
+        .cell_row = state.cursor.row,
+        .shape = mapTextSceneCursorShape(state.cursor.shape),
+        .color = t.cursor_color,
+    } else null;
+
+    return .{
+        .allocator = allocator,
+        .cells = cell_inputs,
+        .grid = .{ .cols = state.grid.cols, .rows = state.grid.rows },
+        .options = .{ .scene = .{ .cursor = cursor } },
+    };
+}
+
+test "vt_state preserves underline and strikethrough attrs in batch input" {
+    const cells = [_]frame_state.Cell{.{
+        .codepoint = 'A',
+        .attrs = .{ .underline = true, .strikethrough = true },
+    }};
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = .block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    var owned = try vtStateToRenderBatch(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, .{ .max_atlas_slots = 4, .supports_fill_rect = true, .supports_glyph_quads = true });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 3), owned.batch.fills.len);
+}
+
+test "vt_state converts frame state to text scene input" {
+    const cells = [_]frame_state.Cell{.{ .codepoint = 'A', .attrs = .{ .underline = true } }};
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = .beam },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    var input = try vtStateToTextSceneInput(std.testing.allocator, state);
+    defer input.deinit();
+    try std.testing.expectEqual(@as(usize, 1), input.cells.len);
+    try std.testing.expectEqual(@as(u21, 'A'), input.cells[0].codepoint);
+    try std.testing.expect(input.cells[0].underline);
+    try std.testing.expect(input.options.scene.cursor != null);
 }

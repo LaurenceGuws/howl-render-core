@@ -3,6 +3,9 @@
 //! Reason: keep command ordering shared while atlas residency stays backend-owned.
 
 const std = @import("std");
+const rgba = @import("rgba.zig");
+const text_contract = @import("text_contract.zig");
+const metrics = @import("text_stack/metrics.zig");
 
 /// Shared backend configuration used for batch generation and validation.
 pub const BackendConfig = struct {
@@ -39,12 +42,7 @@ pub const GridSize = struct {
 };
 
 /// 8-bit RGBA color.
-pub const Rgba8 = extern struct {
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-};
+pub const Rgba8 = rgba.Rgba8;
 
 /// Filled rectangle draw command.
 pub const FillRect = struct {
@@ -127,7 +125,14 @@ pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
     bg: Rgba8,
+    underline: bool = false,
+    strikethrough: bool = false,
     continuation: bool = false,
+};
+
+pub const CellDecorations = struct {
+    rects: [2]FillRect = undefined,
+    len: usize = 0,
 };
 
 /// Input grid payload used during batch generation.
@@ -321,6 +326,41 @@ fn sameColor(a: Rgba8, b: Rgba8) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
+pub fn cellDecorations(cell: CellInput, cell_x: i32, cell_y: i32, cell_px: CellSize) CellDecorations {
+    var out = CellDecorations{};
+    if (!cell.underline and !cell.strikethrough) return out;
+
+    const cell_metrics = text_contract.CellMetrics{
+        .cell_w_px = cell_px.width,
+        .cell_h_px = cell_px.height,
+        .baseline_px = @intCast(@max(cell_px.height - @divFloor(cell_px.height, 5), 1)),
+    };
+    const font_metrics = metrics.defaultFontMetrics(cell_metrics);
+    const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
+
+    if (cell.underline) {
+        out.rects[out.len] = .{
+            .x = cell_x,
+            .y = cell_y + deco.underline_y_px,
+            .width = cell_px.width,
+            .height = deco.underline_h_px,
+            .color = cell.fg,
+        };
+        out.len += 1;
+    }
+    if (cell.strikethrough) {
+        out.rects[out.len] = .{
+            .x = cell_x,
+            .y = cell_y + deco.strikethrough_y_px,
+            .width = cell_px.width,
+            .height = deco.strikethrough_h_px,
+            .color = cell.fg,
+        };
+        out.len += 1;
+    }
+    return out;
+}
+
 fn appendBackgroundSpans(
     fills: *std.ArrayList(FillRect),
     allocator: std.mem.Allocator,
@@ -404,6 +444,10 @@ pub fn renderBatch(
                 frame.cell_px.width,
                 frame.cell_px.height,
             );
+            const decorations = cellDecorations(cell, cell_x, cell_y, frame.cell_px);
+            for (decorations.rects[0..decorations.len]) |rect| {
+                try fills.append(allocator, rect);
+            }
             if (procedural) continue;
 
             if (glyphs_enabled and cell.codepoint > 0x20 and !cell.continuation) {
@@ -654,6 +698,29 @@ test "render_batch: background spans split on color changes" {
     try std.testing.expectEqual(@as(u16, 8), owned.batch.fills[1].width);
     try std.testing.expectEqual(@as(i32, 24), owned.batch.fills[2].x);
     try std.testing.expectEqual(@as(u16, 8), owned.batch.fills[2].width);
+}
+
+test "render_batch: underline and strikethrough produce decoration fills" {
+    const cells = [_]CellInput{.{
+        .codepoint = 'A',
+        .fg = white,
+        .bg = black,
+        .underline = true,
+        .strikethrough = true,
+    }};
+    var owned = try renderBatch(std.testing.allocator, .{
+        .surface_px = .{ .width = 8, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+    }, testCapability(4));
+    defer owned.deinit();
+
+    const cell_metrics = text_contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 };
+    const deco = metrics.decorationGeometry(cell_metrics, metrics.defaultFontMetrics(cell_metrics));
+
+    try std.testing.expectEqual(@as(usize, 3), owned.batch.fills.len);
+    try std.testing.expectEqual(deco.underline_y_px, owned.batch.fills[1].y);
+    try std.testing.expectEqual(deco.strikethrough_y_px, owned.batch.fills[2].y);
 }
 
 test "render_batch: cursor visible maps to cursor draw" {

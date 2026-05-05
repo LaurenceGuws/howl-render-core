@@ -13,7 +13,7 @@ This document is intentionally grounded in the current Howl implementation and i
 - `/home/home/personal/zide/dev_references/terminals/kitty/kitty_tests/fonts.py`
 
 ## Current Howl State
-Howl currently has the beginning of a text contract, but the renderer is still fundamentally cell/codepoint based.
+Howl currently has the beginning of a text contract, but the real implementation is still fundamentally cell/codepoint based.
 
 Already present:
 - `howl-render-core/src/text_contract.zig` defines placeholder contract types such as `TextCluster`, `ShapedRun`, `ShapedGlyph`, `FontMetrics`, and `CellMetrics`.
@@ -31,6 +31,19 @@ Important gaps:
 - There is no shaped-run cache, text cache, glyph property cache, or sprite-position cache.
 - Combining marks, emoji presentation, ZWJ sequences, ligatures, PUA+space powerline behavior, and wide/multicell grouping are not first-class.
 - Decorations are simple cell rectangles, not font-metric/sprite-integrated text decorations.
+
+The architectural problem is not just that pieces are missing. The ownership is wrong.
+
+Today the backend still owns too much of the text engine:
+- font resolution
+- fallback resolution
+- glyph shaping decisions
+- glyph rasterization policy
+- atlas identity policy
+
+That is fine for an intentionally immature bootstrap renderer, but it is not a viable mature architecture.
+
+The renderer backend should not be the text engine.
 
 ## Kitty Ideology To Adopt
 Kitty's text subsystem is not just "FT + HB". The important design is the ordering and ownership of decisions.
@@ -62,8 +75,29 @@ From the local kitty reference:
 - `glyph-cache.c` keys sprite positions by glyph sequence, ligature index, cell count, scale, subscale, multicell row, and alignment.
 - `fonts.py` tests sprite map allocation, box drawing sprites, scaled multicells, combining marks, wide CJK, emoji presentation, ligature grouping, fallback behavior, and symbol-map coalescing.
 
+## Architecture Cut
+The redesign boundary is simple:
+
+- current Howl model: `cell -> codepoint -> atlas slot -> draw`
+- target mature model: `cells -> cell text -> resolved font runs -> shaped glyph runs -> glyph groups -> sprite cache -> atlas -> draw`
+
+The new text stack must be a first-class engine layer, not a thin helper around backend code.
+
+### Target Pipeline
+1. VT/frame cells enter render-core as terminal-aware cell payloads.
+2. A text engine extracts `CellText` and grapheme clusters from cells.
+3. A font resolver selects primary/style/symbol/fallback faces for compatible runs.
+4. HarfBuzz shapes full runs, not individual codepoints.
+5. A grouping stage maps shaped glyphs back to terminal cell spans.
+6. A sprite-key stage identifies reusable rendered glyph groups.
+7. A raster service produces sprite bitmaps and metrics.
+8. Atlas/cache services ensure residency.
+9. Backend uploads sprites and draws quads only.
+
+This is the essential maturity move.
+
 ## Target Ownership
-Keep Howl boundaries, but make the renderer own text quality.
+Keep Howl boundaries, but move text semantics into a real text engine layer inside render-core.
 
 `howl-vt-core` owns:
 - cell text semantics: codepoints, width/continuation, grapheme/multicodepoint cell content where terminal semantics require it
@@ -79,13 +113,18 @@ Keep Howl boundaries, but make the renderer own text quality.
 - shared line/run/group/sprite data vocabulary
 - shared special glyph classification and procedural sprite contracts
 - shared metrics contract and test fixtures
+- text engine orchestration
+- cell text extraction and line/run construction
+- font/session vocabulary
+- sprite key vocabulary
+- grouping semantics that map shaped glyphs back to terminal cells
 
 `RenderGl` / `RenderGles` own:
-- FreeType/HarfBuzz/font discovery wiring
-- face lifetime and fallback loading
-- shaped run execution
-- glyph/sprite rasterization
-- atlas storage, eviction, and upload
+- FreeType/HarfBuzz/font discovery integration hooks for the render-core text engine
+- concrete face lifetime wiring where platform/backend specific
+- concrete glyph rasterization backend hooks
+- atlas texture storage, eviction, and upload
+- final draw submission
 
 Linux-host owns:
 - user config input only: font family/path lists, size, features, fallback policy knobs
@@ -105,13 +144,65 @@ Add render-core vocabulary:
 - `SpriteKey`: face id, glyph sequence, ligature index, cell count, scale/subscale/alignment, presentation, feature set.
 - `SpritePosition`: atlas slot plus colored/alpha metadata.
 
+Also add explicit engine output vocabulary:
+- `TextScene`: renderer-neutral text output for one frame or dirty line set.
+- `TextSpriteDraw`: final positioned sprite draw with atlas residency info.
+- `ResolvedRun`: a run with fully chosen face/style/presentation/features.
+- `GlyphInstance`: one shaped glyph with cluster and placement data.
+
 Do not try to solve this by adding more fields to `GlyphQuad`. `GlyphQuad` should become the final GPU submission result, not the text decision input.
 
-## Pixel Fidelity Track
-This is the first practical track. It can start before the full line/run/group model is complete.
+## Proposed Module Layout
+Build the mature stack in `howl-render-core/src/text_stack/`.
+
+New modules:
+- `engine.zig`: orchestrates the full text pipeline.
+- `font_session.zig`: Howl equivalent of kitty's `FontGroup`; owns primary/style/fallback/symbol faces and metrics caches.
+- `font_resolver.zig`: resolves exact style faces, symbol-map routes, fallback faces, and presentation-specific faces.
+- `cluster.zig`: extracts grapheme/cell text payloads from terminal cells.
+- `shape_run.zig`: shapes full runs with HarfBuzz and emits glyph instances.
+- `grouping.zig`: maps shaped glyphs back to terminal cell groups, handling ligatures, combining marks, wide glyphs, and special empty followers.
+- `sprite_key.zig`: defines stable cache identity for rendered glyph groups.
+- `rasterizer.zig`: rasterizes glyph groups into alpha/color sprites with full metrics.
+- `scene.zig`: renderer-neutral text scene output for the backend.
+- `atlas_cache.zig`: backend-neutral atlas residency bookkeeping and lookup vocabulary.
+- `symbol_map.zig`: explicit symbol/icon/nerd-font routing.
+- `metrics.zig`: shared baseline, overhang, underline, and line metric policy.
+
+Existing placeholder modules should either be expanded into these real responsibilities or replaced by them.
+
+## Backend Boundary Rules
+After the redesign, backends must not own text semantics.
+
+Backends may own:
+- concrete FT/HB object wiring
+- platform/library specific font discovery hooks
+- bitmap upload to GPU textures
+- atlas texture allocation and eviction policy
+- final draw submission
+
+Backends must not own:
+- resolver order semantics
+- ligature grouping semantics
+- cluster-to-cell reconciliation
+- sprite cache identity policy
+- primary text engine orchestration
+- shared metrics policy
+
+If a text behavior matters for correctness, it belongs in render-core text-stack policy, not duplicated in GL and GLES.
+
+## Quality Targets
+This sprint is not just for cold-path performance. It is for raising the architecture and quality floor.
 
 Non-negotiable target:
 - If a configured primary or fallback font contains the glyph, Howl should render that actual glyph, not a placeholder or procedural approximation unless the codepoint is deliberately routed to a procedural sprite.
+
+Architectural non-negotiables:
+- Text shaping happens on runs, not single codepoints.
+- Cache identity is based on rendered glyph groups, not codepoints.
+- Ligatures, combining marks, wide glyphs, and symbol routes are first-class model concepts.
+- Mono and non-monospace fonts must go through the same engine.
+- Nerd Font and icon rendering must be explicit and testable, not accidental fallback luck.
 
 Immediate requirements:
 - Resolve the correct face for regular/bold/italic/bold-italic instead of treating one face as the whole family.
@@ -123,6 +214,13 @@ Immediate requirements:
 - Distinguish alpha glyphs from colored glyphs and plan for COLR/CPAL/CBDT/SBIX emoji support.
 - Key atlas entries by face id + glyph id + load/render target + size + presentation/style, not just codepoint + cell size.
 - Keep procedural box/block routes intentional; do not use them to hide normal font-rendering failures.
+
+Broader maturity targets:
+- mono and non-monospace font correctness
+- pixel-faithful nerd font icon rendering
+- high-quality ligature support
+- backend-light architecture
+- kitty-level quality floor, but not kitty as the end goal
 
 Modern Nerd Font cases to validate early:
 - Powerline separators and branch symbols.
@@ -193,6 +291,12 @@ Required changes:
 - Track fallback hits/misses, missing glyphs, shaped runs, shaped groups, raster uploads, cache hits, and cache evictions.
 - Make eviction explicit. Ring overwrite is acceptable only as an initial policy if stale references cannot survive into a frame.
 
+Preferred key philosophy:
+- identity should describe the rendered result, not the source codepoint
+- glyph sequence and cell grouping matter
+- presentation/features/style matter
+- proportional and multicell output must fit without inventing backend-local exceptions later
+
 ## Special Glyph Route
 Do not regress the procedural path. Expand it deliberately.
 
@@ -249,112 +353,148 @@ Manual validation corpus:
 
 ## Implementation Slices
 
-### Slice 0: Pixel-Fidelity Baseline
-Goal: make current code render actual glyphs from configured primary/fallback fonts consistently.
+### Progress Tracking
+
+This section is the working checklist for the migration. Update it before moving between slices.
+
+- Slice 0: Architecture Skeleton — mostly complete. The target module layout exists under `src/text_stack/`, public contract/pipeline vocabulary is expanded, and the legacy path still coexists.
+- Slice 1: Cell Text And Run Vocabulary — partially complete. Render-core can intern legacy and rich cell text inputs and produce clusters/runs, and continuation cells now expand base-cell spans for the new text pipeline. VT/render conversion still does not preserve full rich terminal cell text end-to-end.
+- Slice 2: Font Session And Resolver — partially complete. Provider-backed sessions and whole-cell validation exist, but style-family faces, symbol-map override faces, discovery fallback, and full resolver order are incomplete.
+- Slice 3: Metrics And Placement Policy — functionally complete for the current architecture slice. Shared 26.6 face-metric to `CellMetrics`/baseline policy exists in `TextStack.Metrics`, GL/GLES cell-size and glyph baseline helpers consume it, shared decoration/cursor geometry helpers exist, bitmap bearing/baseline placement is centralized for GL/GLES raster paths, shaping/grouping/scene contracts carry explicit placement data, the legacy frame-to-batch path preserves underline/strikethrough into shared-geometry decoration fills, and the mature text-scene path now emits explicit decoration draws. Remaining correctness work is now mainly replacing stub placement/shaping with real HarfBuzz outputs in Slice 4.
+- Slice 4: Real HarfBuzz Shaping — in progress. The shaping boundary now carries full `LineTextCache` data, and `RenderGl` has started whole-run HarfBuzz shaping with preserved glyph clusters/offsets/advances. Remaining work is broadening that shaping path across more cases and making grouping consume real HarfBuzz cluster behavior for ligatures, combining marks, and multicell glyphs.
+- Slice 5: Glyph Grouping Back To Cells — in progress. Grouping now consumes real shaped cluster output enough to merge multiple glyphs that map back to the same originating cluster into one terminal group, infer a wider terminal span when HarfBuzz collapses multiple source clusters into a first-cluster ligature glyph, preserve continuation-derived wide cell spans through cluster extraction and default shaping, drop follow-on groups whose first cell is already covered by an earlier multicell group, expand powerline sprite routes across immediately-adjacent spacer cells so PUA+space prompt segments become one sprite group, and expose a default-disabled cursor ligature-suppression policy hook. Broader spacer policies and production cursor wiring are still pending.
+- Slice 6: Sprite Keys, Rasterization, And Atlas Residency — forced single-path migration in progress. GL terminal frame rendering now always routes through `TextScene` (`renderFrameState` -> `renderFrameStateTextScene` -> `renderTextScene`), and the host render loop no longer has a retained `RenderBatch` fallback or `HOWL_TEXT_SCENE_RENDERER` switch. GL `renderBatch`, `prepareFrameState`, and `prepareRetainedFrameState` now panic if called so legacy path usage is loud. Sprite keys/positions, raster requests, raster plans, GL atlas upload from renderer-neutral `TextScene` plus raster outputs, multicell-aware GL atlas slot sizing for scene raster outputs, renderer-neutral `TextScene.background_draws` and `cursor_draws`, scene-build and engine-analysis cursor options, and shared frame-to-text-scene input conversion exist. Font-size changes now mark the viewport dirty so raster/sprite data is regenerated like Kitty's dirty-sprite-position flow. HarfBuzz shaping now uses monotone character clusters like Kitty, bitmap placement honors the requested scene baseline, and GL group rasterization now composites every glyph in the shaped group instead of only glyph 0. Still missing: Kitty-style group splitting around special/empty ligature glyphs, cache-generation invalidation, complete fallback/icon/emoji correctness, GLES parity, and deletion of lower-level legacy `RenderBatch/GlyphQuad` utilities after replacement coverage exists.
+- Slice 7: Procedural And Symbol Route Maturity — partial scaffold only. Some route classification exists; pixel-mask coverage and explicit symbol/icon tests are still pending.
+- Slice 8: Presentation, Emoji, And Advanced Font Behavior — partial scaffold only. VS15/VS16 detection exists, but color glyph output, emoji fallback, icon alignment, and proportional placement are pending.
+- Slice 9: Diagnostics And Performance — not started beyond basic counters. Do not optimize bootstrap paths before the mature architecture is active.
+
+Next planned work: finish any remaining spacer policy hooks and production cursor wiring, then move into Slice 6 production migration toward a single text-scene renderer path.
+
+### Slice 0: Architecture Skeleton
+Goal: create the real text-engine module layout and contracts without yet deleting the legacy codepoint path.
 
 Tasks:
-- Unify GL/GLES FreeType metrics, baseline, and bitmap placement.
-- Introduce a real glyph atlas key: face id, glyph id, font size, style, presentation, and render flags.
-- Stop treating codepoint + cell size as atlas identity.
-- Validate glyph existence before fallback success.
-- Track missing glyphs, fallback hits, fallback misses, and raster failures separately.
-- Add a small Nerd Font and symbol corpus test where available.
+- Add `engine.zig`, `font_session.zig`, `font_resolver.zig`, `cluster.zig`, `shape_run.zig`, `grouping.zig`, `sprite_key.zig`, `rasterizer.zig`, `scene.zig`, `atlas_cache.zig`, `symbol_map.zig`, and `metrics.zig` under `text_stack/`.
+- Expand `text_contract.zig` and `text_pipeline.zig` so they describe the real target model.
+- Wire a parallel engine entrypoint that can coexist with the old path during migration.
+- Mark `GlyphQuad` as final draw output only.
 
 Exit criteria:
-- A glyph present in configured primary/fallback fonts renders as that glyph in both GL and GLES.
-- GL/GLES produce matching placement decisions for the same glyph metrics.
-- Missing glyphs are explicit and counted.
+- The mature architecture exists in code as real modules and types.
+- The migration no longer depends on backend-local ad hoc evolution.
 
-### Slice 1: Contract Reconciliation
-Goal: make the existing placeholder text contract match the actual target.
+### Slice 1: Cell Text And Run Vocabulary
+Goal: replace codepoint-per-cell thinking with cell text and run models.
 
 Tasks:
-- Replace `TextCluster.grapheme_utf8`-only thinking with `CellTextId` / `CellText` / `LineTextCache` vocabulary.
-- Add `RunFont`, `TextRun`, `GlyphGroup`, `SpriteKey`, and `SpritePosition` types to render-core.
-- Add tests for deterministic equality/hash fields where applicable.
-- Document that `GlyphQuad` is final GPU output, not shaping input.
+- Add `CellTextId`, `CellText`, `LineTextCache`, `RenderableCell`, `ResolvedRun`, `GlyphInstance`, and `GlyphGroup` vocabulary.
+- Teach VT/render conversion to preserve richer cell text information.
+- Add deterministic tests for cell text interning and run construction.
 
 Exit criteria:
-- `howl-render-core` tests define the line/run/group model without changing host behavior.
+- Render-core can express a line of terminal text without collapsing it to one codepoint per draw glyph.
 
-### Slice 2: Metrics And Decorations
-Goal: one baseline/cell metric policy for GL and GLES.
+### Slice 2: Font Session And Resolver
+Goal: create a kitty-like font session owner and remove resolver semantics from backend draw code.
 
 Tasks:
-- Factor FreeType metrics extraction into shared backend-local helper shape.
-- Add `FontMetrics` fields needed by kitty-class decorations.
-- Use identical baseline/origin placement in GL and GLES.
-- Add tests for derived metrics from fake inputs where possible.
+- Introduce primary regular/bold/italic/bold-italic faces.
+- Add fallback face registry and cache.
+- Add symbol-map and nerd-font/icon routing.
+- Define validated resolver order over whole cell text.
+- Keep configured fallback before discovery fallback.
 
 Exit criteria:
-- GL/GLES no longer diverge in glyph vertical placement logic.
+- Font selection is a first-class subsystem, not a backend miss path.
 
-### Slice 3: Validated Fallback Resolver
-Goal: stop treating fallback as blind path retry.
+### Slice 3: Metrics And Placement Policy
+Goal: one shared baseline and placement policy for all backends.
 
 Tasks:
-- Resolve against whole cell text.
-- Cache fallback result by text/style/presentation.
-- Count fallback hit/miss/missing glyph reasons.
-- Keep configured fallback paths before system discovery.
+- Centralize `FontMetrics`, `CellMetrics`, and decoration geometry policy.
+- Explicitly model baseline, overhang, underline, and strikethrough placement.
+- Make GL and GLES consume the same placement output.
 
 Exit criteria:
-- Known fallback glyphs do not render placeholder if present in configured fallback paths.
+- Text placement correctness no longer depends on backend-local math.
 
-### Slice 4: Real HarfBuzz Runs
-Goal: shape line runs, not codepoints.
+### Slice 4: Real HarfBuzz Shaping
+Goal: shape runs, not codepoints.
 
 Tasks:
-- Build line runs from render cells.
-- Feed UTF-32/UTF-8 run text to HarfBuzz.
-- Convert HarfBuzz clusters into `GlyphGroup`s.
-- Rasterize groups into sprite slots.
-- Preserve current simple rendering path only as an implementation fallback during this slice, not as a public contract.
+- Build contiguous compatible runs.
+- Shape full runs with HarfBuzz.
+- Preserve cluster data and glyph positions.
+- Emit `GlyphInstance` arrays from shaping.
 
 Exit criteria:
-- Combining mark and CJK width tests pass.
-- Simple ligature grouping tests pass for one configured font.
+- Combining mark, CJK width, and basic ligature test cases shape through the new engine.
 
-### Slice 5: Procedural Sprite Parity
-Goal: make special glyph rendering a real kitty-like route.
+### Slice 5: Glyph Grouping Back To Cells
+Goal: implement the terminal-specific part that mature terminals actually need.
 
 Tasks:
-- Expand procedural coverage beyond current subset.
-- Add pixel-mask tests adapted from kitty's box/block testing style.
-- Route procedural sprites through the same sprite/atlas cache shape as font glyph groups.
+- Map shaped glyphs back to terminal cell spans.
+- Handle combining marks, wide glyphs, finite ligatures, empty spacer glyphs, and PUA+space powerline behavior.
+- Keep cursor ligature suppression as a hook even if initially disabled.
 
 Exit criteria:
-- Box/block/braille/powerline masks are deterministic across GL/GLES.
+- The engine can explain how shaped glyph output occupies terminal cells.
 
-### Slice 6: Emoji And Presentation
-Goal: make emoji/text presentation explicit.
+### Slice 6: Sprite Keys, Rasterization, And Atlas Residency
+Goal: replace codepoint atlas identity with rendered-sprite identity.
 
 Tasks:
-- Interpret VS15/VS16 in cell text and resolver presentation.
-- Add emoji fallback/presentation cache keys.
-- Distinguish colored sprites from alpha sprites.
+- Introduce `SpriteKey` and `SpritePosition`.
+- Rasterize glyph groups into sprites.
+- Cache shaped/rasterized groups by rendered identity.
+- Separate alpha and colored sprite flows.
+- Move backends to atlas upload and draw only.
 
 Exit criteria:
-- `\u2716`, `\u2716\ufe0f`, and common emoji render with expected width and presentation.
+- Cache identity is no longer codepoint-based.
+- Backend text correctness no longer depends on backend-local fallback/shaping logic.
 
-### Slice 7: Performance And Diagnostics
-Goal: make the mature path measurable.
+### Slice 7: Procedural And Symbol Route Maturity
+Goal: make special glyph handling a deliberate peer path.
+
+Tasks:
+- Expand procedural box/block/braille/powerline coverage.
+- Route procedural sprites through the same sprite cache and atlas shape.
+- Add explicit symbol/icon routing tests.
+
+Exit criteria:
+- Special glyph handling is explicit, deterministic, and integrated.
+
+### Slice 8: Presentation, Emoji, And Advanced Font Behavior
+Goal: make presentation and richer font behavior first-class.
+
+Tasks:
+- Handle VS15/VS16, emoji/text presentation, and colored glyph output.
+- Prepare for variable fonts and non-monospace faces through the same engine.
+- Validate nerd fonts, icon alignment, and proportional placement.
+
+Exit criteria:
+- Text-vs-emoji presentation and icon rendering are explicit and correct.
+
+### Slice 9: Diagnostics And Performance
+Goal: optimize the mature architecture only after it exists.
 
 Tasks:
 - Add shaped-run cache.
 - Add sprite-position cache.
-- Add atlas upload batching and explicit eviction policy.
-- Add debug counters accessible from render reports or test-only APIs.
+- Add atlas batching/eviction policy improvements.
+- Add counters and trace points for resolver, shaping, grouping, raster, upload, and cache behavior.
 
 Exit criteria:
-- Heavy scrolling and prompt redraws do not reshape/rasterize unchanged text unnecessarily.
+- Performance work is done on the mature engine, not on bootstrap architecture.
 
 ## First Recommended Work
 Start with Slice 0.
 
 Reason:
-- The visible quality gap is glyph fidelity: modern Nerd Font symbols and edge-case glyphs must render as actual font glyphs.
-- We can improve face/glyph resolution, atlas identity, metrics, and GL/GLES placement before a full shaping rewrite.
-- This keeps the first implementation slice concrete and visually testable.
+- The current problem is architectural immaturity, not isolated renderer inefficiency.
+- We need the target engine shape present in the codebase before optimizing or migrating behavior.
+- This creates a clean path to move correctness out of backend-local scaffolding and into a real text engine.
 
-Do not start with broad system font discovery or full emoji. First make configured primary/fallback fonts render correctly and predictably.
+Do not start by tuning the current backend-owned path as if it were the final design. Build the mature engine boundary first, then migrate behavior into it slice by slice.
