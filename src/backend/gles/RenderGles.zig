@@ -5,6 +5,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
+const trace = @import("../../trace.zig");
 const clip_rect = @import("../shared/clip_rect.zig");
 const c = @cImport({
     if (builtin.target.abi == .android) {
@@ -13,6 +14,7 @@ const c = @cImport({
         @cDefine("_Null_unspecified", "");
     }
     @cInclude("GLES2/gl2.h");
+    @cInclude("time.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
     @cInclude("hb.h");
@@ -36,6 +38,12 @@ fn fallbackFaceId(index: usize) u32 {
 
 fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
     return .{ .codepoint = codepoint, .face_id = 0, .glyph_id = codepoint };
+}
+
+fn monotonicNs() u64 {
+    var ts: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
 }
 
 /// Shared cell-size alias.
@@ -447,14 +455,19 @@ pub const Backend = struct {
 
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
         if (batch.atlas_uploads.len == 0) return 0;
+        const start_ns = monotonicNs();
         try self.ensureAtlasStorage();
         var committed: usize = 0;
+        var fast_hits: usize = 0;
+        var resolved_hits: usize = 0;
         for (batch.atlas_uploads) |upload| {
             if (self.findCachedSlotForDraw(upload.codepoint, upload.width, upload.height) != null) {
+                fast_hits += 1;
                 continue;
             }
             const key = self.resolveGlyphKey(upload.codepoint) orelse missingGlyphKey(upload.codepoint);
             if (self.findCachedSlot(key, upload.width, upload.height) != null) {
+                resolved_hits += 1;
                 continue;
             }
             const slot = self.allocateSlot() orelse continue;
@@ -462,6 +475,13 @@ pub const Backend = struct {
             self.markSlotCached(slot, key, upload.width, upload.height);
             committed += 1;
         }
+        trace.renderAtlas("gles",
+            batch.atlas_uploads.len,
+            fast_hits,
+            resolved_hits,
+            committed,
+            @divTrunc(monotonicNs() - start_ns, std.time.ns_per_us),
+        );
         return committed;
     }
 
