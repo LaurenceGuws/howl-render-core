@@ -827,7 +827,7 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     defer c.glDisable(c.GL_BLEND);
 
-    for (batch.fills) |fill| drawRect(batch.surface_px, fill.x, fill.y, fill.width, fill.height, fill.color);
+    drawFillRects(batch.surface_px, batch.fills);
     for (batch.glyphs) |glyph| drawGlyph(backend, batch.surface_px, glyph);
     if (batch.cursor) |cursor| drawCursor(batch, cursor);
 }
@@ -915,6 +915,38 @@ fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: 
         @as(f32, @floatFromInt(color.a)) * inv_255,
     );
     c.glClear(c.GL_COLOR_BUFFER_BIT);
+}
+
+fn drawFillRects(surface: render_core.PixelSize, fills: []const render_core.FillRect) void {
+    if (fills.len == 0) return;
+    const inv_255 = 1.0 / 255.0;
+    c.glEnable(c.GL_SCISSOR_TEST);
+    defer c.glDisable(c.GL_SCISSOR_TEST);
+
+    var active_color: ?render_core.Rgba8 = null;
+    for (fills) |fill| {
+        const clipped = clip_rect.clipRect(surface, fill.x, fill.y, fill.width, fill.height) orelse continue;
+        if (active_color == null or !sameColor(active_color.?, fill.color)) {
+            active_color = fill.color;
+            c.glClearColor(
+                @as(f32, @floatFromInt(fill.color.r)) * inv_255,
+                @as(f32, @floatFromInt(fill.color.g)) * inv_255,
+                @as(f32, @floatFromInt(fill.color.b)) * inv_255,
+                @as(f32, @floatFromInt(fill.color.a)) * inv_255,
+            );
+        }
+        c.glScissor(
+            clipped.x,
+            clipped.y,
+            clipped.w,
+            clipped.h,
+        );
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+    }
+}
+
+fn sameColor(a: render_core.Rgba8, b: render_core.Rgba8) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
 test "backend executes valid batch and reports stats" {

@@ -31,6 +31,15 @@ const ResolvedGlyphKey = struct {
     glyph_id: u32,
 };
 
+const TexturedGlyph = struct {
+    clipped: clip_rect.ClipRect,
+    color: render_core.Rgba8,
+    tex_u0: f32,
+    tex_v0: f32,
+    tex_u1: f32,
+    tex_v1: f32,
+};
+
 fn fallbackFaceId(index: usize) u32 {
     return @intCast(index + 2);
 }
@@ -137,6 +146,7 @@ pub const Backend = struct {
     atlas_slot_glyph_id: []u32 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
+    atlas_slot_has_alpha: []bool = &.{},
     atlas_next_slot: u32 = 0,
     atlas_texture: u32 = 0,
     atlas_tex_width: u16 = 0,
@@ -183,6 +193,10 @@ pub const Backend = struct {
         if (self.atlas_slot_height.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_height);
             self.atlas_slot_height = &.{};
+        }
+        if (self.atlas_slot_has_alpha.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
+            self.atlas_slot_has_alpha = &.{};
         }
         if (self.ft_face != null) {
             if (self.hb_font != null and builtin.target.abi != .android) {
@@ -459,6 +473,10 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.atlas_slot_height);
             self.atlas_slot_height = &.{};
         }
+        if (self.atlas_slot_has_alpha.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
+            self.atlas_slot_has_alpha = &.{};
+        }
         const max_slots = self.capabilities().max_atlas_slots;
         self.atlas_pixels = try std.heap.c_allocator.alloc(u8, need_stride * @as(usize, max_slots));
         @memset(self.atlas_pixels, 0);
@@ -472,6 +490,8 @@ pub const Backend = struct {
         @memset(self.atlas_slot_width, 0);
         self.atlas_slot_height = try std.heap.c_allocator.alloc(u16, max_slots);
         @memset(self.atlas_slot_height, 0);
+        self.atlas_slot_has_alpha = try std.heap.c_allocator.alloc(bool, max_slots);
+        @memset(self.atlas_slot_has_alpha, false);
         self.atlas_cell_w = need_w;
         self.atlas_cell_h = need_h;
         self.atlas_slot_stride = need_stride;
@@ -584,11 +604,27 @@ pub const Backend = struct {
         const gw = @min(width, self.atlas_cell_w);
         const gh = @min(height, self.atlas_cell_h);
         if (self.rasterizeFromFont(dst, codepoint, gw, gh)) {
+            self.markSlotAlpha(slot, dst, gw, gh);
             self.resolve_stage = .loaded_exact_match;
             return;
         }
         self.resolve_stage = .missing_glyph;
         rasterizeFallbackGlyph(dst, self.atlas_cell_w, self.atlas_cell_h, codepoint, gw, gh);
+        self.markSlotAlpha(slot, dst, gw, gh);
+    }
+
+    fn markSlotAlpha(self: *Backend, slot: u32, pixels: []const u8, gw: u16, gh: u16) void {
+        const slot_idx = @as(usize, slot);
+        if (slot_idx >= self.atlas_slot_has_alpha.len) return;
+        for (0..gh) |yy| {
+            for (0..gw) |xx| {
+                if (pixels[yy * @as(usize, self.atlas_cell_w) + xx] != 0) {
+                    self.atlas_slot_has_alpha[slot_idx] = true;
+                    return;
+                }
+            }
+        }
+        self.atlas_slot_has_alpha[slot_idx] = false;
     }
 
     fn ensureFreeTypeLibrary(self: *Backend) bool {
@@ -667,6 +703,7 @@ pub const Backend = struct {
         if (self.atlas_slot_glyph_id.len > 0) @memset(self.atlas_slot_glyph_id, 0);
         if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
         if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
+        if (self.atlas_slot_has_alpha.len > 0) @memset(self.atlas_slot_has_alpha, false);
         self.atlas_next_slot = 0;
     }
 
@@ -928,13 +965,13 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     }
     defer c.glDisable(c.GL_BLEND);
 
-    for (batch.fills) |fill| drawRect(batch.surface_px, fill.x, fill.y, fill.width, fill.height, fill.color);
+    drawFillRects(batch.surface_px, batch.fills);
     if (backend.atlas_texture != 0) {
         c.glEnable(c.GL_TEXTURE_2D);
         c.glBindTexture(c.GL_TEXTURE_2D, backend.atlas_texture);
         c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_MODULATE);
     }
-    for (batch.glyphs) |glyph| drawGlyph(backend, batch.surface_px, glyph);
+    drawGlyphs(backend, batch.surface_px, batch.glyphs);
     if (backend.atlas_texture != 0) {
         c.glBindTexture(c.GL_TEXTURE_2D, 0);
         c.glDisable(c.GL_TEXTURE_2D);
@@ -943,42 +980,63 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
 }
 
 fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) void {
-    if (backend.atlas_texture == 0 or backend.atlas_pixels.len == 0) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    }
-    const cached_slot = backend.findCachedSlotForDraw(glyph.codepoint, glyph.width, glyph.height) orelse {
+    const textured = prepareTexturedGlyph(backend, surface, glyph) orelse {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
         return;
     };
+    c.glEnable(c.GL_TEXTURE_2D);
+    c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
+    c.glBegin(c.GL_QUADS);
+    emitTexturedGlyph(textured);
+    c.glEnd();
+}
+
+fn drawGlyphs(backend: *const Backend, surface: render_core.PixelSize, glyphs: []const render_core.GlyphQuad) void {
+    var active_color: ?render_core.Rgba8 = null;
+    var drawing = false;
+    for (glyphs) |glyph| {
+        const textured = prepareTexturedGlyph(backend, surface, glyph) orelse {
+            if (drawing) {
+                c.glEnd();
+                drawing = false;
+                active_color = null;
+            }
+            drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
+            continue;
+        };
+
+        if (!drawing or active_color == null or !sameColor(active_color.?, textured.color)) {
+            if (drawing) c.glEnd();
+            c.glEnable(c.GL_TEXTURE_2D);
+            c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
+            c.glBegin(c.GL_QUADS);
+            drawing = true;
+            active_color = textured.color;
+        }
+        emitTexturedGlyph(textured);
+    }
+    if (drawing) c.glEnd();
+}
+
+fn prepareTexturedGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) ?TexturedGlyph {
+    if (backend.atlas_texture == 0 or backend.atlas_pixels.len == 0) {
+        return null;
+    }
+    const cached_slot = backend.findCachedSlotForDraw(glyph.codepoint, glyph.width, glyph.height) orelse return null;
     const slot = @as(usize, cached_slot);
     const slot_index = slot * backend.atlas_slot_stride;
     if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
+        return null;
     }
-    const src = backend.atlas_pixels[slot_index .. slot_index + backend.atlas_slot_stride];
     const gw = @min(glyph.width, backend.atlas_cell_w);
     const gh = @min(glyph.height, backend.atlas_cell_h);
     if (gw == 0 or gh == 0) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
+        return null;
     }
-    var has_alpha = false;
-    for (0..gh) |yy| {
-        for (0..gw) |xx| {
-            if (src[yy * @as(usize, backend.atlas_cell_w) + xx] != 0) {
-                has_alpha = true;
-                break;
-            }
-        }
-        if (has_alpha) break;
+    if (slot >= backend.atlas_slot_has_alpha.len or !backend.atlas_slot_has_alpha[slot]) {
+        return null;
     }
-    if (!has_alpha) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    }
-    drawTexturedGlyph(backend, surface, glyph, cached_slot, gw, gh);
+    return prepareTexturedGlyphCoords(backend, surface, glyph, cached_slot, gw, gh);
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
@@ -1019,8 +1077,45 @@ fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: 
     c.glEnd();
 }
 
+fn drawFillRects(surface: render_core.PixelSize, fills: []const render_core.FillRect) void {
+    if (fills.len == 0) return;
+    c.glDisable(c.GL_TEXTURE_2D);
+
+    var run_start: usize = 0;
+    while (run_start < fills.len) {
+        const color = fills[run_start].color;
+        var run_end = run_start + 1;
+        while (run_end < fills.len and sameColor(fills[run_end].color, color)) : (run_end += 1) {}
+
+        c.glColor4ub(color.r, color.g, color.b, color.a);
+        c.glBegin(c.GL_QUADS);
+        for (fills[run_start..run_end]) |fill| {
+            const clipped = clip_rect.clipRectTopOrigin(surface, fill.x, fill.y, fill.width, fill.height) orelse continue;
+            c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
+            c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
+            c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
+            c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
+        }
+        c.glEnd();
+        run_start = run_end;
+    }
+}
+
+fn sameColor(a: render_core.Rgba8, b: render_core.Rgba8) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
+}
+
 fn drawTexturedGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad, atlas_slot: u32, gw: u16, gh: u16) void {
-    const clipped = clip_rect.clipRectTopOrigin(surface, glyph.x, glyph.y, gw, gh) orelse return;
+    const textured = prepareTexturedGlyphCoords(backend, surface, glyph, atlas_slot, gw, gh) orelse return;
+    c.glEnable(c.GL_TEXTURE_2D);
+    c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
+    c.glBegin(c.GL_QUADS);
+    emitTexturedGlyph(textured);
+    c.glEnd();
+}
+
+fn prepareTexturedGlyphCoords(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad, atlas_slot: u32, gw: u16, gh: u16) ?TexturedGlyph {
+    const clipped = clip_rect.clipRectTopOrigin(surface, glyph.x, glyph.y, gw, gh) orelse return null;
     const cols = @min(backend.capabilities().max_atlas_slots, Backend.AtlasTexCols);
     const slot = @as(usize, atlas_slot);
     const slot_x = (slot % cols) * @as(usize, backend.atlas_cell_w);
@@ -1033,18 +1128,25 @@ fn drawTexturedGlyph(backend: *const Backend, surface: render_core.PixelSize, gl
     const tex_u1 = @as(f32, @floatFromInt(slot_x + clip_dx + @as(usize, @intCast(clipped.w)))) / @as(f32, @floatFromInt(backend.atlas_tex_width));
     const tex_v1 = @as(f32, @floatFromInt(slot_y + clip_dy + @as(usize, @intCast(clipped.h)))) / @as(f32, @floatFromInt(backend.atlas_tex_height));
 
-    c.glEnable(c.GL_TEXTURE_2D);
-    c.glColor4ub(glyph.fg.r, glyph.fg.g, glyph.fg.b, glyph.fg.a);
-    c.glBegin(c.GL_QUADS);
-    c.glTexCoord2f(tex_u0, tex_v0);
-    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
-    c.glTexCoord2f(tex_u1, tex_v0);
-    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
-    c.glTexCoord2f(tex_u1, tex_v1);
-    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
-    c.glTexCoord2f(tex_u0, tex_v1);
-    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
-    c.glEnd();
+    return .{
+        .clipped = clipped,
+        .color = glyph.fg,
+        .tex_u0 = tex_u0,
+        .tex_v0 = tex_v0,
+        .tex_u1 = tex_u1,
+        .tex_v1 = tex_v1,
+    };
+}
+
+fn emitTexturedGlyph(glyph: TexturedGlyph) void {
+    c.glTexCoord2f(glyph.tex_u0, glyph.tex_v0);
+    c.glVertex2f(@floatFromInt(glyph.clipped.x), @floatFromInt(glyph.clipped.y));
+    c.glTexCoord2f(glyph.tex_u1, glyph.tex_v0);
+    c.glVertex2f(@floatFromInt(glyph.clipped.x + glyph.clipped.w), @floatFromInt(glyph.clipped.y));
+    c.glTexCoord2f(glyph.tex_u1, glyph.tex_v1);
+    c.glVertex2f(@floatFromInt(glyph.clipped.x + glyph.clipped.w), @floatFromInt(glyph.clipped.y + glyph.clipped.h));
+    c.glTexCoord2f(glyph.tex_u0, glyph.tex_v1);
+    c.glVertex2f(@floatFromInt(glyph.clipped.x), @floatFromInt(glyph.clipped.y + glyph.clipped.h));
 }
 
 test "backend executes valid batch and increments pass index" {
