@@ -12,7 +12,6 @@ const c = @cImport({
     @cInclude("GL/gl.h");
     @cInclude("GL/glext.h");
     @cInclude("time.h");
-    @cInclude("stdio.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
     if (builtin.target.abi != .android) {
@@ -64,13 +63,6 @@ fn monotonicNs() u64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
-}
-
-fn stdoutLog(comptime fmt: []const u8, args: anytype) void {
-    var buf: [256]u8 = undefined;
-    const line = std.fmt.bufPrintZ(&buf, fmt ++ "\n", args) catch return;
-    _ = c.printf("%s", line.ptr);
-    _ = c.fflush(c.stdout);
 }
 
 /// Shared cell-size alias.
@@ -185,6 +177,8 @@ pub const Backend = struct {
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
+    fallback_faces: [MaxFallbackFonts]?FtFace = [_]?FtFace{null} ** MaxFallbackFonts,
+    fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     target_texture: ?u32 = null,
     owns_target_texture: bool = false,
     target_fbo: u32 = 0,
@@ -246,14 +240,7 @@ pub const Backend = struct {
             self.fallback_fill_vertices = &.{};
         }
         self.retained_frame.deinit(std.heap.c_allocator);
-        if (self.ft_face != null) {
-            if (self.hb_font != null and builtin.target.abi != .android) {
-                c.hb_font_destroy(@ptrCast(self.hb_font.?));
-                self.hb_font = null;
-            }
-            _ = c.FT_Done_Face(self.ft_face.?);
-            self.ft_face = null;
-        }
+        self.resetLoadedFace();
         if (self.ft_lib != null) {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
@@ -842,14 +829,10 @@ pub const Backend = struct {
         }
         if (!self.ensureFreeTypeLibrary()) return false;
 
-        var face: FtFace = undefined;
-        const lib = self.ft_lib.?;
-
         var i: usize = 0;
         while (i < self.fallback_font_paths_len) : (i += 1) {
-            const font_path = self.fallback_font_paths[i] orelse continue;
-            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) == 0) {
-                _ = c.FT_Done_Face(face);
+            if (self.fallback_font_paths[i] == null) continue;
+            if (self.ensureFallbackFace(i)) |_| {
                 self.resolve_stage = .discovery_fallback;
                 return true;
             }
@@ -861,6 +844,7 @@ pub const Backend = struct {
     }
 
     fn resetLoadedFace(self: *Backend) void {
+        self.resetFallbackFaces();
         if (self.ft_face != null) {
             if (self.hb_font != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(@ptrCast(self.hb_font.?));
@@ -873,6 +857,39 @@ pub const Backend = struct {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
         }
+    }
+
+    fn resetFallbackFaces(self: *Backend) void {
+        var i: usize = 0;
+        while (i < MaxFallbackFonts) : (i += 1) {
+            if (self.fallback_hb_fonts[i] != null and builtin.target.abi != .android) {
+                c.hb_font_destroy(@ptrCast(self.fallback_hb_fonts[i].?));
+                self.fallback_hb_fonts[i] = null;
+            }
+            if (self.fallback_faces[i] != null) {
+                _ = c.FT_Done_Face(self.fallback_faces[i].?);
+                self.fallback_faces[i] = null;
+            }
+        }
+    }
+
+    fn ensureFallbackFace(self: *Backend, fallback_index: usize) ?FtFace {
+        if (fallback_index >= self.fallback_font_paths_len) return null;
+        if (self.fallback_faces[fallback_index]) |face| return face;
+        if (!self.ensureFreeTypeLibrary()) return null;
+        const font_path = self.fallback_font_paths[fallback_index] orelse return null;
+        const lib = self.ft_lib orelse return null;
+        var face: FtFace = undefined;
+        if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return null;
+        if (!setFacePixelHeight(self, face)) {
+            _ = c.FT_Done_Face(face);
+            return null;
+        }
+        self.fallback_faces[fallback_index] = face;
+        if (builtin.target.abi != .android) {
+            self.fallback_hb_fonts[fallback_index] = @ptrCast(c.hb_ft_font_create_referenced(face));
+        }
+        return face;
     }
 
     fn clearAtlasCache(self: *Backend) void {
@@ -1102,12 +1119,7 @@ fn providerHasCodepoint(ctx: *anyopaque, face_id: render_core.FontFaceId, codepo
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return false;
-    if (fallback_index >= backend.fallback_font_paths_len) return false;
-    const font_path = backend.fallback_font_paths[fallback_index] orelse return false;
-    const lib = backend.ft_lib orelse return false;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return false;
-    defer _ = c.FT_Done_Face(face);
+    const face = backend.ensureFallbackFace(fallback_index) orelse return false;
     return c.FT_Get_Char_Index(face, codepoint) != 0;
 }
 
@@ -1239,13 +1251,7 @@ fn providerGlyphVisualWidth(self: *Backend, face_id: render_core.FontFaceId, gly
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
-    if (fallback_index >= self.fallback_font_paths_len) return 0;
-    const font_path = self.fallback_font_paths[fallback_index] orelse return 0;
-    const lib = self.ft_lib orelse return 0;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return 0;
-    defer _ = c.FT_Done_Face(face);
-    if (!setFacePixelHeight(self, face)) return 0;
+    const face = self.ensureFallbackFace(fallback_index) orelse return 0;
     return glyphVisualWidthPx(face, glyph_id);
 }
 
@@ -1263,20 +1269,8 @@ fn acquireShapingFace(self: *Backend, face_id: render_core.FontFaceId) ?ShapingF
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return null;
-    if (fallback_index >= self.fallback_font_paths_len) return null;
-    const font_path = self.fallback_font_paths[fallback_index] orelse return null;
-    const lib = self.ft_lib orelse return null;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return null;
-    if (!setFacePixelHeight(self, face)) {
-        _ = c.FT_Done_Face(face);
-        return null;
-    }
-    var hb_font: ?HbFont = null;
-    if (builtin.target.abi != .android) {
-        hb_font = @ptrCast(c.hb_ft_font_create_referenced(face));
-    }
-    return .{ .face = face, .hb_font = hb_font, .owns_face = true };
+    const face = self.ensureFallbackFace(fallback_index) orelse return null;
+    return .{ .face = face, .hb_font = self.fallback_hb_fonts[fallback_index], .owns_face = false };
 }
 
 fn releaseShapingFace(_: *Backend, shaped: ShapingFace) void {
@@ -1318,22 +1312,8 @@ fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
-    if (fallback_index >= self.fallback_font_paths_len) return 0;
-    const font_path = self.fallback_font_paths[fallback_index] orelse return 0;
-    const lib = self.ft_lib orelse return 0;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return 0;
-    defer _ = c.FT_Done_Face(face);
-    if (!setFacePixelHeight(self, face)) return 0;
-
-    var fallback_hb: ?HbFont = null;
-    defer if (fallback_hb != null and builtin.target.abi != .android) {
-        c.hb_font_destroy(@ptrCast(fallback_hb.?));
-    };
-    if (builtin.target.abi != .android) {
-        fallback_hb = @ptrCast(c.hb_ft_font_create_referenced(face));
-    }
-    return shapeGlyphId(fallback_hb, face, @intCast(codepoint));
+    const face = self.ensureFallbackFace(fallback_index) orelse return 0;
+    return shapeGlyphId(self.fallback_hb_fonts[fallback_index], face, @intCast(codepoint));
 }
 
 fn providerGlyphAdvance(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
@@ -1346,12 +1326,7 @@ fn providerGlyphAdvance(self: *Backend, face_id: render_core.FontFaceId, glyph_i
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return fallback;
-    if (fallback_index >= self.fallback_font_paths_len) return fallback;
-    const font_path = self.fallback_font_paths[fallback_index] orelse return fallback;
-    const lib = self.ft_lib orelse return fallback;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return fallback;
-    defer _ = c.FT_Done_Face(face);
+    const face = self.ensureFallbackFace(fallback_index) orelse return fallback;
     return glyphAdvanceFromFace(self, face, glyph_id, cell_metrics);
 }
 
@@ -1527,13 +1502,7 @@ fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, ba
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return false;
-    if (fallback_index >= self.fallback_font_paths_len) return false;
-    const font_path = self.fallback_font_paths[fallback_index] orelse return false;
-    const lib = self.ft_lib orelse return false;
-    var face: FtFace = undefined;
-    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return false;
-    defer _ = c.FT_Done_Face(face);
-    if (!setFacePixelHeight(self, face)) return false;
+    const face = self.ensureFallbackFace(fallback_index) orelse return false;
     return rasterizeProviderGlyphFromFace(self, dst, width, height, baseline_px, face, glyph_id, x_origin_px, y_origin_px, glyph_index);
 }
 

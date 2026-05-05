@@ -15,7 +15,6 @@ const c = @cImport({
     }
     @cInclude("GLES2/gl2.h");
     @cInclude("time.h");
-    @cInclude("stdio.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
     @cInclude("hb.h");
@@ -45,13 +44,6 @@ fn monotonicNs() u64 {
     var ts: c.struct_timespec = undefined;
     if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
-}
-
-fn stdoutLog(comptime fmt: []const u8, args: anytype) void {
-    var buf: [256]u8 = undefined;
-    const line = std.fmt.bufPrintZ(&buf, fmt ++ "\n", args) catch return;
-    _ = c.printf("%s", line.ptr);
-    _ = c.fflush(c.stdout);
 }
 
 /// Shared cell-size alias.
@@ -313,10 +305,7 @@ pub const Backend = struct {
         if (self.closed) return error.BackendClosed;
         const rc = render_core.init(self.config, self.capabilities());
         try rc.validateRenderBatch(batch);
-        const upload_start_ns = monotonicNs();
         const committed_uploads = try self.uploadAtlas(batch);
-        const upload_us = @divTrunc(monotonicNs() - upload_start_ns, std.time.ns_per_us);
-        var draw_us: u64 = 0;
         if (hasCurrentContext()) {
             if (self.target_texture == null and self.config.target_texture != 0) {
                 self.target_texture = self.config.target_texture;
@@ -326,13 +315,10 @@ pub const Backend = struct {
             if (self.target_texture == null) return error.TargetTextureUnset;
             try self.beginTargetPass();
             defer self.endTargetPass();
-            const draw_start_ns = monotonicNs();
             drawBatch(self, batch);
-            draw_us = @divTrunc(monotonicNs() - draw_start_ns, std.time.ns_per_us);
         } else if (!builtin.is_test) {
             return error.NoContext;
         }
-        stdoutLog("ts_ns={} BACKEND_FRAME gles uploads={} committed={} upload_us={} draw_us={} glyphs={} fills={}", .{ monotonicNs(), batch.atlas_uploads.len, committed_uploads, upload_us, draw_us, batch.glyphs.len, batch.fills.len });
         self.pass_count += 1;
         return .{
             .stats = rc.summarizeRenderBatch(batch),
