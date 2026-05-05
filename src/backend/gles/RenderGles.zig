@@ -831,17 +831,26 @@ fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render_core.CellMetrics 
 
 fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.TextStack.Metrics.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
-    var max_advance: i32 = @intCast(metrics.max_advance);
-    if (c.FT_Load_Char(face, 'M', c.FT_LOAD_DEFAULT) == 0 and face.*.glyph != null) {
-        max_advance = @max(max_advance, @as(i32, @intCast(face.*.glyph.*.advance.x)));
-    }
     return .{
         .ascender = @intCast(metrics.ascender),
         .descender = @intCast(metrics.descender),
         .height = @intCast(metrics.height),
-        .max_advance = max_advance,
+        .max_advance = asciiCellAdvance(face, @intCast(metrics.max_advance)),
         .fallback_font_px = @max(font_size_px, 1),
     };
+}
+
+fn asciiCellAdvance(face: FtFace, fallback_advance: i32) i32 {
+    var max_advance: i32 = 0;
+    var cp: u32 = 32;
+    while (cp < 128) : (cp += 1) {
+        const glyph_index = c.FT_Get_Char_Index(face, cp);
+        if (glyph_index == 0) continue;
+        if (c.FT_Load_Glyph(face, glyph_index, c.FT_LOAD_DEFAULT) != 0) continue;
+        if (face.*.glyph == null) continue;
+        max_advance = @max(max_advance, @as(i32, @intCast(face.*.glyph.*.metrics.horiAdvance)));
+    }
+    return if (max_advance > 0) max_advance else fallback_advance;
 }
 
 fn hasCurrentContext() bool {
