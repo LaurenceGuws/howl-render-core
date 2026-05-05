@@ -104,6 +104,7 @@ pub const RenderBatch = struct {
     cell_px: CellSize,
     grid: GridSize,
     full_redraw: bool = true,
+    scroll_up_rows: u16 = 0,
     fills: []const FillRect = &.{},
     glyphs: []const GlyphQuad = &.{},
     cursor: ?CursorDraw = null,
@@ -155,6 +156,7 @@ pub const VtState = struct {
 
 pub const Damage = struct {
     full: bool = true,
+    scroll_up_rows: u16 = 0,
     dirty_rows: []const bool = &.{},
     dirty_cols_start: []const u16 = &.{},
     dirty_cols_end: []const u16 = &.{},
@@ -362,6 +364,7 @@ pub fn renderBatch(
     const cell_count = @as(usize, frame.grid.cols) * @as(usize, frame.grid.rows);
     const visible = @min(cell_count, frame.grid.cells.len);
     const full_redraw = frame.damage.full or frame.damage.dirty_rows.len != @as(usize, frame.grid.rows) or frame.damage.dirty_cols_start.len != @as(usize, frame.grid.rows) or frame.damage.dirty_cols_end.len != @as(usize, frame.grid.rows);
+    const scroll_up_rows = if (full_redraw) 0 else @min(frame.damage.scroll_up_rows, frame.grid.rows);
 
     var fills = try std.ArrayList(FillRect).initCapacity(allocator, visible);
     errdefer fills.deinit(allocator);
@@ -443,6 +446,7 @@ pub fn renderBatch(
             .cell_px = frame.cell_px,
             .grid = .{ .cols = frame.grid.cols, .rows = frame.grid.rows },
             .full_redraw = full_redraw,
+            .scroll_up_rows = scroll_up_rows,
             .fills = fills_owned,
             .glyphs = glyphs_owned,
             .cursor = cursor_draw,
@@ -474,6 +478,9 @@ pub fn validateRenderBatch(
         return error.SurfaceMismatch;
     }
     if (batch.cell_px.width != config.cell_px.width or batch.cell_px.height != config.cell_px.height) {
+        return error.CellMismatch;
+    }
+    if (batch.scroll_up_rows > 0 and batch.scroll_up_rows >= batch.grid.rows) {
         return error.CellMismatch;
     }
     if (!capability.supports_fill_rect and batch.fills.len > 0) {

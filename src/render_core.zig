@@ -6,6 +6,7 @@ const std = @import("std");
 const render_batch = @import("render_batch.zig");
 const vt_state = @import("vt_state.zig");
 const surface = @import("frame_state.zig");
+const retained_frame = @import("retained_frame.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
 const text_stack = @import("TextStack.zig");
@@ -40,6 +41,7 @@ pub const RenderCore = struct {
     pub const SurfaceCursorShape = surface.CursorShape;
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
+    pub const RetainedFrame = retained_frame.RetainedFrame;
     pub const SurfaceHandle = struct {
         texture_id: u32,
         width: u16,

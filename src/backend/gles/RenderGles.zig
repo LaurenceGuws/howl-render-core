@@ -149,6 +149,7 @@ pub const Backend = struct {
     hb_font: ?HbFont = null,
     resolve_counters: render_core.ResolveCounters = .{},
     resolve_stage: render_core.ResolveStage = .style_policy,
+    retained_frame: render_core.RetainedFrame = .{},
 
     /// Initialize a backend instance from shared backend config.
     pub fn init(config: render_core.BackendConfig) Backend {
@@ -197,6 +198,7 @@ pub const Backend = struct {
             c.glDeleteFramebuffers(1, @ptrCast(&self.target_fbo));
             self.target_fbo = 0;
         }
+        self.retained_frame.deinit(std.heap.c_allocator);
         if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             var texture = self.target_texture.?;
             c.glDeleteTextures(1, @ptrCast(&texture));
@@ -359,6 +361,25 @@ pub const Backend = struct {
             state,
             surface_px,
             cell_px,
+        );
+    }
+
+    pub fn prepareRetainedFrameState(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: SurfaceFrameData,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+    ) BackendError!render_core.OwnedRenderBatch {
+        try self.resize(surface_px, cell_px);
+        return self.retained_frame.prepareBatch(
+            std.heap.c_allocator,
+            allocator,
+            state,
+            surface_px,
+            cell_px,
+            render_core.defaultTheme,
+            self.capabilities(),
         );
     }
 
@@ -818,10 +839,13 @@ fn hasCurrentContext() bool {
 
 fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     c.glViewport(0, 0, @as(c_int, @intCast(batch.surface_px.width)), @as(c_int, @intCast(batch.surface_px.height)));
-    // Clear the full target so stale pixels do not survive grid width/height changes.
-    c.glDisable(c.GL_SCISSOR_TEST);
-    c.glClearColor(0.0, 0.0, 0.0, 1.0);
-    c.glClear(c.GL_COLOR_BUFFER_BIT);
+    if (batch.full_redraw) {
+        c.glDisable(c.GL_SCISSOR_TEST);
+        c.glClearColor(0.0, 0.0, 0.0, 1.0);
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+    } else if (batch.scroll_up_rows > 0) {
+        applyScrollReuse(backend, batch);
+    }
     c.glDisable(c.GL_DEPTH_TEST);
     c.glEnable(c.GL_BLEND);
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
@@ -830,6 +854,42 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     drawFillRects(batch.surface_px, batch.fills);
     for (batch.glyphs) |glyph| drawGlyph(backend, batch.surface_px, glyph);
     if (batch.cursor) |cursor| drawCursor(batch, cursor);
+}
+
+fn applyScrollReuse(backend: *const Backend, batch: render_core.RenderBatch) void {
+    const texture = backend.target_texture orelse return;
+    const scroll_px = @as(u32, batch.scroll_up_rows) * @as(u32, batch.cell_px.height);
+    const width = @as(u32, batch.surface_px.width);
+    const height = @as(u32, batch.surface_px.height);
+    if (scroll_px == 0 or scroll_px >= height or width == 0) return;
+    const preserved_h = height - scroll_px;
+    const bytes = @as(usize, width) * @as(usize, preserved_h) * 4;
+    const pixels = std.heap.c_allocator.alloc(u8, bytes) catch return;
+    defer std.heap.c_allocator.free(pixels);
+    c.glPixelStorei(c.GL_PACK_ALIGNMENT, 1);
+    c.glReadPixels(
+        0,
+        0,
+        @as(c_int, @intCast(width)),
+        @as(c_int, @intCast(preserved_h)),
+        c.GL_RGBA,
+        c.GL_UNSIGNED_BYTE,
+        pixels.ptr,
+    );
+    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    c.glTexSubImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        0,
+        @as(c_int, @intCast(scroll_px)),
+        @as(c_int, @intCast(width)),
+        @as(c_int, @intCast(preserved_h)),
+        c.GL_RGBA,
+        c.GL_UNSIGNED_BYTE,
+        pixels.ptr,
+    );
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }
 
 fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) void {

@@ -50,6 +50,13 @@ pub fn termFrame(cols: u16, rows: u16, sync_us: u64, batch_us: u64, locked_us: u
     );
 }
 
+pub fn termSync(setup_us: u64, scan_us: u64, cursor_us: u64, rows_scanned: usize, cells_scanned: usize, selected_cells: usize, dirty_cells: usize, full_dirty: bool) void {
+    writeLine(
+        "{{\"ts_ns\":{d},\"event\":\"term_sync\",\"setup_us\":{d},\"scan_us\":{d},\"cursor_us\":{d},\"rows_scanned\":{d},\"cells_scanned\":{d},\"selected_cells\":{d},\"dirty_cells\":{d},\"full_dirty\":{}}}",
+        .{ monotonicNs(), setup_us, scan_us, cursor_us, rows_scanned, cells_scanned, selected_cells, dirty_cells, full_dirty },
+    );
+}
+
 pub fn renderAtlas(comptime backend: []const u8, uploads: usize, fast_hits: usize, resolved_hits: usize, committed: usize, elapsed_us: u64) void {
     writeLine(
         "{{\"ts_ns\":{d},\"event\":\"render_atlas\",\"backend\":\"" ++ backend ++ "\",\"uploads\":{d},\"fast_hits\":{d},\"resolved_hits\":{d},\"committed\":{d},\"elapsed_us\":{d}}}",

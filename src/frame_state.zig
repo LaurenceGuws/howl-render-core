@@ -51,6 +51,7 @@ pub const GridModel = struct {
 
 pub const DamageInfo = struct {
     full: bool = true,
+    scroll_up_rows: u16 = 0,
     dirty_rows: []const bool = &.{},
     dirty_cols_start: []const u16 = &.{},
     dirty_cols_end: []const u16 = &.{},

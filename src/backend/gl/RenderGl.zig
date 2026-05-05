@@ -162,6 +162,9 @@ pub const Backend = struct {
     atlas_texture: u32 = 0,
     atlas_tex_width: u16 = 0,
     atlas_tex_height: u16 = 0,
+    scroll_scratch_texture: u32 = 0,
+    scroll_scratch_width: u16 = 0,
+    scroll_scratch_height: u16 = 0,
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
@@ -174,6 +177,7 @@ pub const Backend = struct {
     fill_vertices: []QuadVertex = &.{},
     glyph_vertices: []QuadVertex = &.{},
     fallback_fill_vertices: []QuadVertex = &.{},
+    retained_frame: render_core.RetainedFrame = .{},
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
     fallback_font_paths_len: usize = 0,
 
@@ -224,6 +228,7 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.fallback_fill_vertices);
             self.fallback_fill_vertices = &.{};
         }
+        self.retained_frame.deinit(std.heap.c_allocator);
         if (self.ft_face != null) {
             if (self.hb_font != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(@ptrCast(self.hb_font.?));
@@ -239,6 +244,10 @@ pub const Backend = struct {
         if (self.atlas_texture != 0 and hasCurrentContext()) {
             c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
             self.atlas_texture = 0;
+        }
+        if (self.scroll_scratch_texture != 0 and hasCurrentContext()) {
+            c.glDeleteTextures(1, @ptrCast(&self.scroll_scratch_texture));
+            self.scroll_scratch_texture = 0;
         }
         if (self.target_fbo != 0 and hasCurrentContext()) {
             c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
@@ -406,6 +415,25 @@ pub const Backend = struct {
             state,
             surface_px,
             cell_px,
+        );
+    }
+
+    pub fn prepareRetainedFrameState(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: SurfaceFrameData,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+    ) BackendError!render_core.OwnedRenderBatch {
+        try self.resize(surface_px, cell_px);
+        return self.retained_frame.prepareBatch(
+            std.heap.c_allocator,
+            allocator,
+            state,
+            surface_px,
+            cell_px,
+            render_core.defaultTheme,
+            self.capabilities(),
         );
     }
 
@@ -959,14 +987,7 @@ fn hasCurrentContext() bool {
 
 fn drawBatch(backend: *Backend, batch: render_core.RenderBatch) void {
     c.glViewport(0, 0, @as(c_int, @intCast(batch.surface_px.width)), @as(c_int, @intCast(batch.surface_px.height)));
-    if (batch.full_redraw) {
-        c.glDisable(c.GL_SCISSOR_TEST);
-        c.glClearColor(0.0, 0.0, 0.0, 1.0);
-        c.glClear(c.GL_COLOR_BUFFER_BIT);
-    }
     c.glDisable(c.GL_DEPTH_TEST);
-    c.glEnable(c.GL_BLEND);
-    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     c.glMatrixMode(c.GL_PROJECTION);
     c.glPushMatrix();
     c.glLoadIdentity();
@@ -989,6 +1010,17 @@ fn drawBatch(backend: *Backend, batch: render_core.RenderBatch) void {
         c.glPopMatrix();
         c.glMatrixMode(c.GL_MODELVIEW);
     }
+
+    if (batch.full_redraw) {
+        c.glDisable(c.GL_SCISSOR_TEST);
+        c.glClearColor(0.0, 0.0, 0.0, 1.0);
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+    } else if (batch.scroll_up_rows > 0) {
+        applyScrollReuse(backend, batch);
+    }
+
+    c.glEnable(c.GL_BLEND);
+    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     defer c.glDisable(c.GL_BLEND);
 
     drawFillRects(backend, batch.surface_px, batch.fills);
@@ -1003,6 +1035,73 @@ fn drawBatch(backend: *Backend, batch: render_core.RenderBatch) void {
         c.glDisable(c.GL_TEXTURE_2D);
     }
     if (batch.cursor) |cursor| drawCursor(batch, cursor);
+}
+
+fn applyScrollReuse(backend: *Backend, batch: render_core.RenderBatch) void {
+    const scroll_px = @as(u32, batch.scroll_up_rows) * @as(u32, batch.cell_px.height);
+    const width = @as(u32, batch.surface_px.width);
+    const height = @as(u32, batch.surface_px.height);
+    if (scroll_px == 0 or scroll_px >= height) return;
+    ensureScrollScratchTexture(backend, batch.surface_px) catch return;
+    if (backend.scroll_scratch_texture == 0) return;
+
+    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
+    c.glCopyTexSubImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        0,
+        0,
+        0,
+        0,
+        @as(c_int, @intCast(width)),
+        @as(c_int, @intCast(height)),
+    );
+
+    c.glDisable(c.GL_BLEND);
+    c.glEnable(c.GL_TEXTURE_2D);
+    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
+    c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_REPLACE);
+    c.glColor4ub(255, 255, 255, 255);
+    c.glBegin(c.GL_QUADS);
+    const top_v: f32 = 1.0 - @as(f32, @floatFromInt(scroll_px)) / @as(f32, @floatFromInt(height));
+    c.glTexCoord2f(0.0, top_v);
+    c.glVertex2f(0.0, 0.0);
+    c.glTexCoord2f(1.0, top_v);
+    c.glVertex2f(@floatFromInt(width), 0.0);
+    c.glTexCoord2f(1.0, 0.0);
+    c.glVertex2f(@floatFromInt(width), @floatFromInt(height - scroll_px));
+    c.glTexCoord2f(0.0, 0.0);
+    c.glVertex2f(0.0, @floatFromInt(height - scroll_px));
+    c.glEnd();
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
+    c.glDisable(c.GL_TEXTURE_2D);
+}
+
+fn ensureScrollScratchTexture(backend: *Backend, surface_px: render_core.PixelSize) BackendError!void {
+    if (backend.scroll_scratch_texture == 0) {
+        c.glGenTextures(1, @ptrCast(&backend.scroll_scratch_texture));
+        if (backend.scroll_scratch_texture == 0) return error.TargetTextureUnset;
+    }
+    if (backend.scroll_scratch_width == surface_px.width and backend.scroll_scratch_height == surface_px.height) return;
+    backend.scroll_scratch_width = surface_px.width;
+    backend.scroll_scratch_height = surface_px.height;
+    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    c.glTexImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        c.GL_RGBA,
+        @as(c_int, @intCast(@max(surface_px.width, 1))),
+        @as(c_int, @intCast(@max(surface_px.height, 1))),
+        0,
+        c.GL_RGBA,
+        c.GL_UNSIGNED_BYTE,
+        null,
+    );
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }
 
 fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) void {
