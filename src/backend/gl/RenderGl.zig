@@ -1184,13 +1184,19 @@ fn providerShapeRun(
         const info = infos[idx];
         const pos = positions[idx];
         const cluster_cp_idx = @min(@as(usize, info.cluster), cluster_map.items.len - 1);
+        const cluster_idx = cluster_map.items[cluster_cp_idx];
+        const shaped_advance = render_core.TextStack.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
+        const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[cluster_idx].first_cp))
+            @max(shaped_advance, glyphVisualWidthPx(shaped_face.face, info.codepoint))
+        else
+            shaped_advance;
         glyph.* = .{
             .face_id = run.run.font.face_id,
             .glyph_id = info.codepoint,
-            .cluster_index = cluster_map.items[cluster_cp_idx],
+            .cluster_index = cluster_idx,
             .x_offset_px = @as(f32, @floatFromInt(@as(i32, @intCast(pos.x_offset)))) / 64.0,
             .y_offset_px = @as(f32, @floatFromInt(@as(i32, @intCast(pos.y_offset)))) / 64.0,
-            .x_advance_px = render_core.TextStack.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px),
+            .x_advance_px = advance_px,
         };
     }
 
@@ -1210,7 +1216,8 @@ fn fallbackProviderShapeRun(
     errdefer allocator.free(glyphs);
     for (clusters[start..end], 0..) |cluster, idx| {
         const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
-        const advance_px = providerGlyphAdvance(backend, run.run.font.face_id, glyph_id, cell_metrics);
+        const shaped_advance = providerGlyphAdvance(backend, run.run.font.face_id, glyph_id, cell_metrics);
+        const advance_px = if (isIconCodepoint(cluster.first_cp)) @max(shaped_advance, providerGlyphVisualWidth(backend, run.run.font.face_id, glyph_id)) else shaped_advance;
         glyphs[idx] = .{
             .face_id = run.run.font.face_id,
             .glyph_id = glyph_id,
@@ -1221,6 +1228,25 @@ fn fallbackProviderShapeRun(
         };
     }
     return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+}
+
+fn providerGlyphVisualWidth(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32) f32 {
+    if (glyph_id == 0) return 0;
+    if (!self.ensureFont()) return 0;
+    if (face_id.value == primary_face_id) {
+        const face = self.ft_face orelse return 0;
+        return glyphVisualWidthPx(face, glyph_id);
+    }
+
+    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
+    if (fallback_index >= self.fallback_font_paths_len) return 0;
+    const font_path = self.fallback_font_paths[fallback_index] orelse return 0;
+    const lib = self.ft_lib orelse return 0;
+    var face: FtFace = undefined;
+    if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return 0;
+    defer _ = c.FT_Done_Face(face);
+    if (!setFacePixelHeight(self, face)) return 0;
+    return glyphVisualWidthPx(face, glyph_id);
 }
 
 const ShapingFace = struct {
@@ -1266,6 +1292,22 @@ fn textForCluster(text_cache: render_core.LineTextCache, cluster: render_core.Ce
     const idx = @as(usize, @intCast(cluster.text_id.value));
     if (idx < text_cache.texts.len) return text_cache.texts[idx];
     return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
+}
+
+fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
+    if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return 0;
+    if (face.*.glyph == null) return 0;
+    const metrics = face.*.glyph.*.metrics;
+    if (metrics.width <= 0) return 0;
+    return @as(f32, @floatFromInt(@as(i32, @intCast(metrics.width)))) / 64.0;
+}
+
+fn isIconCodepoint(cp: u32) bool {
+    return (cp >= 0xe000 and cp <= 0xf8ff) or
+        (cp >= 0x2700 and cp <= 0x27bf) or
+        (cp >= 0x1f100 and cp <= 0x1f1ff) or
+        (cp >= 0xf0000 and cp <= 0xffffd) or
+        (cp >= 0x100000 and cp <= 0x10fffd);
 }
 
 fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {

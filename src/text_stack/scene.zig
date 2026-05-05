@@ -7,6 +7,7 @@ const contract = @import("../text_contract.zig");
 const atlas_cache = @import("atlas_cache.zig");
 const metrics = @import("metrics.zig");
 const rasterizer = @import("rasterizer.zig");
+const sprite_key = @import("sprite_key.zig");
 
 pub const TextScene = contract.TextScene;
 pub const TextSpriteDraw = contract.TextSpriteDraw;
@@ -110,26 +111,28 @@ pub fn buildSceneWithAtlasCacheOptions(
     const missing_owned = try allocator.dupe(contract.MissingGlyph, missing);
     errdefer allocator.free(missing_owned);
 
-    for (groups, draws) |group, *draw| {
+    for (groups, draws, 0..) |group, *draw, group_idx| {
         const cell_w = @as(i32, @intCast(cell_metrics.cell_w_px));
         const cell_h = @as(i32, @intCast(cell_metrics.cell_h_px));
         const cols = @max(@as(u32, grid_metrics.cols), 1);
-        const first_cell = @as(u32, group.first_cell);
+        const next_group_cell = if (group_idx + 1 < groups.len) groups[group_idx + 1].first_cell else null;
+        const scene_group = iconGroupWithAvailableSpace(group, cell_metrics, grid_metrics, next_group_cell);
+        const first_cell = @as(u32, scene_group.first_cell);
         const col = first_cell % cols;
         const row = first_cell / cols;
-        const width_cells = @max(group.cell_span, 1);
-        const residency = cache.ensureDetailed(group.sprite_key, group.kind == .emoji);
-        if (residency.created) try raster_requests.append(allocator, rasterizer.requestForGroup(group, cell_metrics));
+        const width_cells = @max(scene_group.cell_span, 1);
+        const residency = cache.ensureDetailed(scene_group.sprite_key, scene_group.kind == .emoji);
+        if (residency.created) try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
         draw.* = .{
             .sprite = residency.position,
-            .x_px = @as(i32, @intCast(col)) * cell_w + @as(i32, @intFromFloat(std.math.floor(group.placement.x_offset_px))),
-            .y_px = @as(i32, @intCast(row)) * cell_h + @as(i32, @intFromFloat(std.math.floor(group.placement.y_offset_px))),
+            .x_px = @as(i32, @intCast(col)) * cell_w,
+            .y_px = @as(i32, @intCast(row)) * cell_h,
             .width_px = @intCast(@as(u32, width_cells) * @as(u32, cell_metrics.cell_w_px)),
             .height_px = cell_metrics.cell_h_px,
             .placement = group.placement,
             .color = foregroundForGroup(cells, group.first_cell),
             .first_cell = group.first_cell,
-            .cell_span = group.cell_span,
+            .cell_span = scene_group.cell_span,
         };
     }
 
@@ -244,6 +247,35 @@ fn foregroundForGroup(cells: []const contract.RenderableCell, first_cell: u32) c
     const idx = @as(usize, @intCast(first_cell));
     if (idx < cells.len) return cells[idx].fg;
     return .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+}
+
+fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics, grid_metrics: contract.GridMetrics, next_group_cell: ?u32) contract.GlyphGroup {
+    if (group.kind != .icon) return group;
+    if (cell_metrics.cell_w_px == 0) return group;
+    const desired = desiredIconCells(group, cell_metrics.cell_w_px);
+    if (desired <= group.cell_span) return group;
+
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const row_end = ((group.first_cell / cols) + 1) * cols;
+    const next = next_group_cell orelse row_end;
+    const available_end = @min(row_end, next);
+    if (available_end <= group.first_cell) return group;
+    const available_cells: u8 = @intCast(@min(available_end - group.first_cell, std.math.maxInt(u8)));
+    const cell_span = @min(desired, available_cells);
+    if (cell_span <= group.cell_span) return group;
+
+    var out = group;
+    out.cell_span = cell_span;
+    out.placement.advance_px = @max(out.placement.advance_px, @as(f32, @floatFromInt(@as(u32, cell_span) * @as(u32, cell_metrics.cell_w_px))));
+    if (out.glyphs.len > 0) out.sprite_key = sprite_key.hashGlyphSequence(out.glyphs[0].face_id, out.glyphs, cell_span);
+    return out;
+}
+
+fn desiredIconCells(group: contract.GlyphGroup, cell_w: u16) u8 {
+    const max_cells: u8 = 5;
+    const advance = @max(group.placement.advance_px, @as(f32, @floatFromInt(cell_w)));
+    const raw = @as(u32, @intFromFloat(std.math.ceil(advance / @as(f32, @floatFromInt(cell_w)))));
+    return @intCast(std.math.clamp(raw, @as(u32, @max(group.cell_span, 1)), @as(u32, max_cells)));
 }
 
 test "scene builds ordered sprite draws from groups" {
@@ -361,9 +393,33 @@ test "scene carries group placement offsets into sprite draw" {
     };
     var owned = try buildScene(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 10 });
     defer owned.deinit();
-    try std.testing.expectEqual(@as(i32, 7), owned.scene.sprite_draws[0].x_px);
-    try std.testing.expectEqual(@as(i32, 2), owned.scene.sprite_draws[0].y_px);
+    try std.testing.expectEqual(@as(i32, 8), owned.scene.sprite_draws[0].x_px);
+    try std.testing.expectEqual(@as(i32, 0), owned.scene.sprite_draws[0].y_px);
     try std.testing.expectEqual(@as(f32, 8), owned.scene.sprite_draws[0].placement.advance_px);
+}
+
+test "scene extends wide icon groups into available blank cells" {
+    const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 } },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 } },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 } },
+    };
+    const glyph = contract.GlyphInstance{ .face_id = .{ .value = 1 }, .glyph_id = 7, .cluster_index = 0, .x_advance_px = 16 };
+    const icon = contract.GlyphGroup{
+        .first_cell = 0,
+        .cell_span = 1,
+        .glyphs = &.{glyph},
+        .placement = .{ .advance_px = 16 },
+        .sprite_key = .{ .value = 7 },
+        .kind = .icon,
+    };
+    const next = contract.GlyphGroup{ .first_cell = 2, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 9 }, .kind = .normal };
+    var owned = try buildScene(std.testing.allocator, &cells, &.{ icon, next }, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.sprite_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 2), owned.scene.sprite_draws[0].cell_span);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.raster_requests[0].width_px);
 }
 
 test "scene positions sprite draws by grid columns" {

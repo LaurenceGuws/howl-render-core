@@ -207,6 +207,8 @@ fn isPowerlineFollower(cluster: contract.CellCluster) bool {
 
 fn isIconCodepoint(cp: u32) bool {
     return (cp >= 0xe000 and cp <= 0xf8ff) or
+        (cp >= 0x2700 and cp <= 0x27bf) or
+        (cp >= 0x1f100 and cp <= 0x1f1ff) or
         (cp >= 0xf0000 and cp <= 0xffffd) or
         (cp >= 0x100000 and cp <= 0x10fffd);
 }
