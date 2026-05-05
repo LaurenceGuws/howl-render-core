@@ -315,6 +315,40 @@ fn appendVRight(fills: *std.ArrayList(FillRect), allocator: std.mem.Allocator, x
     try fills.append(allocator, .{ .x = x + @as(i32, @intCast(w - t)), .y = y, .width = t, .height = h, .color = color });
 }
 
+fn sameColor(a: Rgba8, b: Rgba8) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
+}
+
+fn appendBackgroundSpans(
+    fills: *std.ArrayList(FillRect),
+    allocator: std.mem.Allocator,
+    frame: VtState,
+    row: usize,
+    col_start: usize,
+    col_end_exclusive: usize,
+    visible: usize,
+) !void {
+    var span_start = col_start;
+    while (span_start < col_end_exclusive) {
+        const first_idx = row * @as(usize, frame.grid.cols) + span_start;
+        if (first_idx >= visible) break;
+        const bg = frame.grid.cells[first_idx].bg;
+        var span_end = span_start + 1;
+        while (span_end < col_end_exclusive) : (span_end += 1) {
+            const idx = row * @as(usize, frame.grid.cols) + span_end;
+            if (idx >= visible or !sameColor(frame.grid.cells[idx].bg, bg)) break;
+        }
+        try fills.append(allocator, .{
+            .x = @intCast(span_start * @as(usize, frame.cell_px.width)),
+            .y = @intCast(row * @as(usize, frame.cell_px.height)),
+            .width = @intCast((span_end - span_start) * @as(usize, frame.cell_px.width)),
+            .height = frame.cell_px.height,
+            .color = bg,
+        });
+        span_start = span_end;
+    }
+}
+
 pub const RenderBatchBuildError = error{
     OutOfMemory,
 };
@@ -348,6 +382,7 @@ pub fn renderBatch(
         const col_start: usize = if (full_redraw) 0 else @as(usize, frame.damage.dirty_cols_start[row]);
         const col_end_exclusive: usize = if (full_redraw) frame.grid.cols else @min(@as(usize, frame.damage.dirty_cols_end[row]) + 1, @as(usize, frame.grid.cols));
         if (col_start >= col_end_exclusive) continue;
+        try appendBackgroundSpans(&fills, allocator, frame, row, col_start, col_end_exclusive, visible);
         for (col_start..col_end_exclusive) |col| {
             const idx = row * @as(usize, frame.grid.cols) + col;
             if (idx >= visible) break;
@@ -355,14 +390,6 @@ pub fn renderBatch(
 
             const cell_x: i32 = @intCast(col * @as(usize, frame.cell_px.width));
             const cell_y: i32 = @intCast(row * @as(usize, frame.cell_px.height));
-
-            try fills.append(allocator, .{
-                .x = cell_x,
-                .y = cell_y,
-                .width = frame.cell_px.width,
-                .height = frame.cell_px.height,
-                .color = cell.bg,
-            });
 
             const procedural = try tryAppendProceduralGlyph(
                 &fills,
@@ -478,7 +505,7 @@ fn testCapability(max_atlas_slots: u32) BackendCapability {
     };
 }
 
-test "render_batch: empty grid produces zero glyphs and fills equal grid size" {
+test "render_batch: empty grid produces zero glyphs and row background spans" {
     const cells = [_]CellInput{
         makeCell(0, white, black), makeCell(0, white, black),
         makeCell(0, white, black), makeCell(0, white, black),
@@ -491,7 +518,7 @@ test "render_batch: empty grid produces zero glyphs and fills equal grid size" {
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), owned.batch.glyphs.len);
-    try std.testing.expectEqual(@as(usize, 4), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.batch.fills.len);
 }
 
 test "render_batch: space cells produce no glyph quad" {
@@ -506,7 +533,7 @@ test "render_batch: space cells produce no glyph quad" {
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), owned.batch.glyphs.len);
-    try std.testing.expectEqual(@as(usize, 2), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.batch.fills.len);
 }
 
 test "render_batch: printable cells produce glyph quads matching count" {
@@ -524,7 +551,7 @@ test "render_batch: printable cells produce glyph quads matching count" {
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), owned.batch.glyphs.len);
-    try std.testing.expectEqual(@as(usize, 4), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.batch.fills.len);
     try std.testing.expectEqual(@as(usize, 2), owned.batch.atlas_uploads.len);
 }
 
@@ -584,7 +611,7 @@ test "render_batch: over capacity still emits glyphs and deduped uploads" {
     try std.testing.expectEqual(@as(u21, 'A'), owned.batch.glyphs[3].codepoint);
 }
 
-test "render_batch: fill count equals total cell count" {
+test "render_batch: same-background cells merge into row spans" {
     const cells = [_]CellInput{
         makeCell('H', white, black), makeCell('i', white, black),
         makeCell(0, white, black),   makeCell(0, white, black),
@@ -597,8 +624,29 @@ test "render_batch: fill count equals total cell count" {
     }, testCapability(8));
     defer owned.deinit();
 
-    try std.testing.expectEqual(@as(usize, 6), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(usize, 2), owned.batch.fills.len);
     try std.testing.expectEqual(@as(usize, 3), owned.batch.glyphs.len);
+}
+
+test "render_batch: background spans split on color changes" {
+    const cells = [_]CellInput{
+        makeCell(0, white, black), makeCell(0, white, black),
+        makeCell(0, white, red),   makeCell(0, white, black),
+    };
+    var owned = try renderBatch(std.testing.allocator, .{
+        .surface_px = .{ .width = 32, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cells = &cells, .cols = 4, .rows = 1 },
+    }, testCapability(8));
+    defer owned.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[0].x);
+    try std.testing.expectEqual(@as(u16, 16), owned.batch.fills[0].width);
+    try std.testing.expectEqual(@as(i32, 16), owned.batch.fills[1].x);
+    try std.testing.expectEqual(@as(u16, 8), owned.batch.fills[1].width);
+    try std.testing.expectEqual(@as(i32, 24), owned.batch.fills[2].x);
+    try std.testing.expectEqual(@as(u16, 8), owned.batch.fills[2].width);
 }
 
 test "render_batch: cursor visible maps to cursor draw" {
@@ -750,10 +798,10 @@ test "render_batch: tee glyphs only draw vertical half stems" {
     }, testCapability(8));
     defer owned.deinit();
 
-    try std.testing.expectEqual(@as(usize, 9), owned.batch.fills.len);
+    try std.testing.expectEqual(@as(usize, 7), owned.batch.fills.len);
     const tee_down_v = owned.batch.fills[2];
-    const tee_up_v = owned.batch.fills[5];
-    const cross_v = owned.batch.fills[8];
+    const tee_up_v = owned.batch.fills[4];
+    const cross_v = owned.batch.fills[6];
 
     try std.testing.expectEqual(@as(i32, 3), tee_down_v.x);
     try std.testing.expectEqual(@as(i32, 3), tee_down_v.y);
@@ -780,8 +828,8 @@ test "render_batch: fill pixel positions match cell geometry" {
 
     try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[0].x);
     try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[0].y);
-    try std.testing.expectEqual(@as(i32, 8), owned.batch.fills[1].x);
-    try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[1].y);
-    try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[2].x);
-    try std.testing.expectEqual(@as(i32, 16), owned.batch.fills[2].y);
+    try std.testing.expectEqual(@as(u16, 16), owned.batch.fills[0].width);
+    try std.testing.expectEqual(@as(i32, 0), owned.batch.fills[1].x);
+    try std.testing.expectEqual(@as(i32, 16), owned.batch.fills[1].y);
+    try std.testing.expectEqual(@as(u16, 16), owned.batch.fills[1].width);
 }
