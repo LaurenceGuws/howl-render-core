@@ -40,6 +40,17 @@ const TexturedGlyph = struct {
     tex_v1: f32,
 };
 
+const QuadVertex = extern struct {
+    x: f32,
+    y: f32,
+    u: f32,
+    v: f32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+};
+
 fn fallbackFaceId(index: usize) u32 {
     return @intCast(index + 2);
 }
@@ -160,6 +171,9 @@ pub const Backend = struct {
     surface_epoch: u64 = 1,
     resolve_counters: render_core.ResolveCounters = .{},
     resolve_stage: render_core.ResolveStage = .style_policy,
+    fill_vertices: []QuadVertex = &.{},
+    glyph_vertices: []QuadVertex = &.{},
+    fallback_fill_vertices: []QuadVertex = &.{},
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
     fallback_font_paths_len: usize = 0,
 
@@ -197,6 +211,18 @@ pub const Backend = struct {
         if (self.atlas_slot_has_alpha.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_has_alpha);
             self.atlas_slot_has_alpha = &.{};
+        }
+        if (self.fill_vertices.len > 0) {
+            std.heap.c_allocator.free(self.fill_vertices);
+            self.fill_vertices = &.{};
+        }
+        if (self.glyph_vertices.len > 0) {
+            std.heap.c_allocator.free(self.glyph_vertices);
+            self.glyph_vertices = &.{};
+        }
+        if (self.fallback_fill_vertices.len > 0) {
+            std.heap.c_allocator.free(self.fallback_fill_vertices);
+            self.fallback_fill_vertices = &.{};
         }
         if (self.ft_face != null) {
             if (self.hb_font != null and builtin.target.abi != .android) {
@@ -931,7 +957,7 @@ fn hasCurrentContext() bool {
     return c.glGetString(c.GL_VERSION) != null;
 }
 
-fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
+fn drawBatch(backend: *Backend, batch: render_core.RenderBatch) void {
     c.glViewport(0, 0, @as(c_int, @intCast(batch.surface_px.width)), @as(c_int, @intCast(batch.surface_px.height)));
     if (batch.full_redraw) {
         c.glDisable(c.GL_SCISSOR_TEST);
@@ -965,7 +991,7 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     }
     defer c.glDisable(c.GL_BLEND);
 
-    drawFillRects(batch.surface_px, batch.fills);
+    drawFillRects(backend, batch.surface_px, batch.fills);
     if (backend.atlas_texture != 0) {
         c.glEnable(c.GL_TEXTURE_2D);
         c.glBindTexture(c.GL_TEXTURE_2D, backend.atlas_texture);
@@ -991,31 +1017,91 @@ fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: ren
     c.glEnd();
 }
 
-fn drawGlyphs(backend: *const Backend, surface: render_core.PixelSize, glyphs: []const render_core.GlyphQuad) void {
-    var active_color: ?render_core.Rgba8 = null;
-    var drawing = false;
+fn drawGlyphs(backend: *Backend, surface: render_core.PixelSize, glyphs: []const render_core.GlyphQuad) void {
+    if (glyphs.len == 0) return;
+    const glyph_capacity = glyphs.len * 4;
+    var glyph_vertices = ensureVertexCapacity(&backend.glyph_vertices, glyph_capacity) orelse {
+        for (glyphs) |glyph| drawGlyph(backend, surface, glyph);
+        return;
+    };
+    var fallback_vertices = ensureVertexCapacity(&backend.fallback_fill_vertices, glyph_capacity) orelse {
+        for (glyphs) |glyph| drawGlyph(backend, surface, glyph);
+        return;
+    };
+    var glyph_vertex_count: usize = 0;
+    var fallback_vertex_count: usize = 0;
+
     for (glyphs) |glyph| {
         const textured = prepareTexturedGlyph(backend, surface, glyph) orelse {
-            if (drawing) {
-                c.glEnd();
-                drawing = false;
-                active_color = null;
-            }
-            drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
+            if (appendRectVertices(surface, fallback_vertices, &fallback_vertex_count, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg)) {}
             continue;
         };
-
-        if (!drawing or active_color == null or !sameColor(active_color.?, textured.color)) {
-            if (drawing) c.glEnd();
-            c.glEnable(c.GL_TEXTURE_2D);
-            c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
-            c.glBegin(c.GL_QUADS);
-            drawing = true;
-            active_color = textured.color;
-        }
-        emitTexturedGlyph(textured);
+        appendTexturedGlyphVertices(glyph_vertices, &glyph_vertex_count, textured);
     }
-    if (drawing) c.glEnd();
+    drawTexturedVertices(glyph_vertices[0..glyph_vertex_count]);
+    drawSolidVertices(fallback_vertices[0..fallback_vertex_count]);
+}
+
+fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: usize) ?[]QuadVertex {
+    if (needed == 0) return buffer.*;
+    if (buffer.len >= needed) return buffer.*;
+    const new_buffer = std.heap.c_allocator.realloc(buffer.*, needed) catch return null;
+    buffer.* = new_buffer;
+    return new_buffer;
+}
+
+fn appendRectVertices(surface: render_core.PixelSize, vertices: []QuadVertex, count: *usize, x: i32, y: i32, width: u16, height: u16, color: render_core.Rgba8) bool {
+    const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return false;
+    if (count.* + 4 > vertices.len) return false;
+    appendQuad(vertices, count, clipped, color, 0, 0, 0, 0);
+    return true;
+}
+
+fn appendTexturedGlyphVertices(vertices: []QuadVertex, count: *usize, glyph: TexturedGlyph) void {
+    if (count.* + 4 > vertices.len) return;
+    appendQuad(vertices, count, glyph.clipped, glyph.color, glyph.tex_u0, glyph.tex_v0, glyph.tex_u1, glyph.tex_v1);
+}
+
+fn appendQuad(vertices: []QuadVertex, count: *usize, clipped: clip_rect.ClipRect, color: render_core.Rgba8, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
+    const x0: f32 = @floatFromInt(clipped.x);
+    const y0: f32 = @floatFromInt(clipped.y);
+    const x1: f32 = @floatFromInt(clipped.x + clipped.w);
+    const y1: f32 = @floatFromInt(clipped.y + clipped.h);
+    vertices[count.* + 0] = .{ .x = x0, .y = y0, .u = tex_u0, .v = tex_v0, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
+    vertices[count.* + 1] = .{ .x = x1, .y = y0, .u = tex_u1, .v = tex_v0, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
+    vertices[count.* + 2] = .{ .x = x1, .y = y1, .u = tex_u1, .v = tex_v1, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
+    vertices[count.* + 3] = .{ .x = x0, .y = y1, .u = tex_u0, .v = tex_v1, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
+    count.* += 4;
+}
+
+fn drawSolidVertices(vertices: []const QuadVertex) void {
+    if (vertices.len == 0) return;
+    c.glDisable(c.GL_TEXTURE_2D);
+    drawVertexArray(vertices, false);
+}
+
+fn drawTexturedVertices(vertices: []const QuadVertex) void {
+    if (vertices.len == 0) return;
+    c.glEnable(c.GL_TEXTURE_2D);
+    drawVertexArray(vertices, true);
+}
+
+fn drawVertexArray(vertices: []const QuadVertex, textured: bool) void {
+    if (vertices.len == 0) return;
+    c.glEnableClientState(c.GL_VERTEX_ARRAY);
+    c.glEnableClientState(c.GL_COLOR_ARRAY);
+    if (textured) c.glEnableClientState(c.GL_TEXTURE_COORD_ARRAY);
+    defer {
+        if (textured) c.glDisableClientState(c.GL_TEXTURE_COORD_ARRAY);
+        c.glDisableClientState(c.GL_COLOR_ARRAY);
+        c.glDisableClientState(c.GL_VERTEX_ARRAY);
+    }
+
+    const stride: c.GLsizei = @intCast(@sizeOf(QuadVertex));
+    c.glVertexPointer(2, c.GL_FLOAT, stride, &vertices[0].x);
+    c.glColorPointer(4, c.GL_UNSIGNED_BYTE, stride, &vertices[0].r);
+    if (textured) c.glTexCoordPointer(2, c.GL_FLOAT, stride, &vertices[0].u);
+    c.glDrawArrays(c.GL_QUADS, 0, @intCast(vertices.len));
 }
 
 fn prepareTexturedGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) ?TexturedGlyph {
@@ -1077,28 +1163,17 @@ fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: 
     c.glEnd();
 }
 
-fn drawFillRects(surface: render_core.PixelSize, fills: []const render_core.FillRect) void {
+fn drawFillRects(backend: *Backend, surface: render_core.PixelSize, fills: []const render_core.FillRect) void {
     if (fills.len == 0) return;
-    c.glDisable(c.GL_TEXTURE_2D);
-
-    var run_start: usize = 0;
-    while (run_start < fills.len) {
-        const color = fills[run_start].color;
-        var run_end = run_start + 1;
-        while (run_end < fills.len and sameColor(fills[run_end].color, color)) : (run_end += 1) {}
-
-        c.glColor4ub(color.r, color.g, color.b, color.a);
-        c.glBegin(c.GL_QUADS);
-        for (fills[run_start..run_end]) |fill| {
-            const clipped = clip_rect.clipRectTopOrigin(surface, fill.x, fill.y, fill.width, fill.height) orelse continue;
-            c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
-            c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
-            c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
-            c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
-        }
-        c.glEnd();
-        run_start = run_end;
+    var vertices = ensureVertexCapacity(&backend.fill_vertices, fills.len * 4) orelse {
+        for (fills) |fill| drawRect(surface, fill.x, fill.y, fill.width, fill.height, fill.color);
+        return;
+    };
+    var count: usize = 0;
+    for (fills) |fill| {
+        _ = appendRectVertices(surface, vertices, &count, fill.x, fill.y, fill.width, fill.height, fill.color);
     }
+    drawSolidVertices(vertices[0..count]);
 }
 
 fn sameColor(a: render_core.Rgba8, b: render_core.Rgba8) bool {
