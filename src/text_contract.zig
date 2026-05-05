@@ -138,6 +138,7 @@ pub const GlyphGroupKind = enum(u3) {
 
 pub const GlyphGroup = struct {
     first_cell: u32,
+    first_cp: u32 = 0,
     cell_span: u8,
     glyphs: []const GlyphInstance,
     placement: GlyphPlacement = .{},

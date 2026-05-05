@@ -83,6 +83,7 @@ pub fn groupShapedRunsWithPolicy(
             const inferred_cell_span = applyGroupingPolicy(cellSpanForClusterRange(clusters, cluster_idx, next_cluster_exclusive), cluster.first_cell, policy);
             groups[out_idx] = .{
                 .first_cell = cluster.first_cell,
+                .first_cp = cluster.first_cp,
                 .cell_span = inferred_cell_span,
                 .glyphs = glyph_slice,
                 .placement = metrics.groupPlacement(glyph_slice, cell_metrics, inferred_cell_span),
@@ -121,6 +122,7 @@ pub fn groupSpriteRoutes(
         const cell_span = spriteRouteCellSpan(route.route, clusters, cluster_idx);
         groups[idx] = .{
             .first_cell = cluster.first_cell,
+            .first_cp = cluster.first_cp,
             .cell_span = cell_span,
             .glyphs = &.{},
             .placement = metrics.groupPlacement(&.{}, cell_metrics, cell_span),
