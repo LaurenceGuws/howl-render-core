@@ -164,6 +164,7 @@ pub const Backend = struct {
     atlas_slot_codepoint: []u21 = &.{},
     atlas_slot_face_id: []u32 = &.{},
     atlas_slot_glyph_id: []u32 = &.{},
+    atlas_slot_sprite_key: []u64 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
     atlas_slot_has_alpha: []bool = &.{},
@@ -214,6 +215,10 @@ pub const Backend = struct {
         if (self.atlas_slot_glyph_id.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_glyph_id);
             self.atlas_slot_glyph_id = &.{};
+        }
+        if (self.atlas_slot_sprite_key.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
+            self.atlas_slot_sprite_key = &.{};
         }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
@@ -404,6 +409,9 @@ pub const Backend = struct {
         var committed: usize = 0;
         for (outputs) |output| {
             const slot = findSceneSpriteSlot(scene, output.key) orelse continue;
+            if (self.textSceneSlotCached(slot, output)) {
+                continue;
+            }
             self.copyRasterOutputToAtlas(slot, output);
             if (hasCurrentContext()) self.uploadAtlasSlot(slot);
             committed += 1;
@@ -455,8 +463,10 @@ pub const Backend = struct {
     pub fn resize(self: *Backend, surface_px: render_core.PixelSize, cell_px: render_core.CellSize) BackendError!void {
         if (self.closed) return error.BackendClosed;
         const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
+        const cell_changed = self.config.cell_px.width != cell_px.width or self.config.cell_px.height != cell_px.height;
         self.config.surface_px = surface_px;
         self.config.cell_px = cell_px;
+        if (cell_changed) self.clearAtlasCache();
         if (surface_changed) self.surface_epoch +%= 1;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             self.resizeOwnedTargetTexture();
@@ -590,6 +600,7 @@ pub const Backend = struct {
         if (slot_idx < self.atlas_slot_codepoint.len) self.atlas_slot_codepoint[slot_idx] = 0;
         if (slot_idx < self.atlas_slot_face_id.len) self.atlas_slot_face_id[slot_idx] = 0;
         if (slot_idx < self.atlas_slot_glyph_id.len) self.atlas_slot_glyph_id[slot_idx] = @intCast(output.key.value & 0xffff_ffff);
+        if (slot_idx < self.atlas_slot_sprite_key.len) self.atlas_slot_sprite_key[slot_idx] = output.key.value;
         if (slot_idx < self.atlas_slot_width.len) self.atlas_slot_width[slot_idx] = output.width_px;
         if (slot_idx < self.atlas_slot_height.len) self.atlas_slot_height[slot_idx] = output.height_px;
         self.markSlotAlpha(slot, dst, copy_w, copy_h);
@@ -614,7 +625,6 @@ pub const Backend = struct {
     fn ensureAtlasStorageSized(self: *Backend, need_w: u16, need_h: u16) BackendError!void {
         const need_stride: usize = @as(usize, need_w) * @as(usize, need_h);
         if (self.atlas_pixels.len != 0 and self.atlas_cell_w == need_w and self.atlas_cell_h == need_h) return;
-
         if (self.atlas_pixels.len > 0) {
             std.heap.c_allocator.free(self.atlas_pixels);
             self.atlas_pixels = &.{};
@@ -630,6 +640,10 @@ pub const Backend = struct {
         if (self.atlas_slot_glyph_id.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_glyph_id);
             self.atlas_slot_glyph_id = &.{};
+        }
+        if (self.atlas_slot_sprite_key.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
+            self.atlas_slot_sprite_key = &.{};
         }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
@@ -652,6 +666,8 @@ pub const Backend = struct {
         @memset(self.atlas_slot_face_id, 0);
         self.atlas_slot_glyph_id = try std.heap.c_allocator.alloc(u32, max_slots);
         @memset(self.atlas_slot_glyph_id, 0);
+        self.atlas_slot_sprite_key = try std.heap.c_allocator.alloc(u64, max_slots);
+        @memset(self.atlas_slot_sprite_key, 0);
         self.atlas_slot_width = try std.heap.c_allocator.alloc(u16, max_slots);
         @memset(self.atlas_slot_width, 0);
         self.atlas_slot_height = try std.heap.c_allocator.alloc(u16, max_slots);
@@ -716,6 +732,17 @@ pub const Backend = struct {
             self.atlas_slot_glyph_id[idx] == key.glyph_id and
             self.atlas_slot_width[idx] == width and
             self.atlas_slot_height[idx] == height;
+    }
+
+    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render_core.TextStack.Rasterizer.RasterSpriteOutput) bool {
+        const idx = @as(usize, slot);
+        if (idx >= self.atlas_slot_sprite_key.len) return false;
+        if (idx >= self.atlas_slot_width.len or idx >= self.atlas_slot_height.len) return false;
+        if (idx >= self.atlas_slot_has_alpha.len) return false;
+        return self.atlas_slot_sprite_key[idx] == output.key.value and
+            self.atlas_slot_width[idx] == output.width_px and
+            self.atlas_slot_height[idx] == output.height_px and
+            self.atlas_slot_has_alpha[idx];
     }
 
     fn findCachedSlot(self: *const Backend, key: ResolvedGlyphKey, width: u16, height: u16) ?u32 {
@@ -897,6 +924,7 @@ pub const Backend = struct {
         if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
         if (self.atlas_slot_face_id.len > 0) @memset(self.atlas_slot_face_id, 0);
         if (self.atlas_slot_glyph_id.len > 0) @memset(self.atlas_slot_glyph_id, 0);
+        if (self.atlas_slot_sprite_key.len > 0) @memset(self.atlas_slot_sprite_key, 0);
         if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
         if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
         if (self.atlas_slot_has_alpha.len > 0) @memset(self.atlas_slot_has_alpha, false);
@@ -1702,6 +1730,10 @@ fn drawTextScene(backend: *Backend, surface: render_core.PixelSize, scene: rende
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     defer c.glDisable(c.GL_BLEND);
 
+    c.glDisable(c.GL_SCISSOR_TEST);
+    c.glClearColor(0.0, 0.0, 0.0, 1.0);
+    c.glClear(c.GL_COLOR_BUFFER_BIT);
+
     drawSceneBackgrounds(backend, surface, scene.background_draws);
     drawSceneDecorations(backend, surface, scene.decoration_draws);
     if (backend.atlas_texture != 0) {
@@ -1762,28 +1794,16 @@ fn drawSceneSprites(backend: *Backend, surface: render_core.PixelSize, draws: []
         for (draws) |draw| drawSceneSprite(backend, surface, draw);
         return;
     };
-    var fallback_vertices = ensureVertexCapacity(&backend.fallback_fill_vertices, draws.len * 4) orelse {
-        for (draws) |draw| drawSceneSprite(backend, surface, draw);
-        return;
-    };
     var sprite_count: usize = 0;
-    var fallback_count: usize = 0;
     for (draws) |draw| {
-        const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse {
-            _ = appendRectVertices(surface, fallback_vertices, &fallback_count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-            continue;
-        };
+        const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse continue;
         appendTexturedGlyphVertices(sprite_vertices, &sprite_count, textured);
     }
     drawTexturedVertices(sprite_vertices[0..sprite_count]);
-    drawSolidVertices(fallback_vertices[0..fallback_count]);
 }
 
 fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) void {
-    const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
-    };
+    const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse return;
     c.glEnable(c.GL_TEXTURE_2D);
     c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
     c.glBegin(c.GL_QUADS);
@@ -2319,7 +2339,7 @@ test "backend uploads text analysis raster outputs into atlas memory" {
     const committed = try backend.uploadTextAnalysisRaster(analysis);
     try std.testing.expectEqual(@as(usize, 1), committed);
     const committed_scene = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
-    try std.testing.expectEqual(@as(usize, 1), committed_scene);
+    try std.testing.expectEqual(@as(usize, 0), committed_scene);
     try std.testing.expect(backend.atlas_pixels.len > 0);
     const slot = analysis.scene.scene.sprite_draws[0].sprite.slot;
     const slot_idx = @as(usize, slot);

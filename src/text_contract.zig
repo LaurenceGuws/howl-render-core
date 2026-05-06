@@ -5,6 +5,14 @@
 const std = @import("std");
 pub const Rgba8 = @import("rgba.zig").Rgba8;
 
+pub const UnderlineStyle = enum {
+    straight,
+    double,
+    curly,
+    dotted,
+    dashed,
+};
+
 pub const BackendCaps = struct {
     has_freetype: bool = false,
     has_harfbuzz: bool = false,
@@ -76,6 +84,8 @@ pub const RenderableCell = struct {
     presentation: TextPresentation,
     fg: Rgba8,
     bg: Rgba8,
+    underline_color: Rgba8 = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+    underline_style: UnderlineStyle = .straight,
     underline: bool = false,
     strikethrough: bool = false,
     continuation: bool = false,

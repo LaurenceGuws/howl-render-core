@@ -28,10 +28,19 @@ pub const CellAttrs = packed struct {
     dim: bool = false,
     italic: bool = false,
     underline: bool = false,
+    underline_color_set: bool = false,
     blink: bool = false,
     inverse: bool = false,
     invisible: bool = false,
     strikethrough: bool = false,
+};
+
+pub const UnderlineStyle = enum {
+    straight,
+    double,
+    curly,
+    dotted,
+    dashed,
 };
 
 pub const Cell = struct {
@@ -39,6 +48,8 @@ pub const Cell = struct {
     flags: CellFlags = .{},
     fg_color: Color = .{ .kind = .default, .value = 0 },
     bg_color: Color = .{ .kind = .default, .value = 0 },
+    underline_color: Color = .{ .kind = .default, .value = 0 },
+    underline_style: UnderlineStyle = .straight,
     attrs: CellAttrs = .{},
     link_id: u32 = 0,
 };

@@ -38,6 +38,7 @@ pub const RenderCore = struct {
     pub const OwnedRenderBatch = core.OwnedRenderBatch;
     pub const SurfaceState = core.SurfaceState;
     pub const SurfaceColor = core.SurfaceColor;
+    pub const UnderlineStyle = core.UnderlineStyle;
     pub const SurfaceCellFlags = core.SurfaceCellFlags;
     pub const SurfaceCellAttrs = core.SurfaceCellAttrs;
     pub const SurfaceCell = core.SurfaceCell;

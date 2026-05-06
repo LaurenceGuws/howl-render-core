@@ -34,6 +34,7 @@ pub const RenderCore = struct {
     pub const OwnedRenderBatch = render_batch.OwnedRenderBatch;
     pub const SurfaceState = surface.SurfaceState;
     pub const SurfaceColor = surface.Color;
+    pub const UnderlineStyle = surface.UnderlineStyle;
     pub const SurfaceCellFlags = surface.CellFlags;
     pub const SurfaceCellAttrs = surface.CellAttrs;
     pub const SurfaceCell = surface.Cell;

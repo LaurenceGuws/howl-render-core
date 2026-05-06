@@ -186,6 +186,7 @@ fn appendBackgroundDraws(
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
         if (cell.continuation) continue;
+        if (cell.bg.a == 0) continue;
         const col = cell.first_cell % cols;
         const row = cell.first_cell / cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
@@ -220,16 +221,7 @@ fn appendDecorationDraws(
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
-        if (cell.underline) try out.append(allocator, .{
-            .kind = .underline,
-            .x_px = base_x,
-            .y_px = base_y + deco.underline_y_px,
-            .width_px = width_px,
-            .height_px = deco.underline_h_px,
-            .color = cell.fg,
-            .first_cell = cell.first_cell,
-            .cell_span = cell.cell_span,
-        });
+        if (cell.underline) try appendUnderlineDraws(allocator, out, cell, base_x, base_y + deco.underline_y_px, width_px, deco.underline_h_px);
         if (cell.strikethrough) try out.append(allocator, .{
             .kind = .strikethrough,
             .x_px = base_x,
@@ -240,6 +232,45 @@ fn appendDecorationDraws(
             .first_cell = cell.first_cell,
             .cell_span = cell.cell_span,
         });
+    }
+}
+
+fn appendDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    try out.append(allocator, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+}
+
+fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16) !void {
+    const color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
+    switch (cell.underline_style) {
+        .straight => try appendDecorationDraw(allocator, out, cell, x, y, width, height, color),
+        .double => {
+            const gap: i32 = @max(@as(i32, @intCast(height)), 1);
+            try appendDecorationDraw(allocator, out, cell, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
+            try appendDecorationDraw(allocator, out, cell, x, y, width, height, color);
+        },
+        .dotted => {
+            const dot: u16 = @max(height, 1);
+            const step: u16 = @max(dot * 2, 2);
+            var off: u16 = 0;
+            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
+        },
+        .dashed => {
+            const dash: u16 = @max(width / 3, @as(u16, 2));
+            const step: u16 = @max(dash + 2, 3);
+            var off: u16 = 0;
+            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
+        },
+        .curly => {
+            const seg: u16 = @max(height * 2, 2);
+            const y_high = @max(y - @as(i32, @intCast(height)), 0);
+            const y_low = y + @as(i32, @intCast(height));
+            var off: u16 = 0;
+            var high = true;
+            while (off < width) : (off += seg) {
+                try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), if (high) y_high else y_low, @min(seg, width - off), height, color);
+                high = !high;
+            }
+        },
     }
 }
 
@@ -370,6 +401,7 @@ test "scene emits shared-geometry decoration draws from cells" {
         .presentation = .any,
         .fg = .{ .r = 1, .g = 2, .b = 3, .a = 255 },
         .bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+        .underline_color = .{ .r = 9, .g = 8, .b = 7, .a = 255 },
         .underline = true,
         .strikethrough = true,
     }};
@@ -379,6 +411,7 @@ test "scene emits shared-geometry decoration draws from cells" {
     try std.testing.expectEqual(contract.DecorationKind.underline, owned.scene.decoration_draws[0].kind);
     try std.testing.expectEqual(@as(i32, 8), owned.scene.decoration_draws[0].x_px);
     try std.testing.expectEqual(@as(u16, 16), owned.scene.decoration_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 9), owned.scene.decoration_draws[0].color.r);
     try std.testing.expectEqual(contract.DecorationKind.strikethrough, owned.scene.decoration_draws[1].kind);
 }
 

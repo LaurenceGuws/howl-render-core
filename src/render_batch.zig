@@ -44,6 +44,14 @@ pub const GridSize = struct {
 /// 8-bit RGBA color.
 pub const Rgba8 = rgba.Rgba8;
 
+pub const UnderlineStyle = enum {
+    straight,
+    double,
+    curly,
+    dotted,
+    dashed,
+};
+
 /// Filled rectangle draw command.
 pub const FillRect = struct {
     x: i32,
@@ -125,13 +133,15 @@ pub const CellInput = struct {
     codepoint: u21,
     fg: Rgba8,
     bg: Rgba8,
+    underline_color: Rgba8 = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+    underline_style: UnderlineStyle = .straight,
     underline: bool = false,
     strikethrough: bool = false,
     continuation: bool = false,
 };
 
 pub const CellDecorations = struct {
-    rects: [2]FillRect = undefined,
+    rects: [16]FillRect = undefined,
     len: usize = 0,
 };
 
@@ -339,14 +349,8 @@ pub fn cellDecorations(cell: CellInput, cell_x: i32, cell_y: i32, cell_px: CellS
     const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
 
     if (cell.underline) {
-        out.rects[out.len] = .{
-            .x = cell_x,
-            .y = cell_y + deco.underline_y_px,
-            .width = cell_px.width,
-            .height = deco.underline_h_px,
-            .color = cell.fg,
-        };
-        out.len += 1;
+        const underline_color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
+        appendUnderlineDecorations(&out, cell_x, cell_y + deco.underline_y_px, cell_px.width, deco.underline_h_px, underline_color, cell.underline_style);
     }
     if (cell.strikethrough) {
         out.rects[out.len] = .{
@@ -359,6 +363,46 @@ pub fn cellDecorations(cell: CellInput, cell_x: i32, cell_y: i32, cell_px: CellS
         out.len += 1;
     }
     return out;
+}
+
+fn appendDecoration(out: *CellDecorations, x: i32, y: i32, width: u16, height: u16, color: Rgba8) void {
+    if (out.len >= out.rects.len) return;
+    out.rects[out.len] = .{ .x = x, .y = y, .width = width, .height = height, .color = color };
+    out.len += 1;
+}
+
+fn appendUnderlineDecorations(out: *CellDecorations, x: i32, y: i32, width: u16, height: u16, color: Rgba8, style: UnderlineStyle) void {
+    switch (style) {
+        .straight => appendDecoration(out, x, y, width, height, color),
+        .double => {
+            const gap: i32 = @max(@as(i32, @intCast(height)), 1);
+            appendDecoration(out, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
+            appendDecoration(out, x, y, width, height, color);
+        },
+        .dotted => {
+            const dot: u16 = @max(height, 1);
+            const step: u16 = @max(dot * 2, 2);
+            var off: u16 = 0;
+            while (off < width) : (off += step) appendDecoration(out, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
+        },
+        .dashed => {
+            const dash: u16 = @max(width / 3, @as(u16, 2));
+            const step: u16 = @max(dash + 2, 3);
+            var off: u16 = 0;
+            while (off < width) : (off += step) appendDecoration(out, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
+        },
+        .curly => {
+            const seg: u16 = @max(height * 2, 2);
+            const y_high = @max(y - @as(i32, @intCast(height)), 0);
+            const y_low = y + @as(i32, @intCast(height));
+            var off: u16 = 0;
+            var high = true;
+            while (off < width) : (off += seg) {
+                appendDecoration(out, x + @as(i32, @intCast(off)), if (high) y_high else y_low, @min(seg, width - off), height, color);
+                high = !high;
+            }
+        },
+    }
 }
 
 fn appendBackgroundSpans(
@@ -701,10 +745,12 @@ test "render_batch: background spans split on color changes" {
 }
 
 test "render_batch: underline and strikethrough produce decoration fills" {
+    const underline_color = Rgba8{ .r = 220, .g = 40, .b = 60, .a = 255 };
     const cells = [_]CellInput{.{
         .codepoint = 'A',
         .fg = white,
         .bg = black,
+        .underline_color = underline_color,
         .underline = true,
         .strikethrough = true,
     }};
@@ -720,6 +766,7 @@ test "render_batch: underline and strikethrough produce decoration fills" {
 
     try std.testing.expectEqual(@as(usize, 3), owned.batch.fills.len);
     try std.testing.expectEqual(deco.underline_y_px, owned.batch.fills[1].y);
+    try std.testing.expectEqual(underline_color.r, owned.batch.fills[1].color.r);
     try std.testing.expectEqual(deco.strikethrough_y_px, owned.batch.fills[2].y);
 }
 

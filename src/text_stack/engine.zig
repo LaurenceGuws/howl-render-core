@@ -129,16 +129,28 @@ pub const Engine = struct {
             _ = self.atlas.markRendered(output.key);
         }
 
-        self.counters.cell_texts += owned_text_cache.texts.len;
-        self.counters.clusters += clusters.clusters.len;
-        self.counters.resolved_runs += runs.runs.len;
-        self.counters.shaped_runs += shaped_runs.runs.len;
-        for (shaped_runs.runs) |run| self.counters.shaped_glyphs += run.glyphs.len;
-        self.counters.glyph_groups += groups.groups.len;
-        self.counters.sprite_cache_misses += @intCast(scene.scene.raster_requests.len);
-        self.counters.sprite_cache_hits += @intCast(scene.scene.sprite_draws.len - scene.scene.raster_requests.len);
-        self.counters.rasterized_sprites += @intCast(raster_plan.outputs.len);
-        self.counters.missing_glyphs += runs.missing.len;
+        var counters = pipeline.TextEngineCounters{
+            .cell_texts = owned_text_cache.texts.len,
+            .clusters = clusters.clusters.len,
+            .resolved_runs = runs.runs.len,
+            .shaped_runs = shaped_runs.runs.len,
+            .glyph_groups = groups.groups.len,
+            .sprite_cache_misses = @intCast(scene.scene.raster_requests.len),
+            .sprite_cache_hits = @intCast(scene.scene.sprite_draws.len - scene.scene.raster_requests.len),
+            .rasterized_sprites = @intCast(raster_plan.outputs.len),
+            .missing_glyphs = runs.missing.len,
+        };
+        for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
+        self.counters.cell_texts += counters.cell_texts;
+        self.counters.clusters += counters.clusters;
+        self.counters.resolved_runs += counters.resolved_runs;
+        self.counters.shaped_runs += counters.shaped_runs;
+        self.counters.shaped_glyphs += counters.shaped_glyphs;
+        self.counters.glyph_groups += counters.glyph_groups;
+        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
+        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
+        self.counters.rasterized_sprites += counters.rasterized_sprites;
+        self.counters.missing_glyphs += counters.missing_glyphs;
 
         return .{
             .text_cache = owned_text_cache,
@@ -151,6 +163,7 @@ pub const Engine = struct {
             .groups = groups,
             .scene = scene,
             .raster_plan = raster_plan,
+            .counters = counters,
         };
     }
 };
@@ -166,6 +179,7 @@ pub const OwnedTextAnalysis = struct {
     groups: grouping.OwnedGlyphGroups,
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
+    counters: pipeline.TextEngineCounters = .{},
 
     pub fn deinit(self: *OwnedTextAnalysis) void {
         self.raster_plan.deinit();
