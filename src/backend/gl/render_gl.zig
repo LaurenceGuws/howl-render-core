@@ -104,30 +104,21 @@ pub const FrameLayout = struct {
     grid: render_core.GridSize,
 };
 
-pub const testing = struct {
-    pub const primary_face_id: u32 = provider_mod.primary_face_id;
-
-    pub fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
-        return provider_mod.providerGlyphId(self, face_id, codepoint);
-    }
-};
-
 /// Primary export surface for the GL renderer implementation.
-pub const RenderGl = struct {
-    /// Backend config alias.
-    pub const Config = render_core.BackendConfig;
-    /// Backend capability alias.
-    pub const Capability = render_core.BackendCapability;
-    /// Backend error alias.
-    pub const Error = BackendError;
-    /// Render report alias.
-    pub const Report = RenderReport;
+pub const test_primary_face_id: u32 = provider_mod.primary_face_id;
 
-    /// Construct backend from config.
-    pub fn init(config: Config) Backend {
-        return Backend.init(config);
-    }
-};
+pub fn testProviderGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+    return provider_mod.providerGlyphId(self, face_id, codepoint);
+}
+
+pub const Config = render_core.BackendConfig;
+pub const Capability = render_core.BackendCapability;
+pub const Error = BackendError;
+pub const Report = RenderReport;
+
+pub fn init(config: Config) Backend {
+    return Backend.init(config);
+}
 
 /// Derive grid dimensions through the shared render-core policy.
 pub fn deriveGridSize(grid_px: render_core.PixelSize, cell_px: CellSize) render_core.GridSize {

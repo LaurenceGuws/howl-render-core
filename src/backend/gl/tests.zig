@@ -25,7 +25,7 @@ test "backend exposes text provider and font session scaffold" {
     const provider = adapter.textProvider();
     const session = backend.fontSession(&faces);
     try std.testing.expect(provider.face_provider != null);
-    try std.testing.expectEqual(@as(u32, backend_mod.testing.primary_face_id), session.primary_face.value);
+    try std.testing.expectEqual(@as(u32, backend_mod.test_primary_face_id), session.primary_face.value);
     try std.testing.expectEqual(@as(usize, 1), session.faces.len);
     try std.testing.expectEqual(@as(u16, 8), session.metrics.cell_w_px);
     try std.testing.expectEqual(@as(u16, 16), session.metrics.cell_h_px);
@@ -64,13 +64,13 @@ test "backend text provider shaper returns glyph instances" {
     const run = render_core.ResolvedRun{ .run = .{
         .cluster_start = 0,
         .cluster_count = 1,
-        .font = .{ .face_id = .{ .value = backend_mod.testing.primary_face_id }, .style = .regular, .presentation = .any },
+        .font = .{ .face_id = .{ .value = backend_mod.test_primary_face_id }, .style = .regular, .presentation = .any },
     } };
     const text_cache = render_core.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'A', .codepoints = &.{'A'} }} };
     var shaped = try provider.shaper.shapeRun(std.testing.allocator, run, text_cache, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
     defer shaped.deinit();
     try std.testing.expectEqual(@as(usize, 1), shaped.glyphs.len);
-    try std.testing.expectEqual(@as(u32, backend_mod.testing.primary_face_id), shaped.glyphs[0].face_id.value);
+    try std.testing.expectEqual(@as(u32, backend_mod.test_primary_face_id), shaped.glyphs[0].face_id.value);
 }
 
 test "backend text provider rasterizer returns sprite output" {
@@ -82,8 +82,8 @@ test "backend text provider rasterizer returns sprite output" {
     var adapter = backend.textProvider();
     const provider = adapter.textProvider();
     const glyph = render_core.GlyphInstance{
-        .face_id = .{ .value = backend_mod.testing.primary_face_id },
-        .glyph_id = backend_mod.testing.providerGlyphId(&backend, .{ .value = backend_mod.testing.primary_face_id }, 'A'),
+        .face_id = .{ .value = backend_mod.test_primary_face_id },
+        .glyph_id = backend_mod.testProviderGlyphId(&backend, .{ .value = backend_mod.test_primary_face_id }, 'A'),
         .cluster_index = 0,
     };
     const group = render_core.GlyphGroup{
