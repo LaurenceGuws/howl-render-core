@@ -1,5 +1,5 @@
 const std = @import("std");
-const backend_mod = @import("RenderGl.zig");
+const backend_mod = @import("render_gl.zig");
 const render_core = @import("../../render_core.zig").RenderCore;
 
 const Backend = backend_mod.Backend;

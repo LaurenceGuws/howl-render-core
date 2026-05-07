@@ -5,8 +5,8 @@
 const build_options = @import("build_options");
 const core = @import("render_core.zig").RenderCore;
 const backend = switch (build_options.render_backend) {
-    .gl => @import("backend/gl/RenderGl.zig"),
-    .gles => @import("backend/gles/RenderGles.zig"),
+    .gl => @import("backend/gl/render_gl.zig"),
+    .gles => @import("backend/gles/render_gles.zig"),
 };
 
 /// Public renderer facade.

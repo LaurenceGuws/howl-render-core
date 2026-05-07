@@ -9,7 +9,7 @@ const surface = @import("frame_state.zig");
 const retained_frame = @import("retained_frame.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
-const text_stack = @import("TextStack.zig");
+const text_stack = @import("text_stack.zig");
 
 pub const RenderCore = struct {
     pub const BackendConfig = render_batch.BackendConfig;
