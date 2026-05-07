@@ -446,9 +446,34 @@ pub const Backend = struct {
         }
     }
 
-    /// Validate and render a batch against backend config/capability.
-    pub fn renderBatch(_: *Backend, _: render_core.RenderBatch) BackendError!RenderReport {
-        @panic("GL RenderBatch/GlyphQuad text path is retired; use renderTextScene/renderFrameState");
+    /// Validate and render a legacy batch against backend config/capability.
+    pub fn renderBatch(self: *Backend, batch: render_core.RenderBatch) BackendError!RenderReport {
+        if (self.closed) return error.BackendClosed;
+        const rc = render_core.init(self.config, self.capabilities());
+        try rc.validateRenderBatch(batch);
+        try self.resize(batch.surface_px, batch.cell_px);
+        const committed_uploads = try self.uploadAtlas(batch);
+        if (hasCurrentContext()) {
+            if (self.target_texture == null and self.config.target_texture != 0) {
+                self.target_texture = self.config.target_texture;
+                self.surface_epoch +%= 1;
+            }
+            try self.ensureOwnedTargetTexture();
+            if (self.target_texture == null) return error.TargetTextureUnset;
+            try self.beginTargetPass();
+            defer self.endTargetPass();
+            drawBatch(self, batch);
+        } else if (!builtin.is_test) {
+            return error.NoContext;
+        }
+        self.pass_count += 1;
+        var report = rc.summarizeRenderBatch(batch);
+        report.atlas_uploads = committed_uploads;
+        return .{
+            .stats = report,
+            .pass_index = self.pass_count,
+            .atlas_uploads_committed = committed_uploads,
+        };
     }
 
     /// Build batch from VT state and render it.
@@ -482,23 +507,26 @@ pub const Backend = struct {
     }
 
     pub fn prepareFrameState(
-        _: *Backend,
-        _: std.mem.Allocator,
-        _: anytype,
-        _: render_core.PixelSize,
-        _: render_core.CellSize,
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
     ) BackendError!render_core.OwnedRenderBatch {
-        @panic("GL prepareFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
+        try self.resize(surface_px, cell_px);
+        const rc = render_core.init(self.config, self.capabilities());
+        return rc.vtStateToRenderBatch(allocator, state, surface_px, cell_px) catch |err| return mapTextSceneRenderError(err);
     }
 
     pub fn prepareRetainedFrameState(
-        _: *Backend,
-        _: std.mem.Allocator,
-        _: SurfaceFrameData,
-        _: render_core.PixelSize,
-        _: render_core.CellSize,
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: SurfaceFrameData,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
     ) BackendError!render_core.OwnedRenderBatch {
-        @panic("GL prepareRetainedFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
+        try self.resize(surface_px, cell_px);
+        return self.retained_frame.prepareBatch(allocator, allocator, state, surface_px, cell_px, render_core.defaultTheme, self.capabilities()) catch |err| return mapTextSceneRenderError(err);
     }
 
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {

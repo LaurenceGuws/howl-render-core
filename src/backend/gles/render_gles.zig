@@ -408,9 +408,34 @@ pub const Backend = struct {
         }
     }
 
-    /// Validate and render a batch against backend config/capability.
-    pub fn renderBatch(_: *Backend, _: render_core.RenderBatch) BackendError!RenderReport {
-        @panic("GLES RenderBatch/GlyphQuad text path is retired; use renderTextScene/renderFrameState");
+    /// Validate and render a legacy batch against backend config/capability.
+    pub fn renderBatch(self: *Backend, batch: render_core.RenderBatch) BackendError!RenderReport {
+        if (self.closed) return error.BackendClosed;
+        const rc = render_core.init(self.config, self.capabilities());
+        try rc.validateRenderBatch(batch);
+        try self.resize(batch.surface_px, batch.cell_px);
+        const committed_uploads = try self.uploadAtlas(batch);
+        if (hasCurrentContext()) {
+            if (self.target_texture == null and self.config.target_texture != 0) {
+                self.target_texture = self.config.target_texture;
+                self.surface_epoch +%= 1;
+            }
+            try self.ensureOwnedTargetTexture();
+            if (self.target_texture == null) return error.TargetTextureUnset;
+            try self.beginTargetPass();
+            defer self.endTargetPass();
+            drawBatch(self, batch);
+        } else if (!builtin.is_test) {
+            return error.NoContext;
+        }
+        self.pass_count += 1;
+        var report = rc.summarizeRenderBatch(batch);
+        report.atlas_uploads = committed_uploads;
+        return .{
+            .stats = report,
+            .pass_index = self.pass_count,
+            .atlas_uploads_committed = committed_uploads,
+        };
     }
 
     /// Build batch from VT state and render it.
@@ -444,23 +469,26 @@ pub const Backend = struct {
     }
 
     pub fn prepareFrameState(
-        _: *Backend,
-        _: std.mem.Allocator,
-        _: anytype,
-        _: render_core.PixelSize,
-        _: render_core.CellSize,
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
     ) BackendError!render_core.OwnedRenderBatch {
-        @panic("GLES prepareFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
+        try self.resize(surface_px, cell_px);
+        const rc = render_core.init(self.config, self.capabilities());
+        return rc.vtStateToRenderBatch(allocator, state, surface_px, cell_px) catch |err| return mapTextSceneRenderError(err);
     }
 
     pub fn prepareRetainedFrameState(
-        _: *Backend,
-        _: std.mem.Allocator,
-        _: SurfaceFrameData,
-        _: render_core.PixelSize,
-        _: render_core.CellSize,
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: SurfaceFrameData,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
     ) BackendError!render_core.OwnedRenderBatch {
-        @panic("GLES prepareRetainedFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
+        try self.resize(surface_px, cell_px);
+        return self.retained_frame.prepareBatch(allocator, allocator, state, surface_px, cell_px, render_core.defaultTheme, self.capabilities()) catch |err| return mapTextSceneRenderError(err);
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
@@ -979,6 +1007,7 @@ pub const Backend = struct {
 
 fn providerHasCodepoint(ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32) bool {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
+    if (useDeterministicTestTextFallback(backend)) return codepoint != 0;
     if (!backend.ensureFont()) return false;
     if (face_id.value == primary_face_id) {
         const face = backend.ft_face orelse return false;
@@ -1029,6 +1058,7 @@ fn providerShapeRun(
 }
 
 fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+    if (useDeterministicTestTextFallback(self)) return codepoint;
     if (!self.ensureFont()) return 0;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return 0;
@@ -1043,6 +1073,7 @@ fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u
 fn providerGlyphAdvance(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
     const fallback: f32 = @floatFromInt(cell_metrics.cell_w_px);
     if (glyph_id == 0) return fallback;
+    if (useDeterministicTestTextFallback(self)) return fallback;
     const face = if (face_id.value == primary_face_id)
         self.ft_face
     else
@@ -1066,6 +1097,18 @@ fn providerRasterizeSprite(
     @memset(pixels, 0);
 
     if (req.group.kind == .box_fallback) {
+        rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
+        return .{
+            .allocator = allocator,
+            .key = req.key,
+            .width_px = width,
+            .height_px = height,
+            .color_mode = req.color_mode,
+            .pixels = pixels,
+        };
+    }
+
+    if (useDeterministicTestTextFallback(backend)) {
         rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
         return .{
             .allocator = allocator,
@@ -1103,6 +1146,10 @@ fn findSceneSpriteSlot(scene: render_core.TextScene, key: render_core.SpriteKey)
 }
 
 fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+    if (useDeterministicTestTextFallback(self)) {
+        rasterizeFallbackGlyph(dst, width, height, @intCast(glyph_id), width, height);
+        return true;
+    }
     if (!self.ensureFont()) return false;
     const face = if (face_id.value == primary_face_id)
         self.ft_face
@@ -1110,6 +1157,10 @@ fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, ba
         self.ensureFallbackFace(if (face_id.value >= 2) face_id.value - 2 else return false);
     if (face == null) return false;
     return rasterizeProviderGlyphFromFace(dst, width, height, baseline_px, face.?, glyph_id, x_origin_px, y_origin_px, glyph_index);
+}
+
+fn useDeterministicTestTextFallback(self: *const Backend) bool {
+    return builtin.is_test and self.config.font_path == null;
 }
 
 fn rasterizeProviderGlyphFromFace(dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
