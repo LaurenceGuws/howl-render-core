@@ -1,5 +1,5 @@
 const std = @import("std");
-const root = @import("howl_render").RenderCore;
+const root = @import("howl_render");
 
 test "renderer package surface remains available" {
     _ = root.Core;

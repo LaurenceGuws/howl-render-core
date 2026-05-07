@@ -3,7 +3,7 @@
 //! Reason: isolate batch-build cost before host and backend noise.
 
 const std = @import("std");
-const render = @import("howl_render").RenderCore;
+const render = @import("howl_render");
 
 const OutputFormat = enum { ndjson, text };
 
