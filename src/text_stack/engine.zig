@@ -366,7 +366,10 @@ test "text engine analysis options produce scene cursor draws" {
     const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_batch.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
-    var analysis = try engine.analyzeLegacyCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{
+    var analysis = try engine.analyzeLegacyCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{
+        .primary_face = .{ .value = 1 },
+        .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
+    }, .{
         .scene = .{ .cursor = .{ .cell_col = 0, .cell_row = 0, .shape = .block, .color = white } },
     });
     defer analysis.deinit();

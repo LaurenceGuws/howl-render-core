@@ -5,6 +5,7 @@ test "renderer package surface remains available" {
     _ = root.Core;
     _ = root.TextStack;
     _ = root.BackendConfig;
+    _ = root.RetainedFrame;
     _ = root.SurfaceFrameData;
     _ = root.ResolveResult;
 }

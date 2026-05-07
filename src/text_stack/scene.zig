@@ -30,8 +30,17 @@ pub const CursorInput = struct {
     color: contract.Rgba8,
 };
 
+pub const DamageInput = struct {
+    full: bool = true,
+    scroll_up_rows: u16 = 0,
+    dirty_rows: []const bool = &.{},
+    dirty_cols_start: []const u16 = &.{},
+    dirty_cols_end: []const u16 = &.{},
+};
+
 pub const BuildOptions = struct {
     cursor: ?CursorInput = null,
+    damage: DamageInput = .{},
 };
 
 pub const OwnedTextScene = struct {
@@ -98,20 +107,21 @@ pub fn buildSceneWithAtlasCacheOptions(
     cache: *atlas_cache.OwnedAtlasCache,
     options: BuildOptions,
 ) !OwnedTextScene {
+    const damage = normalizedDamage(options.damage, grid_metrics.rows, cell_metrics.cell_h_px);
     const draws = try allocator.alloc(contract.TextSpriteDraw, groups.len);
     errdefer allocator.free(draws);
     var background_draws = std.ArrayList(contract.TextBackgroundDraw).empty;
     errdefer background_draws.deinit(allocator);
     var decoration_draws = std.ArrayList(contract.TextDecorationDraw).empty;
     errdefer decoration_draws.deinit(allocator);
-    const cursor_draws = if (options.cursor) |cursor| try cursorDraws(allocator, cursor, cell_metrics) else try allocator.alloc(contract.TextCursorDraw, 0);
-    errdefer allocator.free(cursor_draws);
     var raster_requests = std.ArrayList(contract.SpriteRasterRequest).empty;
     errdefer raster_requests.deinit(allocator);
     const missing_owned = try allocator.dupe(contract.MissingGlyph, missing);
     errdefer allocator.free(missing_owned);
+    var out_idx: usize = 0;
 
-    for (groups, draws, 0..) |group, *draw, group_idx| {
+    for (groups, 0..) |group, group_idx| {
+        if (!includeSpan(damage, grid_metrics, group.first_cell, group.cell_span)) continue;
         const cell_w = @as(i32, @intCast(cell_metrics.cell_w_px));
         const cell_h = @as(i32, @intCast(cell_metrics.cell_h_px));
         const cols = @max(@as(u32, grid_metrics.cols), 1);
@@ -123,7 +133,7 @@ pub fn buildSceneWithAtlasCacheOptions(
         const width_cells = @max(scene_group.cell_span, 1);
         const residency = cache.ensureDetailed(scene_group.sprite_key, scene_group.kind == .emoji);
         if (residency.created) try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
-        draw.* = .{
+        draws[out_idx] = .{
             .sprite = residency.position,
             .x_px = @as(i32, @intCast(col)) * cell_w,
             .y_px = @as(i32, @intCast(row)) * cell_h,
@@ -134,20 +144,75 @@ pub fn buildSceneWithAtlasCacheOptions(
             .first_cell = group.first_cell,
             .cell_span = scene_group.cell_span,
         };
+        out_idx += 1;
     }
 
-    try appendBackgroundDraws(allocator, &background_draws, cells, cell_metrics, grid_metrics);
-    try appendDecorationDraws(allocator, &decoration_draws, cells, cell_metrics, grid_metrics);
+    const cursor_draws = if (options.cursor) |cursor|
+        if (damage.full or rowDirty(damage, cursor.cell_row))
+            try cursorDraws(allocator, cursor, cell_metrics)
+        else
+            try allocator.alloc(contract.TextCursorDraw, 0)
+    else
+        try allocator.alloc(contract.TextCursorDraw, 0);
+    errdefer allocator.free(cursor_draws);
+
+    const sprite_draws = try allocator.realloc(draws, out_idx);
+
+    try appendBackgroundDraws(allocator, &background_draws, cells, cell_metrics, grid_metrics, damage);
+    try appendDecorationDraws(allocator, &decoration_draws, cells, cell_metrics, grid_metrics, damage);
 
     return .{ .allocator = allocator, .scene = .{
         .cells = cells,
+        .full_redraw = damage.full,
+        .scroll_up_px = damage.scroll_up_px,
         .background_draws = try background_draws.toOwnedSlice(allocator),
-        .sprite_draws = draws,
+        .sprite_draws = sprite_draws,
         .decoration_draws = try decoration_draws.toOwnedSlice(allocator),
         .cursor_draws = cursor_draws,
         .raster_requests = try raster_requests.toOwnedSlice(allocator),
         .missing = missing_owned,
     } };
+}
+
+const NormalizedDamage = struct {
+    full: bool,
+    scroll_up_px: u16,
+    dirty_rows: []const bool,
+    dirty_cols_start: []const u16,
+    dirty_cols_end: []const u16,
+};
+
+fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
+    const valid = !damage.full and
+        damage.dirty_rows.len == @as(usize, rows) and
+        damage.dirty_cols_start.len == @as(usize, rows) and
+        damage.dirty_cols_end.len == @as(usize, rows);
+    return .{
+        .full = !valid,
+        .scroll_up_px = if (valid) @intCast(@as(u32, @min(damage.scroll_up_rows, rows)) * @as(u32, cell_h_px)) else 0,
+        .dirty_rows = if (valid) damage.dirty_rows else &.{},
+        .dirty_cols_start = if (valid) damage.dirty_cols_start else &.{},
+        .dirty_cols_end = if (valid) damage.dirty_cols_end else &.{},
+    };
+}
+
+fn rowDirty(damage: NormalizedDamage, row: u16) bool {
+    if (damage.full) return true;
+    const idx = @as(usize, row);
+    return idx < damage.dirty_rows.len and damage.dirty_rows[idx];
+}
+
+fn includeSpan(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
+    if (damage.full) return true;
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const row = @as(u16, @intCast(first_cell / cols));
+    if (!rowDirty(damage, row)) return false;
+    const idx = @as(usize, row);
+    const start_col = @as(u16, @intCast(first_cell % cols));
+    const end_col = start_col +| (@max(cell_span, 1) - 1);
+    const dirty_start = damage.dirty_cols_start[idx];
+    const dirty_end = damage.dirty_cols_end[idx];
+    return !(end_col < dirty_start or start_col > dirty_end);
 }
 
 pub fn cursorDraws(
@@ -182,11 +247,13 @@ fn appendBackgroundDraws(
     cells: []const contract.RenderableCell,
     cell_metrics: contract.CellMetrics,
     grid_metrics: contract.GridMetrics,
+    damage: NormalizedDamage,
 ) !void {
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
         if (cell.continuation) continue;
         if (cell.bg.a == 0) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
         const col = cell.first_cell % cols;
         const row = cell.first_cell / cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
@@ -209,6 +276,7 @@ fn appendDecorationDraws(
     cells: []const contract.RenderableCell,
     cell_metrics: contract.CellMetrics,
     grid_metrics: contract.GridMetrics,
+    damage: NormalizedDamage,
 ) !void {
     const font_metrics = metrics.defaultFontMetrics(cell_metrics);
     const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
@@ -216,6 +284,7 @@ fn appendDecorationDraws(
     for (cells) |cell| {
         if (cell.continuation) continue;
         if (!cell.underline and !cell.strikethrough) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
         const col = cell.first_cell % cols;
         const row = cell.first_cell / cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
@@ -390,6 +459,38 @@ test "scene build options include cursor draws" {
     try std.testing.expectEqual(@as(i32, 24), owned.scene.cursor_draws[0].x_px);
     try std.testing.expectEqual(@as(i32, 32), owned.scene.cursor_draws[0].y_px);
     try std.testing.expectEqual(color.g, owned.scene.cursor_draws[0].color.g);
+}
+
+test "scene damage filters clean rows and carries scroll reuse pixels" {
+    const color = contract.Rgba8{ .r = 1, .g = 2, .b = 3, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = color },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = color },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = color },
+        .{ .text_id = .{ .value = 3 }, .first_cell = 3, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = color },
+    };
+    const groups = [_]contract.GlyphGroup{
+        .{ .first_cell = 0, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 1 }, .kind = .normal },
+        .{ .first_cell = 3, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 2 }, .kind = .normal },
+    };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_starts = [_]u16{ 0, 0 };
+    const dirty_ends = [_]u16{ 0, 1 };
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &groups, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 2, .rows = 2 }, .{
+        .damage = .{
+            .full = false,
+            .scroll_up_rows = 1,
+            .dirty_rows = &dirty_rows,
+            .dirty_cols_start = &dirty_starts,
+            .dirty_cols_end = &dirty_ends,
+        },
+    });
+    defer owned.deinit();
+    try std.testing.expect(!owned.scene.full_redraw);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.scroll_up_px);
+    try std.testing.expectEqual(@as(usize, 2), owned.scene.background_draws.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(u32, 3), owned.scene.sprite_draws[0].first_cell);
 }
 
 test "scene emits shared-geometry decoration draws from cells" {

@@ -85,6 +85,15 @@ pub const RenderReport = struct {
     atlas_uploads_committed: usize,
 };
 
+pub const TextSceneRenderReport = struct {
+    pass_index: u64,
+    raster_uploads_committed: usize,
+    background_draws: usize,
+    sprite_draws: usize,
+    decoration_draws: usize,
+    cursor_draws: usize,
+};
+
 pub const FrameLayout = struct {
     cell_px: render_core.CellSize,
     grid: render_core.GridSize,
@@ -141,12 +150,16 @@ pub const Backend = struct {
     atlas_slot_codepoint: []u21 = &.{},
     atlas_slot_face_id: []u32 = &.{},
     atlas_slot_glyph_id: []u32 = &.{},
+    atlas_slot_sprite_key: []u64 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
+    atlas_slot_has_alpha: []bool = &.{},
     atlas_next_slot: u32 = 0,
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
+    fallback_faces: [MaxFallbackFonts]?FtFace = [_]?FtFace{null} ** MaxFallbackFonts,
+    fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     resolve_counters: render_core.ResolveCounters = .{},
     resolve_stage: render_core.ResolveStage = .style_policy,
     retained_frame: render_core.RetainedFrame = .{},
@@ -174,6 +187,10 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.atlas_slot_glyph_id);
             self.atlas_slot_glyph_id = &.{};
         }
+        if (self.atlas_slot_sprite_key.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
+            self.atlas_slot_sprite_key = &.{};
+        }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
             self.atlas_slot_width = &.{};
@@ -182,18 +199,11 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.atlas_slot_height);
             self.atlas_slot_height = &.{};
         }
-        if (self.ft_face != null) {
-            if (self.hb_font != null) {
-                c.hb_font_destroy(self.hb_font.?);
-                self.hb_font = null;
-            }
-            _ = c.FT_Done_Face(self.ft_face.?);
-            self.ft_face = null;
+        if (self.atlas_slot_has_alpha.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
+            self.atlas_slot_has_alpha = &.{};
         }
-        if (self.ft_lib != null) {
-            _ = c.FT_Done_FreeType(self.ft_lib.?);
-            self.ft_lib = null;
-        }
+        self.resetLoadedFace();
         if (self.target_fbo != 0 and hasCurrentContext()) {
             c.glDeleteFramebuffers(1, @ptrCast(&self.target_fbo));
             self.target_fbo = 0;
@@ -279,6 +289,110 @@ pub const Backend = struct {
         return self.resolve_stage;
     }
 
+    pub fn textProvider(self: *Backend) render_core.TextStack.FtHbProvider.Adapter {
+        return .{
+            .ctx = self,
+            .has_codepoint = providerHasCodepoint,
+            .shaper = .{ .ctx = self, .shape_run = providerShapeRun },
+            .rasterizer = .{ .ctx = self, .rasterize_sprite = providerRasterizeSprite },
+        };
+    }
+
+    pub fn fontSession(self: *Backend, faces: []render_core.TextStack.FontSession.FontFaceRecord) render_core.TextStack.FontSession.FontSession {
+        var len: usize = 0;
+        if (faces.len > len) {
+            faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
+            len += 1;
+        }
+        var i: usize = 0;
+        while (i < self.fallback_font_paths_len and len < faces.len) : (i += 1) {
+            if (self.fallback_font_paths[i] == null) continue;
+            faces[len] = .{ .id = .{ .value = fallbackFaceId(i) }, .role = .fallback, .coverage = .all };
+            len += 1;
+        }
+        return .{
+            .primary_face = .{ .value = primary_face_id },
+            .faces = faces[0..len],
+            .provider = .{ .ctx = self, .has_cell_text = providerHasCellText },
+            .metrics = self.configuredCellMetrics(),
+        };
+    }
+
+    pub fn analyzeTextCells(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        cells: []const render_core.CellInput,
+        grid: render_core.GridMetrics,
+        faces: []render_core.TextStack.FontSession.FontFaceRecord,
+    ) !render_core.TextStack.Engine.OwnedTextAnalysis {
+        return self.analyzeTextCellsOptions(allocator, cells, grid, faces, .{});
+    }
+
+    pub fn analyzeTextCellsOptions(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        cells: []const render_core.CellInput,
+        grid: render_core.GridMetrics,
+        faces: []render_core.TextStack.FontSession.FontFaceRecord,
+        options: render_core.TextStack.Engine.AnalysisOptions,
+    ) !render_core.TextStack.Engine.OwnedTextAnalysis {
+        var adapter = self.textProvider();
+        var engine = try render_core.TextStack.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
+        defer engine.deinit();
+        return engine.analyzeLegacyCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
+    }
+
+    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render_core.TextStack.Engine.OwnedTextAnalysis) BackendError!usize {
+        return self.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
+    }
+
+    pub fn uploadTextSceneRaster(
+        self: *Backend,
+        scene: render_core.TextScene,
+        outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    ) BackendError!usize {
+        try self.ensureAtlasStorageForRasterOutputs(outputs);
+        var committed: usize = 0;
+        for (outputs) |output| {
+            const slot = findSceneSpriteSlot(scene, output.key) orelse continue;
+            if (self.textSceneSlotCached(slot, output)) continue;
+            self.copyRasterOutputToAtlas(slot, output);
+            committed += 1;
+        }
+        return committed;
+    }
+
+    pub fn renderTextScene(
+        self: *Backend,
+        scene: render_core.TextScene,
+        outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    ) !TextSceneRenderReport {
+        if (self.closed) return error.BackendClosed;
+        const committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
+        if (hasCurrentContext()) {
+            if (self.target_texture == null and self.config.target_texture != 0) {
+                self.target_texture = self.config.target_texture;
+                self.surface_epoch +%= 1;
+            }
+            try self.ensureOwnedTargetTexture();
+            if (self.target_texture == null) return error.TargetTextureUnset;
+            try self.beginTargetPass();
+            defer self.endTargetPass();
+            drawTextScene(self, self.config.surface_px, scene);
+        } else if (!builtin.is_test) {
+            return error.NoContext;
+        }
+        self.pass_count += 1;
+        return .{
+            .pass_index = self.pass_count,
+            .raster_uploads_committed = committed_uploads,
+            .background_draws = scene.background_draws.len,
+            .sprite_draws = scene.sprite_draws.len,
+            .decoration_draws = scene.decoration_draws.len,
+            .cursor_draws = scene.cursor_draws.len,
+        };
+    }
+
     /// Report backend capabilities used by render-core batch generation.
     pub fn capabilities(_: *const Backend) render_core.BackendCapability {
         return .{
@@ -292,8 +406,10 @@ pub const Backend = struct {
     pub fn resize(self: *Backend, surface_px: render_core.PixelSize, cell_px: render_core.CellSize) BackendError!void {
         if (self.closed) return error.BackendClosed;
         const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
+        const cell_changed = self.config.cell_px.width != cell_px.width or self.config.cell_px.height != cell_px.height;
         self.config.surface_px = surface_px;
         self.config.cell_px = cell_px;
+        if (cell_changed) self.clearAtlasCache();
         if (surface_changed) self.surface_epoch +%= 1;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             self.resizeOwnedTargetTexture();
@@ -301,30 +417,8 @@ pub const Backend = struct {
     }
 
     /// Validate and render a batch against backend config/capability.
-    pub fn renderBatch(self: *Backend, batch: render_core.RenderBatch) BackendError!RenderReport {
-        if (self.closed) return error.BackendClosed;
-        const rc = render_core.init(self.config, self.capabilities());
-        try rc.validateRenderBatch(batch);
-        const committed_uploads = try self.uploadAtlas(batch);
-        if (hasCurrentContext()) {
-            if (self.target_texture == null and self.config.target_texture != 0) {
-                self.target_texture = self.config.target_texture;
-                self.surface_epoch +%= 1;
-            }
-            try self.ensureOwnedTargetTexture();
-            if (self.target_texture == null) return error.TargetTextureUnset;
-            try self.beginTargetPass();
-            defer self.endTargetPass();
-            drawBatch(self, batch);
-        } else if (!builtin.is_test) {
-            return error.NoContext;
-        }
-        self.pass_count += 1;
-        return .{
-            .stats = rc.summarizeRenderBatch(batch),
-            .pass_index = self.pass_count,
-            .atlas_uploads_committed = committed_uploads,
-        };
+    pub fn renderBatch(_: *Backend, _: render_core.RenderBatch) BackendError!RenderReport {
+        @panic("GLES RenderBatch/GlyphQuad text path is retired; use renderTextScene/renderFrameState");
     }
 
     /// Build batch from VT state and render it.
@@ -335,52 +429,46 @@ pub const Backend = struct {
         surface_px: render_core.PixelSize,
         cell_px: render_core.CellSize,
     ) BackendError!RenderReport {
-        try self.resize(surface_px, cell_px);
-        const rc = render_core.init(self.config, self.capabilities());
-        var owned = try rc.vtStateToRenderBatch(
-            allocator,
-            state,
-            surface_px,
-            cell_px,
-        );
-        defer owned.deinit();
-        return self.renderBatch(owned.batch);
+        var faces: [MaxFallbackFonts + 1]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+        const scene_report = self.renderFrameStateTextScene(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
+        return renderReportFromTextScene(scene_report);
     }
 
-    pub fn prepareFrameState(
+    pub fn renderFrameStateTextScene(
         self: *Backend,
         allocator: std.mem.Allocator,
         state: anytype,
         surface_px: render_core.PixelSize,
         cell_px: render_core.CellSize,
-    ) BackendError!render_core.OwnedRenderBatch {
+        faces: []render_core.TextStack.FontSession.FontFaceRecord,
+    ) !TextSceneRenderReport {
         try self.resize(surface_px, cell_px);
         const rc = render_core.init(self.config, self.capabilities());
-        return rc.vtStateToRenderBatch(
-            allocator,
-            state,
-            surface_px,
-            cell_px,
-        );
+        var input = try rc.vtStateToTextSceneInput(allocator, state);
+        defer input.deinit();
+        var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
+        defer analysis.deinit();
+        return self.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
+    }
+
+    pub fn prepareFrameState(
+        _: *Backend,
+        _: std.mem.Allocator,
+        _: anytype,
+        _: render_core.PixelSize,
+        _: render_core.CellSize,
+    ) BackendError!render_core.OwnedRenderBatch {
+        @panic("GLES prepareFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
     }
 
     pub fn prepareRetainedFrameState(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: SurfaceFrameData,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
+        _: *Backend,
+        _: std.mem.Allocator,
+        _: SurfaceFrameData,
+        _: render_core.PixelSize,
+        _: render_core.CellSize,
     ) BackendError!render_core.OwnedRenderBatch {
-        try self.resize(surface_px, cell_px);
-        return self.retained_frame.prepareBatch(
-            std.heap.c_allocator,
-            allocator,
-            state,
-            surface_px,
-            cell_px,
-            render_core.defaultTheme,
-            self.capabilities(),
-        );
+        @panic("GLES prepareRetainedFrameState legacy RenderBatch path is retired; use renderFrameStateTextScene/renderFrameState");
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
@@ -438,37 +526,40 @@ pub const Backend = struct {
         c.glBindFramebuffer(c.GL_FRAMEBUFFER, 0);
     }
 
-    fn deriveCellSize(self: *Backend) render_core.CellSize {
-        const font_px = @max(self.config.font_size_px, 1);
-
-        if (self.config.font_path) |font_path| {
-            var lib: FtLibrary = undefined;
-            if (c.FT_Init_FreeType(&lib) == 0) {
-                defer _ = c.FT_Done_FreeType(lib);
+    fn deriveCellMetrics(self: *Backend) render_core.CellMetrics {
+        if (self.ensurePrimaryFont()) {
+            return cellMetricsFromFace(self.ft_face.?, self.config.font_size_px);
+        }
+        if (self.ft_lib) |lib| {
+            var i: usize = 0;
+            while (i < self.fallback_font_paths_len) : (i += 1) {
+                const font_path = self.fallback_font_paths[i] orelse continue;
                 var face: FtFace = undefined;
-                if (c.FT_New_Face(lib, font_path, 0, &face) == 0) {
-                    defer _ = c.FT_Done_Face(face);
-                    if (c.FT_Set_Pixel_Sizes(face, 0, font_px) == 0) {
-                        return cellSizeFromFace(face, self.config.font_size_px);
-                    }
-                }
+                if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
+                defer _ = c.FT_Done_Face(face);
+                if (!setFacePixelHeight(self, face)) continue;
+                return cellMetricsFromFace(face, self.config.font_size_px);
             }
         }
+        return render_core.TextStack.Metrics.defaultCellMetrics(self.config.font_size_px);
+    }
 
-        var i: usize = 0;
-        while (i < self.fallback_font_paths_len) : (i += 1) {
-            const font_path = self.fallback_font_paths[i] orelse continue;
-            var lib: FtLibrary = undefined;
-            if (c.FT_Init_FreeType(&lib) != 0) continue;
-            defer _ = c.FT_Done_FreeType(lib);
-            var face: FtFace = undefined;
-            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
-            defer _ = c.FT_Done_Face(face);
-            if (c.FT_Set_Pixel_Sizes(face, 0, font_px) != 0) continue;
-            return cellSizeFromFace(face, self.config.font_size_px);
-        }
+    fn configuredCellMetrics(self: *Backend) render_core.CellMetrics {
+        const cell_w = @max(self.config.cell_px.width, 1);
+        const cell_h = @max(self.config.cell_px.height, 1);
+        const baseline = if (self.ensurePrimaryFont())
+            computeBaselineFromFace(self.ft_face.?, cell_h)
+        else
+            @as(i32, @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)));
+        return .{
+            .cell_w_px = cell_w,
+            .cell_h_px = cell_h,
+            .baseline_px = @intCast(std.math.clamp(baseline, 1, @as(i32, @intCast(cell_h)))),
+        };
+    }
 
-        const cell = render_core.TextStack.Metrics.defaultCellMetrics(font_px);
+    fn deriveCellSize(self: *Backend) render_core.CellSize {
+        const cell = self.deriveCellMetrics();
         return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
     }
 
@@ -494,7 +585,8 @@ pub const Backend = struct {
             self.markSlotCached(slot, key, upload.width, upload.height);
             committed += 1;
         }
-        trace.renderAtlas("gles",
+        trace.renderAtlas(
+            "gles",
             batch.atlas_uploads.len,
             fast_hits,
             resolved_hits,
@@ -507,6 +599,20 @@ pub const Backend = struct {
     fn ensureAtlasStorage(self: *Backend) BackendError!void {
         const need_w = @max(self.config.cell_px.width, 1);
         const need_h = @max(self.config.cell_px.height, 1);
+        return self.ensureAtlasStorageSized(need_w, need_h);
+    }
+
+    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput) BackendError!void {
+        var need_w = @max(self.config.cell_px.width, 1);
+        var need_h = @max(self.config.cell_px.height, 1);
+        for (outputs) |output| {
+            need_w = @max(need_w, @max(output.width_px, 1));
+            need_h = @max(need_h, @max(output.height_px, 1));
+        }
+        return self.ensureAtlasStorageSized(need_w, need_h);
+    }
+
+    fn ensureAtlasStorageSized(self: *Backend, need_w: u16, need_h: u16) BackendError!void {
         const need_stride: usize = @as(usize, need_w) * @as(usize, need_h);
         if (self.atlas_pixels.len != 0 and self.atlas_cell_w == need_w and self.atlas_cell_h == need_h) return;
 
@@ -526,6 +632,10 @@ pub const Backend = struct {
             std.heap.c_allocator.free(self.atlas_slot_glyph_id);
             self.atlas_slot_glyph_id = &.{};
         }
+        if (self.atlas_slot_sprite_key.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
+            self.atlas_slot_sprite_key = &.{};
+        }
         if (self.atlas_slot_width.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_width);
             self.atlas_slot_width = &.{};
@@ -533,6 +643,10 @@ pub const Backend = struct {
         if (self.atlas_slot_height.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_height);
             self.atlas_slot_height = &.{};
+        }
+        if (self.atlas_slot_has_alpha.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
+            self.atlas_slot_has_alpha = &.{};
         }
         const max_slots = self.capabilities().max_atlas_slots;
         self.atlas_pixels = try std.heap.c_allocator.alloc(u8, need_stride * @as(usize, max_slots));
@@ -543,10 +657,14 @@ pub const Backend = struct {
         @memset(self.atlas_slot_face_id, 0);
         self.atlas_slot_glyph_id = try std.heap.c_allocator.alloc(u32, max_slots);
         @memset(self.atlas_slot_glyph_id, 0);
+        self.atlas_slot_sprite_key = try std.heap.c_allocator.alloc(u64, max_slots);
+        @memset(self.atlas_slot_sprite_key, 0);
         self.atlas_slot_width = try std.heap.c_allocator.alloc(u16, max_slots);
         @memset(self.atlas_slot_width, 0);
         self.atlas_slot_height = try std.heap.c_allocator.alloc(u16, max_slots);
         @memset(self.atlas_slot_height, 0);
+        self.atlas_slot_has_alpha = try std.heap.c_allocator.alloc(bool, max_slots);
+        @memset(self.atlas_slot_has_alpha, false);
         self.atlas_cell_w = need_w;
         self.atlas_cell_h = need_h;
         self.atlas_slot_stride = need_stride;
@@ -562,6 +680,15 @@ pub const Backend = struct {
             self.atlas_slot_glyph_id[idx] == key.glyph_id and
             self.atlas_slot_width[idx] == width and
             self.atlas_slot_height[idx] == height;
+    }
+
+    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render_core.TextStack.Rasterizer.RasterSpriteOutput) bool {
+        const idx = @as(usize, slot);
+        if (idx >= self.atlas_slot_sprite_key.len) return false;
+        if (idx >= self.atlas_slot_width.len or idx >= self.atlas_slot_height.len) return false;
+        return self.atlas_slot_sprite_key[idx] == output.key.value and
+            self.atlas_slot_width[idx] == output.width_px and
+            self.atlas_slot_height[idx] == output.height_px;
     }
 
     fn findCachedSlot(self: *const Backend, key: ResolvedGlyphKey, width: u16, height: u16) ?u32 {
@@ -608,6 +735,43 @@ pub const Backend = struct {
         self.atlas_slot_height[idx] = height;
     }
 
+    fn copyRasterOutputToAtlas(self: *Backend, slot: u32, output: render_core.TextStack.Rasterizer.RasterSpriteOutput) void {
+        if (self.atlas_pixels.len == 0) return;
+        const slot_idx = @as(usize, slot);
+        const slot_off = slot_idx * self.atlas_slot_stride;
+        if (slot_off + self.atlas_slot_stride > self.atlas_pixels.len) return;
+        const dst = self.atlas_pixels[slot_off .. slot_off + self.atlas_slot_stride];
+        @memset(dst, 0);
+        const copy_w = @min(output.width_px, self.atlas_cell_w);
+        const copy_h = @min(output.height_px, self.atlas_cell_h);
+        for (0..copy_h) |yy| {
+            const src_off = yy * @as(usize, output.width_px);
+            const dst_off = yy * @as(usize, self.atlas_cell_w);
+            @memcpy(dst[dst_off .. dst_off + copy_w], output.pixels[src_off .. src_off + copy_w]);
+        }
+        if (slot_idx < self.atlas_slot_codepoint.len) self.atlas_slot_codepoint[slot_idx] = 0;
+        if (slot_idx < self.atlas_slot_face_id.len) self.atlas_slot_face_id[slot_idx] = 0;
+        if (slot_idx < self.atlas_slot_glyph_id.len) self.atlas_slot_glyph_id[slot_idx] = @intCast(output.key.value & 0xffff_ffff);
+        if (slot_idx < self.atlas_slot_sprite_key.len) self.atlas_slot_sprite_key[slot_idx] = output.key.value;
+        if (slot_idx < self.atlas_slot_width.len) self.atlas_slot_width[slot_idx] = output.width_px;
+        if (slot_idx < self.atlas_slot_height.len) self.atlas_slot_height[slot_idx] = output.height_px;
+        self.markSlotAlpha(slot, dst, copy_w, copy_h);
+    }
+
+    fn markSlotAlpha(self: *Backend, slot: u32, pixels: []const u8, gw: u16, gh: u16) void {
+        const slot_idx = @as(usize, slot);
+        if (slot_idx >= self.atlas_slot_has_alpha.len) return;
+        for (0..gh) |yy| {
+            for (0..gw) |xx| {
+                if (pixels[yy * @as(usize, self.atlas_cell_w) + xx] != 0) {
+                    self.atlas_slot_has_alpha[slot_idx] = true;
+                    return;
+                }
+            }
+        }
+        self.atlas_slot_has_alpha[slot_idx] = false;
+    }
+
     fn rasterizeSlot(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) void {
         if (self.atlas_pixels.len == 0) return;
         const slot_index = @as(usize, slot) * self.atlas_slot_stride;
@@ -625,51 +789,30 @@ pub const Backend = struct {
     }
 
     fn ensureFont(self: *Backend) bool {
-        if (self.ft_face != null) return true;
-        var lib: FtLibrary = undefined;
-        if (c.FT_Init_FreeType(&lib) != 0) return false;
-        var face: FtFace = undefined;
+        if (self.ensurePrimaryFont()) {
+            self.resolve_stage = .loaded_exact_match;
+            return true;
+        }
+        if (!self.ensureFreeTypeLibrary()) return false;
 
-        if (self.config.font_path) |font_path| {
-            if (c.FT_New_Face(lib, font_path, 0, &face) == 0) {
-                _ = setFacePixelHeight(self, face);
-                self.ft_lib = lib;
-                self.ft_face = face;
-                self.hb_font = c.hb_ft_font_create(face, null);
-                self.resolve_stage = .loaded_exact_match;
+        var i: usize = 0;
+        while (i < self.fallback_font_paths_len) : (i += 1) {
+            if (self.fallback_font_paths[i] == null) continue;
+            if (self.ensureFallbackFace(i) != null) {
+                self.resolve_stage = .discovery_fallback;
                 return true;
             }
         }
 
-        var loaded = false;
-        var i: usize = 0;
-        while (i < self.fallback_font_paths_len) : (i += 1) {
-            const font_path = self.fallback_font_paths[i] orelse continue;
-            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) == 0) {
-                loaded = true;
-                self.resolve_stage = .discovery_fallback;
-                self.resolve_counters.fallback_hits += 1;
-                break;
-            }
-        }
-
-        if (!loaded) {
-            _ = c.FT_Done_FreeType(lib);
-            self.resolve_stage = .missing_glyph;
-            self.resolve_counters.missing_glyphs += 1;
-            return false;
-        }
-
-        _ = setFacePixelHeight(self, face);
-        self.ft_lib = lib;
-        self.ft_face = face;
-        self.hb_font = c.hb_ft_font_create(face, null);
-        return true;
+        self.resolve_stage = .missing_glyph;
+        self.resolve_counters.missing_glyphs += 1;
+        return false;
     }
 
     fn resetLoadedFace(self: *Backend) void {
+        self.resetFallbackFaces();
         if (self.ft_face != null) {
-            if (self.hb_font != null) {
+            if (self.hb_font != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(self.hb_font.?);
                 self.hb_font = null;
             }
@@ -682,26 +825,90 @@ pub const Backend = struct {
         }
     }
 
+    fn resetFallbackFaces(self: *Backend) void {
+        var i: usize = 0;
+        while (i < MaxFallbackFonts) : (i += 1) {
+            if (self.fallback_hb_fonts[i] != null and builtin.target.abi != .android) {
+                c.hb_font_destroy(self.fallback_hb_fonts[i].?);
+                self.fallback_hb_fonts[i] = null;
+            }
+            if (self.fallback_faces[i] != null) {
+                _ = c.FT_Done_Face(self.fallback_faces[i].?);
+                self.fallback_faces[i] = null;
+            }
+        }
+    }
+
+    fn ensureFreeTypeLibrary(self: *Backend) bool {
+        if (self.ft_lib != null) return true;
+        var lib: FtLibrary = undefined;
+        if (c.FT_Init_FreeType(&lib) != 0) return false;
+        self.ft_lib = lib;
+        return true;
+    }
+
+    fn ensurePrimaryFont(self: *Backend) bool {
+        if (self.ft_face != null) return true;
+        if (!self.ensureFreeTypeLibrary()) return false;
+        if (self.config.font_path == null) return false;
+
+        var face: FtFace = undefined;
+        const lib = self.ft_lib.?;
+        const font_path = self.config.font_path.?;
+        if (c.FT_New_Face(lib, font_path, 0, &face) != 0) return false;
+        if (!setFacePixelHeight(self, face)) {
+            _ = c.FT_Done_Face(face);
+            return false;
+        }
+
+        self.ft_face = face;
+        if (builtin.target.abi != .android) {
+            self.hb_font = @ptrCast(c.hb_ft_font_create_referenced(face));
+        }
+        return true;
+    }
+
+    fn ensureFallbackFace(self: *Backend, fallback_index: usize) ?FtFace {
+        if (fallback_index >= self.fallback_font_paths_len) return null;
+        if (self.fallback_faces[fallback_index]) |face| return face;
+        if (!self.ensureFreeTypeLibrary()) return null;
+        const font_path = self.fallback_font_paths[fallback_index] orelse return null;
+        const lib = self.ft_lib orelse return null;
+        var face: FtFace = undefined;
+        if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return null;
+        if (!setFacePixelHeight(self, face)) {
+            _ = c.FT_Done_Face(face);
+            return null;
+        }
+        self.fallback_faces[fallback_index] = face;
+        if (builtin.target.abi != .android) {
+            self.fallback_hb_fonts[fallback_index] = @ptrCast(c.hb_ft_font_create_referenced(face));
+        }
+        return face;
+    }
+
     fn clearAtlasCache(self: *Backend) void {
         if (self.atlas_pixels.len > 0) @memset(self.atlas_pixels, 0);
         if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
         if (self.atlas_slot_face_id.len > 0) @memset(self.atlas_slot_face_id, 0);
         if (self.atlas_slot_glyph_id.len > 0) @memset(self.atlas_slot_glyph_id, 0);
+        if (self.atlas_slot_sprite_key.len > 0) @memset(self.atlas_slot_sprite_key, 0);
         if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
         if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
+        if (self.atlas_slot_has_alpha.len > 0) @memset(self.atlas_slot_has_alpha, false);
         self.atlas_next_slot = 0;
     }
 
-    fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) bool {
-        if (!self.ensureFont()) return false;
+    fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
+        if (!self.ensureFont()) return null;
         if (self.ft_face) |face| {
-            if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, gw, gh)) {
+            if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, primary_face_id, gw, gh)) |key| {
                 self.resolve_stage = .loaded_exact_match;
-                return true;
+                return key;
             }
         }
 
-        const lib = self.ft_lib orelse return false;
+        const lib = self.ft_lib orelse return null;
         var i: usize = 0;
         while (i < self.fallback_font_paths_len) : (i += 1) {
             const font_path = self.fallback_font_paths[i] orelse continue;
@@ -709,21 +916,27 @@ pub const Backend = struct {
             if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
             defer _ = c.FT_Done_Face(face);
 
+            var fallback_hb: ?HbFont = null;
+            defer if (fallback_hb != null and builtin.target.abi != .android) {
+                c.hb_font_destroy(fallback_hb.?);
+            };
             if (!setFacePixelHeight(self, face)) continue;
-            const fallback_hb = c.hb_ft_font_create(face, null) orelse continue;
-            defer c.hb_font_destroy(fallback_hb);
+            if (builtin.target.abi != .android) {
+                fallback_hb = @ptrCast(c.hb_ft_font_create_referenced(face));
+            }
 
-            if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, gw, gh)) {
+            const face_id = fallbackFaceId(i);
+            if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, face_id, gw, gh)) |key| {
                 self.resolve_stage = .discovery_fallback;
                 self.resolve_counters.fallback_hits += 1;
-                return true;
+                return key;
             }
         }
 
         self.resolve_stage = .missing_glyph;
         self.resolve_counters.fallback_misses += 1;
         self.resolve_counters.missing_glyphs += 1;
-        return false;
+        return null;
     }
 
     fn resolveGlyphKey(self: *Backend, codepoint: u21) ?ResolvedGlyphKey {
@@ -737,15 +950,15 @@ pub const Backend = struct {
         return null;
     }
 
-    fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, gw: u16, gh: u16) bool {
-        if (!setFacePixelHeight(self, face)) return false;
+    fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, face_id: u32, gw: u16, gh: u16) ?ResolvedGlyphKey {
+        if (!setFacePixelHeight(self, face)) return null;
         const glyph_id = shapeGlyphId(hb_font, face, codepoint);
-        if (glyph_id == 0) return false;
-        if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return false;
+        if (glyph_id == 0) return null;
+        if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return null;
         const glyph = face.*.glyph;
-        if (glyph == null) return false;
+        if (glyph == null) return null;
         const bitmap = glyph.*.bitmap;
-        if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return false;
+        if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return null;
         const bw: usize = @intCast(bitmap.width);
         const bh: usize = @intCast(bitmap.rows);
         const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
@@ -776,9 +989,185 @@ pub const Backend = struct {
             }
         }
         self.resolve_counters.shaped_clusters += 1;
-        return wrote_any;
+        if (!wrote_any) return null;
+        return .{ .codepoint = codepoint, .face_id = face_id, .glyph_id = glyph_id };
     }
 };
+
+fn providerHasCodepoint(ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32) bool {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    if (!backend.ensureFont()) return false;
+    if (face_id.value == primary_face_id) {
+        const face = backend.ft_face orelse return false;
+        return c.FT_Get_Char_Index(face, codepoint) != 0;
+    }
+
+    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return false;
+    const face = backend.ensureFallbackFace(fallback_index) orelse return false;
+    return c.FT_Get_Char_Index(face, codepoint) != 0;
+}
+
+fn providerHasCellText(ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+    for (text.codepoints) |cp| {
+        if (cp == 0xfe0e or cp == 0xfe0f) continue;
+        if (!providerHasCodepoint(ctx, face_id, cp)) return false;
+    }
+    return true;
+}
+
+fn providerShapeRun(
+    ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    text_cache: render_core.LineTextCache,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const start = @as(usize, @intCast(run.run.cluster_start));
+    const count = @as(usize, @intCast(run.run.cluster_count));
+    const end = @min(start + count, clusters.len);
+    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    errdefer allocator.free(glyphs);
+    for (clusters[start..end], 0..) |cluster, idx| {
+        const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
+        const advance_px = providerGlyphAdvance(backend, run.run.font.face_id, glyph_id, cell_metrics);
+        glyphs[idx] = .{
+            .face_id = run.run.font.face_id,
+            .glyph_id = glyph_id,
+            .cluster_index = @intCast(start + idx),
+            .x_offset_px = 0,
+            .y_offset_px = 0,
+            .x_advance_px = advance_px,
+        };
+    }
+    _ = text_cache;
+    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+}
+
+fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+    if (!self.ensureFont()) return 0;
+    if (face_id.value == primary_face_id) {
+        const face = self.ft_face orelse return 0;
+        return shapeGlyphId(self.hb_font, face, @intCast(codepoint));
+    }
+
+    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
+    const face = self.ensureFallbackFace(fallback_index) orelse return 0;
+    return shapeGlyphId(self.fallback_hb_fonts[fallback_index], face, @intCast(codepoint));
+}
+
+fn providerGlyphAdvance(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+    const fallback: f32 = @floatFromInt(cell_metrics.cell_w_px);
+    if (glyph_id == 0) return fallback;
+    const face = if (face_id.value == primary_face_id)
+        self.ft_face
+    else
+        self.ensureFallbackFace(if (face_id.value >= 2) face_id.value - 2 else return fallback);
+    if (face == null) return fallback;
+    if (c.FT_Load_Glyph(face.?, glyph_id, c.FT_LOAD_DEFAULT) != 0) return fallback;
+    if (face.?.*.glyph == null) return fallback;
+    return @as(f32, @floatFromInt(@as(i32, @intCast(face.?.*.glyph.*.advance.x)))) / 64.0;
+}
+
+fn providerRasterizeSprite(
+    ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    req: render_core.SpriteRasterRequest,
+) anyerror!render_core.TextStack.Rasterizer.RasterSpriteOutput {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const width = @max(req.width_px, 1);
+    const height = @max(req.height_px, 1);
+    const pixels = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
+    errdefer allocator.free(pixels);
+    @memset(pixels, 0);
+
+    if (req.group.kind == .box_fallback) {
+        rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
+        return .{
+            .allocator = allocator,
+            .key = req.key,
+            .width_px = width,
+            .height_px = height,
+            .color_mode = req.color_mode,
+            .pixels = pixels,
+        };
+    }
+
+    var pen_x: f32 = 0;
+    for (req.group.glyphs, 0..) |glyph, glyph_idx| {
+        const x_px = @as(i32, @intFromFloat(std.math.floor(pen_x + glyph.x_offset_px)));
+        const y_px = @as(i32, @intFromFloat(std.math.floor(glyph.y_offset_px)));
+        _ = rasterizeProviderGlyph(backend, pixels, width, height, req.baseline_px, glyph.face_id, glyph.glyph_id, x_px, y_px, @intCast(glyph_idx));
+        pen_x += glyph.x_advance_px;
+    }
+
+    return .{
+        .allocator = allocator,
+        .key = req.key,
+        .width_px = width,
+        .height_px = height,
+        .color_mode = req.color_mode,
+        .pixels = pixels,
+    };
+}
+
+fn findSceneSpriteSlot(scene: render_core.TextScene, key: render_core.SpriteKey) ?u32 {
+    for (scene.sprite_draws) |draw| {
+        if (draw.sprite.key.value == key.value) return draw.sprite.slot;
+    }
+    return null;
+}
+
+fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+    if (!self.ensureFont()) return false;
+    const face = if (face_id.value == primary_face_id)
+        self.ft_face
+    else
+        self.ensureFallbackFace(if (face_id.value >= 2) face_id.value - 2 else return false);
+    if (face == null) return false;
+    return rasterizeProviderGlyphFromFace(dst, width, height, baseline_px, face.?, glyph_id, x_origin_px, y_origin_px, glyph_index);
+}
+
+fn rasterizeProviderGlyphFromFace(dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+    if (glyph_id == 0) return false;
+    if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return false;
+    const glyph = face.*.glyph;
+    if (glyph == null) return false;
+    const bitmap = glyph.*.bitmap;
+    if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return false;
+    const bw: usize = @intCast(bitmap.width);
+    const bh: usize = @intCast(bitmap.rows);
+    const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
+    const pitch_is_negative = bitmap.pitch < 0;
+    const baseline: i32 = if (baseline_px > 0) baseline_px else computeBaselineFromFace(face, height);
+    const origin = cellBitmapOrigin(width, baseline, glyph.*.bitmap_left, glyph.*.bitmap_top, @intCast(bitmap.width), x_origin_px, y_origin_px, glyph_index);
+
+    for (0..bh) |yy| {
+        for (0..bw) |xx| {
+            const dx_i = origin.x_px + @as(i32, @intCast(xx));
+            const dy_i = origin.y_px + @as(i32, @intCast(yy));
+            if (dx_i < 0 or dy_i < 0) continue;
+            const dx: usize = @intCast(dx_i);
+            const dy: usize = @intCast(dy_i);
+            if (dx >= width or dy >= height) continue;
+            const src_y = if (pitch_is_negative) (bh - 1 - yy) else yy;
+            dst[dy * @as(usize, width) + dx] = bitmap.buffer[src_y * pitch_abs + xx];
+        }
+    }
+    return true;
+}
+
+fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top: i32, bitmap_width: u16, x_offset: i32, y_offset: i32, glyph_index: u32) struct { x_px: i32, y_px: i32 } {
+    var x_px = x_offset + bitmap_left;
+    if (glyph_index < 4 and x_px > 0 and x_px + @as(i32, @intCast(bitmap_width)) > @as(i32, @intCast(cell_width))) {
+        const extra = x_px + @as(i32, @intCast(bitmap_width)) - @as(i32, @intCast(cell_width));
+        x_px = if (extra > x_px) 0 else x_px - extra;
+    }
+    const yoff = y_offset + bitmap_top;
+    const y_px = if (yoff > 0 and yoff > baseline) 0 else baseline - yoff;
+    return .{ .x_px = x_px, .y_px = y_px };
+}
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
     if (hb_font) |font| {
@@ -843,6 +1232,31 @@ fn hasCurrentContext() bool {
     return c.glGetString(c.GL_VERSION) != null;
 }
 
+fn mapTextSceneRenderError(err: anyerror) BackendError {
+    return switch (err) {
+        error.BackendClosed => error.BackendClosed,
+        error.NoContext => error.NoContext,
+        error.TargetTextureUnset => error.TargetTextureUnset,
+        error.FramebufferIncomplete => error.FramebufferIncomplete,
+        error.OutOfMemory => error.OutOfMemory,
+        else => error.OutOfMemory,
+    };
+}
+
+fn renderReportFromTextScene(report: TextSceneRenderReport) RenderReport {
+    return .{
+        .stats = .{
+            .fills = report.background_draws + report.decoration_draws + report.cursor_draws,
+            .glyphs = report.sprite_draws,
+            .atlas_uploads = report.raster_uploads_committed,
+            .has_cursor = report.cursor_draws > 0,
+            .full_redraw = true,
+        },
+        .pass_index = report.pass_index,
+        .atlas_uploads_committed = report.raster_uploads_committed,
+    };
+}
+
 fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     c.glViewport(0, 0, @as(c_int, @intCast(batch.surface_px.width)), @as(c_int, @intCast(batch.surface_px.height)));
     if (batch.full_redraw) {
@@ -862,11 +1276,44 @@ fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
     if (batch.cursor) |cursor| drawCursor(batch, cursor);
 }
 
+fn drawTextScene(backend: *const Backend, surface: render_core.PixelSize, scene: render_core.TextScene) void {
+    c.glViewport(0, 0, @as(c_int, @intCast(surface.width)), @as(c_int, @intCast(surface.height)));
+    if (scene.full_redraw) {
+        c.glDisable(c.GL_SCISSOR_TEST);
+        c.glClearColor(0.0, 0.0, 0.0, 1.0);
+        c.glClear(c.GL_COLOR_BUFFER_BIT);
+    } else if (scene.scroll_up_px > 0) {
+        applyScrollReusePx(backend, surface, scene.scroll_up_px);
+    }
+    c.glDisable(c.GL_DEPTH_TEST);
+    c.glEnable(c.GL_BLEND);
+    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
+    defer c.glDisable(c.GL_BLEND);
+
+    for (scene.background_draws) |draw| {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+    }
+    for (scene.decoration_draws) |draw| {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+    }
+    for (scene.sprite_draws) |draw| {
+        drawSceneSprite(backend, surface, draw);
+    }
+    for (scene.cursor_draws) |draw| {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+    }
+}
+
 fn applyScrollReuse(backend: *const Backend, batch: render_core.RenderBatch) void {
-    const texture = backend.target_texture orelse return;
     const scroll_px = @as(u32, batch.scroll_up_rows) * @as(u32, batch.cell_px.height);
-    const width = @as(u32, batch.surface_px.width);
-    const height = @as(u32, batch.surface_px.height);
+    applyScrollReusePx(backend, batch.surface_px, @intCast(scroll_px));
+}
+
+fn applyScrollReusePx(backend: *const Backend, surface_px: render_core.PixelSize, scroll_px_u16: u16) void {
+    const texture = backend.target_texture orelse return;
+    const scroll_px = @as(u32, scroll_px_u16);
+    const width = @as(u32, surface_px.width);
+    const height = @as(u32, surface_px.height);
     if (scroll_px == 0 or scroll_px >= height or width == 0) return;
     const preserved_h = height - scroll_px;
     const bytes = @as(usize, width) * @as(usize, preserved_h) * 4;
@@ -934,6 +1381,35 @@ fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: ren
     }
     if (!drew_any) {
         drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
+    }
+}
+
+fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) void {
+    if (backend.atlas_pixels.len == 0) {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+        return;
+    }
+    const slot = @as(usize, draw.sprite.slot);
+    if (slot >= backend.atlas_slot_width.len or slot >= backend.atlas_slot_height.len) return;
+    const slot_index = slot * backend.atlas_slot_stride;
+    if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) return;
+    const src = backend.atlas_pixels[slot_index .. slot_index + backend.atlas_slot_stride];
+    const gw = @min(draw.width_px, backend.atlas_cell_w);
+    const gh = @min(draw.height_px, backend.atlas_cell_h);
+    var drew_any = false;
+    for (0..gh) |yy| {
+        for (0..gw) |xx| {
+            const idx = yy * @as(usize, backend.atlas_cell_w) + xx;
+            const alpha = src[idx];
+            if (alpha == 0) continue;
+            drew_any = true;
+            var color = draw.color;
+            color.a = @intCast((@as(u16, color.a) * @as(u16, alpha)) / 255);
+            drawRect(surface, draw.x_px + @as(i32, @intCast(xx)), draw.y_px + @as(i32, @intCast(yy)), 1, 1, color);
+        }
+    }
+    if (!drew_any) {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
 }
 
@@ -1015,53 +1491,68 @@ fn sameColor(a: render_core.Rgba8, b: render_core.Rgba8) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
-test "backend executes valid batch and reports stats" {
+test "gles backend analyzes text cells through provider-backed engine" {
     var backend = Backend.init(.{
-        .surface_px = .{ .width = 800, .height = 600 },
-        .cell_px = .{ .width = 10, .height = 20 },
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
 
-    const fills = [_]render_core.FillRect{
-        .{
-            .x = 0,
-            .y = 0,
-            .width = 10,
-            .height = 20,
-            .color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-        },
+    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_core.CellInput{
+        .{ .codepoint = 'A', .fg = white, .bg = black },
+        .{ .codepoint = 'B', .fg = white, .bg = black },
     };
-    const batch = render_core.RenderBatch{
-        .surface_px = .{ .width = 800, .height = 600 },
-        .cell_px = .{ .width = 10, .height = 20 },
-        .grid = .{ .cols = 80, .rows = 30 },
-        .fills = &fills,
-    };
-
-    const report = try backend.renderBatch(batch);
-    try std.testing.expectEqual(@as(usize, 1), report.stats.fills);
-    try std.testing.expectEqual(@as(u64, 1), report.pass_index);
+    var faces: [8]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
+    defer analysis.deinit();
+    try std.testing.expectEqual(@as(usize, 2), analysis.groups.groups.len);
+    try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
 }
 
-test "backend accepts backend-owned atlas uploads" {
+test "gles backend uploads text analysis raster outputs into atlas memory" {
     var backend = Backend.init(.{
-        .surface_px = .{ .width = 800, .height = 600 },
-        .cell_px = .{ .width = 10, .height = 20 },
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
 
-    const uploads = [_]render_core.AtlasUpload{
-        .{ .codepoint = 'A', .width = 10, .height = 20 },
-    };
-    const batch = render_core.RenderBatch{
-        .surface_px = .{ .width = 800, .height = 600 },
-        .cell_px = .{ .width = 10, .height = 20 },
-        .grid = .{ .cols = 80, .rows = 30 },
-        .atlas_uploads = &uploads,
-    };
+    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
+    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    defer analysis.deinit();
+    const committed = try backend.uploadTextAnalysisRaster(analysis);
+    try std.testing.expectEqual(@as(usize, 1), committed);
+    const committed_scene = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
+    try std.testing.expectEqual(@as(usize, 0), committed_scene);
+    const slot = analysis.scene.scene.sprite_draws[0].sprite.slot;
+    const slot_idx = @as(usize, slot);
+    try std.testing.expect(backend.atlas_pixels.len > 0);
+    try std.testing.expect(slot_idx < backend.atlas_slot_width.len);
+    try std.testing.expectEqual(@as(u16, 8), backend.atlas_slot_width[slot_idx]);
+}
 
-    const report = try backend.renderBatch(batch);
-    try std.testing.expectEqual(@as(usize, 1), report.stats.atlas_uploads);
+test "gles backend renderFrameState uses text scene renderer" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    const cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    const report = try backend.renderFrameState(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    try std.testing.expectEqual(@as(u64, 1), report.pass_index);
+    try std.testing.expectEqual(@as(usize, 1), report.stats.glyphs);
+    try std.testing.expect(report.stats.has_cursor);
 }
 
 test "backend resize updates config dimensions" {

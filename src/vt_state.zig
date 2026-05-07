@@ -96,6 +96,10 @@ fn mapUnderlineStyle(style: frame_state.UnderlineStyle) render_batch.UnderlineSt
     };
 }
 
+fn damageScrollUpRows(damage: anytype) u16 {
+    return if (@hasField(@TypeOf(damage), "scroll_up_rows")) damage.scroll_up_rows else 0;
+}
+
 pub const OwnedTextSceneInput = struct {
     allocator: std.mem.Allocator,
     cells: []render_batch.CellInput,
@@ -209,7 +213,16 @@ pub fn vtStateToTextSceneInputWithTheme(
         .allocator = allocator,
         .cells = cell_inputs,
         .grid = .{ .cols = state.grid.cols, .rows = state.grid.rows },
-        .options = .{ .scene = .{ .cursor = cursor } },
+        .options = .{ .scene = .{
+            .cursor = cursor,
+            .damage = .{
+                .full = state.damage.full,
+                .scroll_up_rows = damageScrollUpRows(state.damage),
+                .dirty_rows = state.damage.dirty_rows,
+                .dirty_cols_start = state.damage.dirty_cols_start,
+                .dirty_cols_end = state.damage.dirty_cols_end,
+            },
+        } },
     };
 }
 
@@ -246,4 +259,29 @@ test "vt_state converts frame state to text scene input" {
     try std.testing.expect(input.cells[0].underline);
     try std.testing.expectEqual(@as(u8, 0xCC), input.cells[0].underline_color.r);
     try std.testing.expect(input.options.scene.cursor != null);
+    try std.testing.expect(input.options.scene.damage.full);
+}
+
+test "vt_state threads partial damage into text scene input" {
+    const cells = [_]frame_state.Cell{ .{}, .{} };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_starts = [_]u16{ 0, 2 };
+    const dirty_ends = [_]u16{ 0, 5 };
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 6, .rows = 2 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = .block },
+        .damage = .{
+            .full = false,
+            .scroll_up_rows = 1,
+            .dirty_rows = &dirty_rows,
+            .dirty_cols_start = &dirty_starts,
+            .dirty_cols_end = &dirty_ends,
+        },
+    };
+    var input = try vtStateToTextSceneInput(std.testing.allocator, state);
+    defer input.deinit();
+    try std.testing.expect(!input.options.scene.damage.full);
+    try std.testing.expectEqual(@as(u16, 1), input.options.scene.damage.scroll_up_rows);
+    try std.testing.expectEqual(@as(usize, 2), input.options.scene.damage.dirty_rows.len);
+    try std.testing.expectEqual(@as(u16, 2), input.options.scene.damage.dirty_cols_start[1]);
 }

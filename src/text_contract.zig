@@ -226,6 +226,8 @@ pub const SpriteRasterRequest = struct {
 
 pub const TextScene = struct {
     cells: []const RenderableCell,
+    full_redraw: bool = true,
+    scroll_up_px: u16 = 0,
     background_draws: []const TextBackgroundDraw = &.{},
     sprite_draws: []const TextSpriteDraw,
     decoration_draws: []const TextDecorationDraw = &.{},
@@ -287,6 +289,6 @@ test "text contract defaults are deterministic" {
     try std.testing.expect(!caps.has_harfbuzz);
     const cluster = TextCluster{ .grapheme_utf8 = "a", .first_cp = 97 };
     try std.testing.expectEqual(@as(u8, 1), cluster.cell_span);
-    const text = CellText{ .id = .{ .value = 1 }, .first_cp = 'A', .codepoints = &.{ 'A' } };
+    const text = CellText{ .id = .{ .value = 1 }, .first_cp = 'A', .codepoints = &.{'A'} };
     try std.testing.expectEqual(@as(u32, 'A'), text.codepoints[0]);
 }

@@ -553,7 +553,8 @@ pub const RenderBatchValidationError = error{
     CellMismatch,
     FillUnsupported,
     GlyphUnsupported,
-    AtlasSlotOutOfRange,
+    AtlasCapacityExceeded,
+    CursorOutOfBounds,
 };
 
 /// Validate a render batch against backend config and capability declarations.
@@ -576,6 +577,17 @@ pub fn validateRenderBatch(
     }
     if (!capability.supports_glyph_quads and batch.glyphs.len > 0) {
         return error.GlyphUnsupported;
+    }
+    if (batch.glyphs.len > 0 and capability.max_atlas_slots == 0) {
+        return error.AtlasCapacityExceeded;
+    }
+    if (batch.atlas_uploads.len > capability.max_atlas_slots) {
+        return error.AtlasCapacityExceeded;
+    }
+    if (batch.cursor) |cursor| {
+        if (cursor.cell_col >= batch.grid.cols or cursor.cell_row >= batch.grid.rows) {
+            return error.CursorOutOfBounds;
+        }
     }
 }
 
@@ -804,6 +816,78 @@ test "validation rejects surface mismatch" {
     };
 
     try std.testing.expectError(error.SurfaceMismatch, validateRenderBatch(config, cap, batch));
+}
+
+test "validation rejects glyphs without atlas capacity" {
+    const config = BackendConfig{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    };
+    const cap = BackendCapability{
+        .max_atlas_slots = 0,
+        .supports_fill_rect = true,
+        .supports_glyph_quads = true,
+    };
+    const glyphs = [_]GlyphQuad{.{
+        .x = 0,
+        .y = 0,
+        .width = 8,
+        .height = 16,
+        .codepoint = 'A',
+        .fg = white,
+    }};
+    const batch = RenderBatch{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cols = 2, .rows = 1 },
+        .glyphs = &glyphs,
+    };
+
+    try std.testing.expectError(error.AtlasCapacityExceeded, validateRenderBatch(config, cap, batch));
+}
+
+test "validation rejects atlas uploads over capacity" {
+    const config = BackendConfig{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    };
+    const cap = BackendCapability{
+        .max_atlas_slots = 1,
+        .supports_fill_rect = true,
+        .supports_glyph_quads = true,
+    };
+    const uploads = [_]AtlasUpload{
+        .{ .codepoint = 'A', .width = 8, .height = 16 },
+        .{ .codepoint = 'B', .width = 8, .height = 16 },
+    };
+    const batch = RenderBatch{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cols = 2, .rows = 1 },
+        .atlas_uploads = &uploads,
+    };
+
+    try std.testing.expectError(error.AtlasCapacityExceeded, validateRenderBatch(config, cap, batch));
+}
+
+test "validation rejects cursor outside grid" {
+    const config = BackendConfig{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    };
+    const cap = BackendCapability{
+        .max_atlas_slots = 4,
+        .supports_fill_rect = true,
+        .supports_glyph_quads = true,
+    };
+    const batch = RenderBatch{
+        .surface_px = .{ .width = 16, .height = 16 },
+        .cell_px = .{ .width = 8, .height = 16 },
+        .grid = .{ .cols = 2, .rows = 1 },
+        .cursor = .{ .cell_col = 2, .cell_row = 0, .shape = .block, .color = white },
+    };
+
+    try std.testing.expectError(error.CursorOutOfBounds, validateRenderBatch(config, cap, batch));
 }
 
 test "summary mirrors render-batch stats" {

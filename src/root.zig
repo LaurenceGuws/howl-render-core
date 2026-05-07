@@ -36,6 +36,7 @@ pub const RenderCore = struct {
     pub const FrameTheme = core.FrameTheme;
     pub const OwnedTextSceneInput = core.OwnedTextSceneInput;
     pub const OwnedRenderBatch = core.OwnedRenderBatch;
+    pub const RetainedFrame = core.RetainedFrame;
     pub const SurfaceState = core.SurfaceState;
     pub const SurfaceColor = core.SurfaceColor;
     pub const UnderlineStyle = core.UnderlineStyle;

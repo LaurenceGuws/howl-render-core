@@ -64,13 +64,18 @@ pub const FontSession = struct {
     metrics: contract.CellMetrics = .{ .cell_w_px = 1, .cell_h_px = 1, .baseline_px = 1 },
 
     pub fn primary(self: FontSession) FontFaceRecord {
-        return self.find(.primary, .regular, .any, 0) orelse .{ .id = self.primary_face, .role = .primary };
+        for (self.faces) |face| {
+            if (face.role == .primary and face.id.value == self.primary_face.value) return face;
+        }
+        for (self.faces) |face| {
+            if (face.role == .primary) return face;
+        }
+        return .{ .id = self.primary_face, .role = .primary };
     }
 
     pub fn findStyle(self: FontSession, style: contract.FontStyle, presentation: contract.TextPresentation, text: contract.CellText) ?FontFaceRecord {
         if (self.findText(.style, style, presentation, text)) |face| return face;
-        if (style == .regular) return self.findText(.primary, .regular, presentation, text) orelse validPrimary(self, self.primary(), text);
-        return self.findText(.primary, .regular, presentation, text) orelse validPrimary(self, self.primary(), text);
+        return validPrimary(self, self.primary(), text);
     }
 
     pub fn findSymbol(self: FontSession, cp: u32) ?FontFaceRecord {
@@ -152,6 +157,19 @@ test "font session validates all rendering codepoints in cell text" {
     try std.testing.expect(session.findStyle(.regular, .any, combining) == null);
     try std.testing.expectEqual(@as(u32, 3), session.findFallback(.regular, .any, combining).?.id.value);
     try std.testing.expectEqual(@as(u32, 2), session.findStyle(.regular, .any, emoji_presentation).?.id.value);
+}
+
+test "font session primary lookup preserves configured face without synthetic coverage" {
+    const faces = [_]FontFaceRecord{
+        .{ .id = .{ .value = 2 }, .role = .primary, .coverage = .{ .range = .{ .first = 'a', .last = 'z' } } },
+        .{ .id = .{ .value = 4 }, .role = .primary, .coverage = .all },
+        .{ .id = .{ .value = 3 }, .role = .fallback, .coverage = .all },
+    };
+    const session = FontSession{ .primary_face = .{ .value = 2 }, .faces = &faces };
+    const combining = contract.CellText{ .id = .{ .value = 1 }, .first_cp = 'i', .codepoints = &.{ 'i', 0x0332 } };
+    try std.testing.expectEqual(@as(u32, 2), session.primary().id.value);
+    try std.testing.expect(session.findStyle(.regular, .any, combining) == null);
+    try std.testing.expectEqual(@as(u32, 3), session.findFallback(.regular, .any, combining).?.id.value);
 }
 
 test "font session provider can reject static coverage hits" {
