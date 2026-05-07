@@ -5,7 +5,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
-const trace = @import("../../trace.zig");
 const clip_rect = @import("../shared/clip_rect.zig");
 const atlas_mod = @import("internal/atlas.zig");
 const c_api = @import("internal/c_api.zig");
@@ -513,12 +512,10 @@ pub const Backend = struct {
 
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
         if (batch.atlas_uploads.len == 0) return 0;
-        const start_ns = monotonicNs();
         try self.ensureAtlasStorage();
         if (hasCurrentContext()) try self.ensureAtlasTexture();
         var committed: usize = 0;
         var fast_hits: usize = 0;
-        const resolved_hits: usize = 0;
         for (batch.atlas_uploads) |upload| {
             if (self.findCachedSlotForDraw(upload.codepoint, upload.width, upload.height) != null) {
                 fast_hits += 1;
@@ -530,14 +527,6 @@ pub const Backend = struct {
             if (hasCurrentContext()) self.uploadAtlasSlot(slot);
             committed += 1;
         }
-        trace.renderAtlas(
-            "gl",
-            batch.atlas_uploads.len,
-            fast_hits,
-            resolved_hits,
-            committed,
-            @divTrunc(monotonicNs() - start_ns, std.time.ns_per_us),
-        );
         return committed;
     }
 

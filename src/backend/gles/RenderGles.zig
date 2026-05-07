@@ -5,7 +5,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
-const trace = @import("../../trace.zig");
 const clip_rect = @import("../shared/clip_rect.zig");
 const c = @cImport({
     if (builtin.target.abi == .android) {
@@ -565,7 +564,6 @@ pub const Backend = struct {
 
     fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
         if (batch.atlas_uploads.len == 0) return 0;
-        const start_ns = monotonicNs();
         try self.ensureAtlasStorage();
         var committed: usize = 0;
         var fast_hits: usize = 0;
@@ -585,14 +583,6 @@ pub const Backend = struct {
             self.markSlotCached(slot, key, upload.width, upload.height);
             committed += 1;
         }
-        trace.renderAtlas(
-            "gles",
-            batch.atlas_uploads.len,
-            fast_hits,
-            resolved_hits,
-            committed,
-            @divTrunc(monotonicNs() - start_ns, std.time.ns_per_us),
-        );
         return committed;
     }
 

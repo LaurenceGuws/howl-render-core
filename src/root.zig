@@ -109,7 +109,6 @@ pub const RenderCore = struct {
     pub const RenderBatchBuildError = core.RenderBatchBuildError;
     pub const FrameGeometryError = core.FrameGeometryError;
     pub const TextStack = core.TextStack;
-    pub const Trace = @import("trace.zig");
     pub const defaultTheme = core.defaultTheme;
 
     pub fn init(config: BackendConfig, capability: BackendCapability) Core {
