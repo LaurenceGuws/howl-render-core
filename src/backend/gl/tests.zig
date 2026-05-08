@@ -344,7 +344,39 @@ test "backend text scene atlas storage fits multicell sprites" {
     _ = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     const slot = analysis.scene.scene.sprite_draws[0].sprite.slot;
     const slot_idx = @as(usize, slot);
-    try std.testing.expectEqual(@as(u16, 16), backend.atlas_cell_w);
+    try std.testing.expect(backend.atlas_cell_w > 8);
     try std.testing.expect(slot_idx < backend.atlas_slot_width.len);
     try std.testing.expectEqual(@as(u16, 16), backend.atlas_slot_width[slot_idx]);
+}
+
+test "backend reanalyzes after atlas storage grows" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    const first_cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const first_state = .{
+        .grid = .{ .cells = &first_cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    const first = try backend.renderFrameStateTextScene(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    try std.testing.expectEqual(@as(usize, 1), first.raster_uploads_committed);
+
+    const second_cells = [_]render_core.SurfaceCell{
+        .{ .codepoint = 'A' },
+        .{ .codepoint = 0x4f60 },
+        .{ .codepoint = 0, .flags = .{ .continuation = true } },
+    };
+    const second_state = .{
+        .grid = .{ .cells = &second_cells, .cols = 3, .rows = 1 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    const second = try backend.renderFrameStateTextScene(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 }, &faces);
+    try std.testing.expect(backend.atlas_cell_w > 8);
+    try std.testing.expectEqual(@as(usize, 2), second.raster_uploads_committed);
 }

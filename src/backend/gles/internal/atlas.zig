@@ -29,7 +29,7 @@ pub fn clearAtlasCache(self: anytype) void {
     self.atlas_next_slot = 0;
 }
 
-fn ensureAtlasStorageForRasterOutputs(
+pub fn ensureAtlasStorageForRasterOutputs(
     self: anytype,
     outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
 ) !void {

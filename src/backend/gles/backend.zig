@@ -344,6 +344,10 @@ pub const Backend = struct {
         return atlas_mod.uploadTextSceneRaster(self, scene, outputs);
     }
 
+    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput) BackendError!void {
+        return atlas_mod.ensureAtlasStorageForRasterOutputs(self, outputs);
+    }
+
     pub fn renderTextScene(
         self: *Backend,
         scene: render_core.TextScene,
@@ -424,9 +428,23 @@ pub const Backend = struct {
         const rc = render_core.init(self.config, self.capabilities());
         var input = try rc.vtStateToTextSceneInput(allocator, state);
         defer input.deinit();
-        var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
-        defer analysis.deinit();
-        return self.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
+        var retry_after_atlas_growth = true;
+        while (true) {
+            var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
+            errdefer analysis.deinit();
+            const old_atlas_w = self.atlas_cell_w;
+            const old_atlas_h = self.atlas_cell_h;
+            try self.ensureAtlasStorageForRasterOutputs(analysis.raster_plan.outputs);
+            const atlas_grew = self.atlas_cell_w != old_atlas_w or self.atlas_cell_h != old_atlas_h;
+            if (retry_after_atlas_growth and atlas_grew) {
+                analysis.deinit();
+                if (self.text_engine) |*engine| engine.clearAtlas();
+                retry_after_atlas_growth = false;
+                continue;
+            }
+            defer analysis.deinit();
+            return self.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
+        }
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
