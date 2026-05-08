@@ -3,16 +3,16 @@
 //! Reason: remove duplicated frame-mapping logic across render backends.
 
 const std = @import("std");
-const frame_state = @import("frame_state.zig");
-const render_types = @import("render_types.zig");
+const surface = @import("surface.zig");
+const types = @import("types.zig");
 const text_engine = @import("text_stack/engine.zig");
 const text_scene = @import("text_stack/scene.zig");
 
 pub const FrameTheme = struct {
-    default_fg: render_types.Rgba8,
-    default_bg: render_types.Rgba8,
-    cursor_color: render_types.Rgba8,
-    ansi16: [16]render_types.Rgba8,
+    default_fg: types.Rgba8,
+    default_bg: types.Rgba8,
+    cursor_color: types.Rgba8,
+    ansi16: [16]types.Rgba8,
 };
 pub const default_theme = FrameTheme{
     .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
@@ -38,7 +38,7 @@ pub const default_theme = FrameTheme{
     },
 };
 
-fn indexed256(idx: u8, t: FrameTheme) render_types.Rgba8 {
+fn indexed256(idx: u8, t: FrameTheme) types.Rgba8 {
     if (idx < 16) return t.ansi16[idx];
     if (idx < 232) {
         const i: u32 = idx - 16;
@@ -51,7 +51,7 @@ fn indexed256(idx: u8, t: FrameTheme) render_types.Rgba8 {
     return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
 }
 
-fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_types.Rgba8 {
+fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
     return switch (color.kind) {
         .default => if (is_fg) t.default_fg else t.default_bg,
         .indexed => indexed256(@intCast(color.value & 0xFF), t),
@@ -64,7 +64,7 @@ fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_types.Rgba8 {
     };
 }
 
-fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_types.Rgba8 {
+fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
     if (!is_fg and color.kind == .default) return .{ .r = t.default_bg.r, .g = t.default_bg.g, .b = t.default_bg.b, .a = 0 };
     return colorToRgba8(color, is_fg, t);
 }
@@ -86,7 +86,7 @@ fn mapTextSceneCursorShape(shape: anytype) text_scene.CursorShape {
     return .block;
 }
 
-fn mapUnderlineStyle(style: frame_state.UnderlineStyle) render_types.UnderlineStyle {
+fn mapUnderlineStyle(style: surface.UnderlineStyle) types.UnderlineStyle {
     return switch (style) {
         .straight => .straight,
         .double => .double,
@@ -102,7 +102,7 @@ fn damageScrollUpRows(damage: anytype) u16 {
 
 pub const OwnedFrameTextInput = struct {
     allocator: std.mem.Allocator,
-    cells: []render_types.CellInput,
+    cells: []types.CellInput,
     grid: @import("text_contract.zig").GridMetrics,
     options: text_engine.AnalysisOptions,
 
@@ -141,7 +141,7 @@ pub fn vtStateToFrameTextInputWithTheme(
     state: anytype,
     t: FrameTheme,
 ) !OwnedFrameTextInput {
-    const cell_inputs = try allocator.alloc(render_types.CellInput, state.grid.cells.len);
+    const cell_inputs = try allocator.alloc(types.CellInput, state.grid.cells.len);
     errdefer allocator.free(cell_inputs);
 
     for (state.grid.cells, cell_inputs) |src, *dst| {
@@ -181,8 +181,8 @@ pub fn vtStateToFrameTextInputWithTheme(
     };
 }
 
-test "vt_state converts frame state to text scene input" {
-    const cells = [_]frame_state.Cell{.{
+test "frame_input converts frame state to text scene input" {
+    const cells = [_]surface.Cell{.{
         .codepoint = 'A',
         .underline_color = .{ .kind = .rgb, .value = 0xCC3366 },
         .attrs = .{ .underline = true, .underline_color_set = true },
@@ -203,8 +203,8 @@ test "vt_state converts frame state to text scene input" {
     try std.testing.expect(input.options.scene.damage.full);
 }
 
-test "vt_state threads partial damage into text scene input" {
-    const cells = [_]frame_state.Cell{ .{}, .{} };
+test "frame_input threads partial damage into text scene input" {
+    const cells = [_]surface.Cell{ .{}, .{} };
     const dirty_rows = [_]bool{ false, true };
     const dirty_starts = [_]u16{ 0, 2 };
     const dirty_ends = [_]u16{ 0, 5 };

@@ -5,7 +5,7 @@
 const std = @import("std");
 const contract = @import("../text_contract.zig");
 const pipeline = @import("../text_pipeline.zig");
-const render_types = @import("../render_types.zig");
+const types = @import("../types.zig");
 const atlas_cache = @import("atlas_cache.zig");
 const cluster = @import("cluster.zig");
 const font_resolver = @import("font_resolver.zig");
@@ -67,25 +67,25 @@ pub const Engine = struct {
         } };
     }
 
-    pub fn analyzeCells(self: *Engine, cells: []const render_types.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
+    pub fn analyzeCells(self: *Engine, cells: []const types.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
         return self.analyzeCellsGrid(cells, .{ .cols = @intCast(@max(cells.len, 1)) }, face_id);
     }
 
-    pub fn analyzeCellsGrid(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, face_id: contract.FontFaceId) !OwnedTextAnalysis {
+    pub fn analyzeCellsGrid(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, face_id: contract.FontFaceId) !OwnedTextAnalysis {
         return self.analyzeCellsWithSession(cells, grid_metrics, .{ .primary_face = face_id });
     }
 
-    pub fn analyzeCellsWithSession(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
+    pub fn analyzeCellsWithSession(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
         return self.analyzeCellsWithSessionOptions(cells, grid_metrics, session, .{});
     }
 
-    pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
+    pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
         var sparse = try cluster.buildSparseCellsWithDamage(self.allocator, cells, grid_metrics, options.scene.damage);
         errdefer sparse.deinit();
         return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options);
     }
 
-    pub fn analyzeCellsWithProvider(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, provider: provider_mod.TextProvider) !OwnedTextAnalysis {
+    pub fn analyzeCellsWithProvider(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, provider: provider_mod.TextProvider) !OwnedTextAnalysis {
         return self.analyzeCellsWithSession(cells, grid_metrics, provider.applyToSession(session));
     }
 
@@ -238,9 +238,9 @@ test "text engine skeleton preserves input cells" {
 test "text engine analyzes cell inputs into clusters and runs" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
     };
@@ -262,9 +262,9 @@ test "text engine analyzes cell inputs into clusters and runs" {
 test "text engine records sprite routes through resolver" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 0x2500, .fg = white, .bg = black },
     };
@@ -286,9 +286,9 @@ test "text engine records sprite routes through resolver" {
 test "text engine scene is grid positioned" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
         .{ .codepoint = 'c', .fg = white, .bg = black },
@@ -305,9 +305,9 @@ test "text engine scene is grid positioned" {
 test "text engine reuses atlas slots across analyses" {
     var engine = try Engine.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
     var first = try engine.analyzeCells(&cells, .{ .value = 1 });
     const first_slot = first.scene.scene.sprite_draws[0].sprite.slot;
     first.deinit();
@@ -334,9 +334,9 @@ test "text engine accepts configurable shaper" {
     var stub = Stub{};
     var engine = try Engine.initWithShaper(std.testing.allocator, 8, .{ .ctx = &stub, .shape_run = Stub.shape });
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{.{ .codepoint = 'q', .fg = white, .bg = black }};
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{.{ .codepoint = 'q', .fg = white, .bg = black }};
     var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
@@ -356,9 +356,9 @@ test "text engine accepts unified provider rasterizer" {
     var stub = Stub{};
     var engine = try Engine.initWithProvider(std.testing.allocator, 8, .{ .rasterizer = .{ .ctx = &stub, .rasterize_sprite = Stub.raster } });
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{.{ .codepoint = 'r', .fg = white, .bg = black }};
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{.{ .codepoint = 'r', .fg = white, .bg = black }};
     var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
@@ -367,9 +367,9 @@ test "text engine accepts unified provider rasterizer" {
 test "text engine analysis options produce scene cursor draws" {
     var engine = try Engine.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_types.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
     var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{
         .primary_face = .{ .value = 1 },
         .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
@@ -384,8 +384,8 @@ test "text engine analysis options produce scene cursor draws" {
 test "text engine analyzes rich multi-codepoint cell inputs" {
     var engine = try Engine.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332, 0x0308 };
     const emoji = [_]u32{ 0x2716, 0xfe0f };
     const inputs = [_]cluster.CellTextInput{
@@ -414,8 +414,8 @@ test "text engine uses ft hb adapter coverage for fallback" {
     var adapter = ft_hb_provider.Adapter{ .ctx = &dummy, .has_codepoint = Backend.has };
     var engine = try Engine.initWithProvider(std.testing.allocator, 16, adapter.textProvider());
     defer engine.deinit();
-    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332 };
     const inputs = [_]cluster.CellTextInput{.{ .codepoints = &combining, .fg = white, .bg = black }};
     const faces = [_]font_session.FontFaceRecord{

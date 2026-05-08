@@ -3,29 +3,29 @@
 //! Reason: keep hosts/backends on one coherent entrypoint.
 
 const std = @import("std");
-const render_types = @import("render_types.zig");
-const vt_state = @import("vt_state.zig");
-const surface = @import("frame_state.zig");
+const types = @import("types.zig");
+const frame_input = @import("frame_input.zig");
+const surface = @import("surface.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
 const text_stack = @import("text_stack.zig");
 
 pub const RenderCore = struct {
-    pub const BackendConfig = render_types.BackendConfig;
-    pub const BackendCapability = render_types.BackendCapability;
-    pub const PixelSize = render_types.PixelSize;
-    pub const CellSize = render_types.CellSize;
-    pub const GridSize = render_types.GridSize;
-    pub const Rgba8 = render_types.Rgba8;
-    pub const FillRect = render_types.FillRect;
-    pub const GlyphQuad = render_types.GlyphQuad;
-    pub const AtlasUpload = render_types.AtlasUpload;
-    pub const RenderStats = render_types.RenderStats;
-    pub const TextCellInput = render_types.CellInput;
-    pub const CellInput = render_types.CellInput;
-    pub const FrameTheme = vt_state.FrameTheme;
-    pub const OwnedFrameTextInput = vt_state.OwnedFrameTextInput;
-    pub const OwnedTextSceneInput = vt_state.OwnedTextSceneInput;
+    pub const BackendConfig = types.BackendConfig;
+    pub const BackendCapability = types.BackendCapability;
+    pub const PixelSize = types.PixelSize;
+    pub const CellSize = types.CellSize;
+    pub const GridSize = types.GridSize;
+    pub const Rgba8 = types.Rgba8;
+    pub const FillRect = types.FillRect;
+    pub const GlyphQuad = types.GlyphQuad;
+    pub const AtlasUpload = types.AtlasUpload;
+    pub const RenderStats = types.RenderStats;
+    pub const TextCellInput = types.CellInput;
+    pub const CellInput = types.CellInput;
+    pub const FrameTheme = frame_input.FrameTheme;
+    pub const OwnedFrameTextInput = frame_input.OwnedFrameTextInput;
+    pub const OwnedTextSceneInput = frame_input.OwnedTextSceneInput;
     pub const SurfaceState = surface.SurfaceState;
     pub const SurfaceColor = surface.Color;
     pub const UnderlineStyle = surface.UnderlineStyle;
@@ -109,10 +109,10 @@ pub const RenderCore = struct {
         InvalidSurfaceSize,
         InvalidGridSize,
     };
-    pub const defaultTheme = vt_state.default_theme;
+    pub const defaultTheme = frame_input.default_theme;
 
-    config: render_types.BackendConfig,
-    capability: render_types.BackendCapability,
+    config: types.BackendConfig,
+    capability: types.BackendCapability,
 
     pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
         return .{
@@ -127,7 +127,7 @@ pub const RenderCore = struct {
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedTextSceneInput {
-        return vt_state.vtStateToTextSceneInput(allocator, state);
+        return frame_input.vtStateToTextSceneInput(allocator, state);
     }
 
     pub fn vtStateToFrameTextInput(
@@ -135,7 +135,7 @@ pub const RenderCore = struct {
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedFrameTextInput {
-        return vt_state.vtStateToFrameTextInput(allocator, state);
+        return frame_input.vtStateToFrameTextInput(allocator, state);
     }
 
     pub fn buildFrameTextInput(
