@@ -372,7 +372,7 @@ fn appendDecorationDraws(
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
-        if (cell.underline) try appendUnderlineDraws(allocator, out, cell, base_x, base_y + deco.underline_y_px, width_px, deco.underline_h_px);
+        if (cell.underline) try appendUnderlineDraws(allocator, out, cell, base_x, base_y, width_px, deco, cell_metrics);
         if (cell.strikethrough) try appendMergedDecorationDraw(allocator, out, .{
             .kind = .strikethrough,
             .x_px = base_x,
@@ -413,8 +413,10 @@ fn appendMergedDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(
     try out.append(allocator, draw);
 }
 
-fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16) !void {
+fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, row_y: i32, width: u16, deco: metrics.DecorationGeometry, cell_metrics: contract.CellMetrics) !void {
     const color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
+    const y = row_y + deco.underline_y_px;
+    const height = deco.underline_h_px;
     switch (cell.underline_style) {
         .straight => try appendDecorationDraw(allocator, out, cell, x, y, width, height, color),
         .double => {
@@ -435,9 +437,13 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
             while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
         .curly => {
-            const step: u16 = @max(height, 1);
-            const amplitude: i32 = @max(@as(i32, @intCast(height)) * 2, 2);
+            const cell_h: i32 = @intCast(@max(cell_metrics.cell_h_px, 1));
+            const stroke_h: u16 = @intCast(std.math.clamp(@divTrunc(cell_h + 9, 10), 1, 4));
+            const amplitude: i32 = std.math.clamp(@divTrunc(cell_h + 5, 6), 2, @max(2, @divTrunc(cell_h, 3)));
+            const step: u16 = @intCast(@max(@as(i32, stroke_h) * 2, 2));
             const period: u16 = @intCast(@max(amplitude * 4, 4));
+            const max_y = row_y + cell_h - @as(i32, @intCast(stroke_h));
+            const wave_top = std.math.clamp(row_y + cell_h - amplitude * 2 - @as(i32, @intCast(stroke_h)), row_y, max_y);
             var off: u16 = 0;
             while (off < width) : (off += step) {
                 const draw_width = @min(step, width - off);
@@ -448,7 +454,7 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
                     amplitude * 2 - phase
                 else
                     phase - amplitude * 4;
-                try appendRawDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), @max(y + offset, 0), draw_width, height, color);
+                try appendRawDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), std.math.clamp(wave_top + offset, row_y, max_y), draw_width, stroke_h, color);
             }
         },
     }
@@ -733,6 +739,7 @@ test "scene emits stepped undercurl for curly underline" {
     defer owned.deinit();
 
     try std.testing.expect(owned.scene.decoration_draws.len > 4);
+    try std.testing.expect(owned.scene.decoration_draws[0].height_px > 1);
     var saw_higher = false;
     var saw_lower = false;
     const first_y = owned.scene.decoration_draws[0].y_px;
