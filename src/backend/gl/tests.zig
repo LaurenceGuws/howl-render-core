@@ -186,6 +186,28 @@ test "backend uploads text analysis raster outputs into atlas memory" {
     try std.testing.expect(backend.atlas_slot_width[slot_idx] == 8);
 }
 
+test "backend text analysis reuses retained scene atlas for unchanged glyphs" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+
+    var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    defer first.deinit();
+    try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
+
+    var second = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    defer second.deinit();
+    try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
+    try std.testing.expectEqual(first.scene.scene.sprite_draws[0].sprite.slot, second.scene.scene.sprite_draws[0].sprite.slot);
+}
+
 test "backend text scene cache treats transparent raster output as cached" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
