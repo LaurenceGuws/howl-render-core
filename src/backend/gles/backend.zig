@@ -7,22 +7,11 @@ const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
 const clip_rect = @import("../shared/clip_rect.zig");
 const text_cache = @import("../shared/text_cache.zig");
-const c = @cImport({
-    if (builtin.target.abi == .android) {
-        @cDefine("_Nonnull", "");
-        @cDefine("_Nullable", "");
-        @cDefine("_Null_unspecified", "");
-    }
-    @cInclude("GLES2/gl2.h");
-    @cInclude("time.h");
-    @cInclude("ft2build.h");
-    @cInclude("freetype/freetype.h");
-    @cInclude("hb.h");
-    @cInclude("hb-ft.h");
-});
-const FtLibrary = c.FT_Library;
-const FtFace = c.FT_Face;
-const HbFont = *c.hb_font_t;
+const c_api = @import("internal/c_api.zig");
+const c = c_api.c;
+const FtLibrary = c_api.FtLibrary;
+const FtFace = c_api.FtFace;
+const HbFont = c_api.HbFont;
 
 const primary_face_id: u32 = 1;
 
