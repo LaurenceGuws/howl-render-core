@@ -390,6 +390,10 @@ fn appendDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contra
     try appendMergedDecorationDraw(allocator, out, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
 }
 
+fn appendRawDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    try out.append(allocator, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+}
+
 fn appendMergedDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), draw: contract.TextDecorationDraw) !void {
     if (out.items.len > 0) {
         const last = &out.items[out.items.len - 1];
@@ -431,14 +435,20 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
             while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
         .curly => {
-            const seg: u16 = @max(height * 2, 2);
-            const y_high = @max(y - @as(i32, @intCast(height)), 0);
-            const y_low = y + @as(i32, @intCast(height));
+            const step: u16 = @max(height, 1);
+            const amplitude: i32 = @max(@as(i32, @intCast(height)) * 2, 2);
+            const period: u16 = @intCast(@max(amplitude * 4, 4));
             var off: u16 = 0;
-            var high = true;
-            while (off < width) : (off += seg) {
-                try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), if (high) y_high else y_low, @min(seg, width - off), height, color);
-                high = !high;
+            while (off < width) : (off += step) {
+                const draw_width = @min(step, width - off);
+                const phase: i32 = @intCast(off % period);
+                const offset = if (phase < amplitude)
+                    phase
+                else if (phase < amplitude * 3)
+                    amplitude * 2 - phase
+                else
+                    phase - amplitude * 4;
+                try appendRawDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), @max(y + offset, 0), draw_width, height, color);
             }
         },
     }
@@ -704,6 +714,33 @@ test "scene merges contiguous straight underline spans" {
     try std.testing.expectEqual(@as(usize, 1), owned.scene.decoration_draws.len);
     try std.testing.expectEqual(@as(u16, 24), owned.scene.decoration_draws[0].width_px);
     try std.testing.expectEqual(@as(u8, 3), owned.scene.decoration_draws[0].cell_span);
+}
+
+test "scene emits stepped undercurl for curly underline" {
+    const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
+    const cells = [_]contract.RenderableCell{.{
+        .text_id = .{ .value = 0 },
+        .first_cell = 0,
+        .cell_span = 4,
+        .style = .regular,
+        .presentation = .any,
+        .fg = color,
+        .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+        .underline = true,
+        .underline_style = .curly,
+    }};
+    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 });
+    defer owned.deinit();
+
+    try std.testing.expect(owned.scene.decoration_draws.len > 4);
+    var saw_higher = false;
+    var saw_lower = false;
+    const first_y = owned.scene.decoration_draws[0].y_px;
+    for (owned.scene.decoration_draws[1..]) |draw| {
+        if (draw.y_px < first_y) saw_higher = true;
+        if (draw.y_px > first_y) saw_lower = true;
+    }
+    try std.testing.expect(saw_higher or saw_lower);
 }
 
 test "scene merges contiguous strikethrough spans" {
