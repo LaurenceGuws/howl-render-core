@@ -41,8 +41,8 @@ const WorkloadResult = struct {
 
 const Workload = struct {
     name: []const u8,
-    cells: []render.TextCellInput,
-    grid: render.GridMetrics,
+    cells: []render.Core.TextCellInput,
+    grid: render.Core.GridMetrics,
     damage: struct {
         full: bool,
         scroll_up_rows: u16 = 0,
@@ -50,7 +50,7 @@ const Workload = struct {
         dirty_cols_start: []const u16,
         dirty_cols_end: []const u16,
     },
-    cell_px: render.CellSize,
+    cell_px: render.Core.CellSize,
     dirty_cells_per_run: usize,
 };
 
@@ -176,11 +176,11 @@ fn nowNs(io: std.Io) u64 {
     return @intCast(std.Io.Clock.awake.now(io).toNanoseconds());
 }
 
-fn rgba(r: u8, g: u8, b: u8) render.Rgba8 {
+fn rgba(r: u8, g: u8, b: u8) render.Core.Rgba8 {
     return .{ .r = r, .g = g, .b = b, .a = 255 };
 }
 
-fn defaultCellMetrics(cell_px: render.CellSize) render.CellMetrics {
+fn defaultCellMetrics(cell_px: render.Core.CellSize) render.Core.CellMetrics {
     const h = @max(cell_px.height, 1);
     return .{
         .cell_w_px = @max(cell_px.width, 1),
@@ -189,9 +189,9 @@ fn defaultCellMetrics(cell_px: render.CellSize) render.CellMetrics {
     };
 }
 
-fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Rgba8) ![]render.TextCellInput {
+fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Core.Rgba8) ![]render.Core.TextCellInput {
     const len = @as(usize, rows) * @as(usize, cols);
-    const cells = try allocator.alloc(render.TextCellInput, len);
+    const cells = try allocator.alloc(render.Core.TextCellInput, len);
     for (cells) |*cell| {
         cell.* = .{ .codepoint = ' ', .fg = rgba(240, 240, 240), .bg = bg };
     }
@@ -350,11 +350,11 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     defer allocator.free(upload_values);
 
     const cell_metrics = defaultCellMetrics(workload.cell_px);
-    const session = render.TextFontSession{
+    const session = render.Core.TextFontSession{
         .primary_face = .{ .value = 1 },
         .metrics = cell_metrics,
     };
-    const analysis_options = render.TextEngineAnalysisOptions{
+    const analysis_options = render.Core.TextEngineAnalysisOptions{
         .scene = .{
             .damage = .{
                 .full = workload.damage.full,
@@ -371,7 +371,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         var counting = CountingAllocator.init(allocator);
         counting.resetWindow();
         const start = nowNs(io);
-        var engine = render.TextEngine.init(counting.allocator());
+        var engine = render.Core.TextEngine.init(counting.allocator());
         defer engine.deinit();
         var analysis = try engine.analyzeCellsWithSessionOptions(
             workload.cells,

@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(RenderBackend, "render_backend", selected_backend);
 
     const mod = b.addModule("howl_render", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/howl_render.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -69,7 +69,7 @@ pub fn build(b: *std.Build) void {
         perf_freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/aarch64-linux-android", .{android_ndk_sysroot}) });
     }
     const perf_mod = b.addModule("howl_render_perf", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("src/howl_render.zig"),
         .target = target,
         .optimize = perf_optimize,
     });

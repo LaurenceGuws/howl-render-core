@@ -3,10 +3,12 @@ const root = @import("howl_render");
 
 test "renderer package surface remains available" {
     _ = root.Core;
-    _ = root.TextStack;
-    _ = root.BackendConfig;
-    _ = root.SurfaceFrameData;
-    _ = root.ResolveResult;
+    _ = root.Backend;
+    _ = root.RenderReport;
+    _ = root.Core.TextStack;
+    _ = root.Core.BackendConfig;
+    _ = root.Core.SurfaceFrameData;
+    _ = root.Core.ResolveResult;
 }
 
 test "renderer root helpers forward deterministically" {
