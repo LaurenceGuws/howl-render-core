@@ -386,12 +386,12 @@ fn appendDecorationDraws(
     }
 }
 
-fn appendDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
-    try appendMergedDecorationDraw(allocator, out, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+fn appendDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), kind: contract.DecorationKind, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    try appendMergedDecorationDraw(allocator, out, .{ .kind = kind, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
 }
 
-fn appendRawDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
-    try out.append(allocator, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+fn appendRawDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), kind: contract.DecorationKind, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    try out.append(allocator, .{ .kind = kind, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
 }
 
 fn appendMergedDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), draw: contract.TextDecorationDraw) !void {
@@ -418,23 +418,23 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
     const y = row_y + deco.underline_y_px;
     const height = deco.underline_h_px;
     switch (cell.underline_style) {
-        .straight => try appendDecorationDraw(allocator, out, cell, x, y, width, height, color),
+        .straight => try appendDecorationDraw(allocator, out, .underline, cell, x, y, width, height, color),
         .double => {
             const gap: i32 = @max(@as(i32, @intCast(height)), 1);
-            try appendDecorationDraw(allocator, out, cell, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
-            try appendDecorationDraw(allocator, out, cell, x, y, width, height, color);
+            try appendDecorationDraw(allocator, out, .underline, cell, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
+            try appendDecorationDraw(allocator, out, .underline, cell, x, y, width, height, color);
         },
         .dotted => {
             const dot: u16 = @max(height, 1);
             const step: u16 = @max(dot * 2, 2);
             var off: u16 = 0;
-            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
+            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, .underline_dotted, cell, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
         },
         .dashed => {
             const dash: u16 = @max(width / 3, @as(u16, 2));
             const step: u16 = @max(dash + 2, 3);
             var off: u16 = 0;
-            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
+            while (off < width) : (off += step) try appendDecorationDraw(allocator, out, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
         .curly => {
             const cell_h: i32 = @intCast(@max(cell_metrics.cell_h_px, 1));
@@ -454,7 +454,7 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
                     amplitude * 2 - phase
                 else
                     phase - amplitude * 4;
-                try appendRawDecorationDraw(allocator, out, cell, x + @as(i32, @intCast(off)), std.math.clamp(wave_top + offset, row_y, max_y), draw_width, stroke_h, color);
+                try appendRawDecorationDraw(allocator, out, .undercurl, cell, x + @as(i32, @intCast(off)), std.math.clamp(wave_top + offset, row_y, max_y), draw_width, stroke_h, color);
             }
         },
     }
@@ -739,6 +739,7 @@ test "scene emits stepped undercurl for curly underline" {
     defer owned.deinit();
 
     try std.testing.expect(owned.scene.decoration_draws.len > 4);
+    try std.testing.expectEqual(contract.DecorationKind.undercurl, owned.scene.decoration_draws[0].kind);
     try std.testing.expect(owned.scene.decoration_draws[0].height_px > 1);
     var saw_higher = false;
     var saw_lower = false;

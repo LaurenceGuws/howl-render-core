@@ -208,8 +208,11 @@ pub const TextCursorDraw = struct {
     color: Rgba8,
 };
 
-pub const DecorationKind = enum(u2) {
+pub const DecorationKind = enum(u3) {
     underline,
+    underline_dotted,
+    underline_dashed,
+    undercurl,
     strikethrough,
 };
 

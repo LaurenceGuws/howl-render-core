@@ -44,15 +44,20 @@ pub fn defaultCellMetrics(font_px: u16) contract.CellMetrics {
 
 pub fn defaultFontMetrics(cell: contract.CellMetrics) contract.FontMetrics {
     const baseline: f32 = @floatFromInt(cell.baseline_px);
+    const decoration_thickness: f32 = @floatFromInt(scaledDecorationThickness(cell.cell_h_px));
     return .{
         .ascent_px = baseline,
         .descent_px = @floatFromInt(@as(i32, cell.cell_h_px) - @as(i32, cell.baseline_px)),
         .line_gap_px = 0,
-        .underline_pos_px = baseline + 1,
-        .underline_thickness_px = 1,
+        .underline_pos_px = baseline + decoration_thickness,
+        .underline_thickness_px = decoration_thickness,
         .strikethrough_pos_px = baseline / 2.0,
-        .strikethrough_thickness_px = 1,
+        .strikethrough_thickness_px = decoration_thickness,
     };
+}
+
+fn scaledDecorationThickness(cell_h_px: u16) u16 {
+    return @intCast(@max(@divTrunc(@as(u32, @max(cell_h_px, 1)) + 15, 16), 1));
 }
 
 pub fn decorationGeometry(cell: contract.CellMetrics, font: contract.FontMetrics) DecorationGeometry {
@@ -154,6 +159,14 @@ test "default metrics stay in cell bounds" {
     const cell = defaultCellMetrics(16);
     try std.testing.expect(cell.baseline_px > 0);
     try std.testing.expect(cell.baseline_px <= cell.cell_h_px);
+}
+
+test "default decoration thickness scales with cell height" {
+    const small = defaultFontMetrics(.{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    const large = defaultFontMetrics(.{ .cell_w_px = 64, .cell_h_px = 128, .baseline_px = 100 });
+    try std.testing.expectEqual(@as(f32, 1), small.underline_thickness_px);
+    try std.testing.expect(large.underline_thickness_px > small.underline_thickness_px);
+    try std.testing.expectEqual(large.underline_thickness_px, large.strikethrough_thickness_px);
 }
 
 test "face metrics derive bounded baseline" {
