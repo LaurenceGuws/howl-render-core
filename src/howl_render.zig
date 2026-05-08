@@ -5,8 +5,8 @@
 const build_options = @import("build_options");
 const core = @import("render_core.zig").RenderCore;
 const backend = switch (build_options.render_backend) {
-    .gl => @import("backend/gl/render_gl.zig"),
-    .gles => @import("backend/gles/render_gles.zig"),
+    .gl => @import("backend/gl/backend.zig"),
+    .gles => @import("backend/gles/backend.zig"),
 };
 
 pub const Core = core;
