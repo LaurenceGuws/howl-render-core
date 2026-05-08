@@ -20,7 +20,7 @@ test "backend exposes text provider and font session scaffold" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var adapter = backend.textProvider();
     const provider = adapter.textProvider();
     const session = backend.fontSession(&faces);
@@ -37,7 +37,7 @@ test "backend text session metrics respect configured cell size" {
         .cell_px = .{ .width = 9, .height = 17 },
     });
     defer backend.deinit();
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     const session = backend.fontSession(&faces);
     try std.testing.expectEqual(@as(u16, 9), session.metrics.cell_w_px);
     try std.testing.expectEqual(@as(u16, 17), session.metrics.cell_h_px);
@@ -93,7 +93,7 @@ test "backend text provider rasterizer returns sprite output" {
         .sprite_key = .{ .value = 123 },
         .kind = .normal,
     };
-    var out = try provider.rasterizer.rasterize(std.testing.allocator, render_core.TextStack.Rasterizer.requestForGroup(group, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }));
+    var out = try provider.rasterizer.rasterize(std.testing.allocator, render_core.Text.Rasterizer.requestForGroup(group, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }));
     defer out.deinit();
     try std.testing.expectEqual(@as(u16, 8), out.width_px);
     try std.testing.expectEqual(@as(u16, 16), out.height_px);
@@ -116,7 +116,7 @@ test "backend text provider rasterizer draws box fallback alpha" {
         .sprite_key = .{ .value = 2500 },
         .kind = .box_fallback,
     };
-    var out = try provider.rasterizer.rasterize(std.testing.allocator, render_core.TextStack.Rasterizer.requestForGroup(group, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }));
+    var out = try provider.rasterizer.rasterize(std.testing.allocator, render_core.Text.Rasterizer.requestForGroup(group, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }));
     defer out.deinit();
     var lit: usize = 0;
     for (out.pixels) |alpha| {
@@ -138,7 +138,7 @@ test "backend analyzes text cells through provider-backed engine" {
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
     };
-    var faces: [8]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [8]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 2), analysis.groups.groups.len);
@@ -155,7 +155,7 @@ test "backend analyzes text cells with scene cursor options" {
     const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{
         .scene = .{ .cursor = .{ .cell_col = 0, .cell_row = 0, .shape = .beam, .color = white } },
     });
@@ -172,7 +172,7 @@ test "backend uploads text analysis raster outputs into atlas memory" {
     const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer analysis.deinit();
     const committed = try backend.uploadTextAnalysisRaster(analysis);
@@ -193,7 +193,7 @@ test "backend text scene cache treats transparent raster output as cached" {
     });
     defer backend.deinit();
 
-    var outputs = [_]render_core.TextStack.Rasterizer.RasterSpriteOutput{.{
+    var outputs = [_]render_core.Text.Rasterizer.RasterSpriteOutput{.{
         .allocator = std.testing.allocator,
         .key = .{ .value = 77 },
         .width_px = 8,
@@ -235,7 +235,7 @@ test "backend renders text scene handoff without legacy glyph batch" {
     const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black, .underline = true }};
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer analysis.deinit();
     const report = try backend.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
@@ -278,7 +278,7 @@ test "backend renders frame state through opt-in text scene path" {
         .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
     try std.testing.expectEqual(@as(usize, 1), report.sprite_draws);
     try std.testing.expectEqual(@as(usize, 1), report.cursor_draws);
@@ -314,7 +314,7 @@ test "backend text scene atlas storage fits multicell sprites" {
         .{ .codepoint = 0x4f60, .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
     };
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), analysis.scene.scene.sprite_draws.len);

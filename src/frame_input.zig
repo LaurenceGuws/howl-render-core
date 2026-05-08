@@ -5,8 +5,8 @@
 const std = @import("std");
 const surface = @import("surface.zig");
 const types = @import("types.zig");
-const text_engine = @import("text_stack/engine.zig");
-const text_scene = @import("text_stack/scene.zig");
+const text_engine = @import("text/engine.zig");
+const text_scene = @import("text/scene.zig");
 
 pub const FrameTheme = struct {
     default_fg: types.Rgba8,

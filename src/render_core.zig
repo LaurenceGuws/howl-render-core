@@ -8,7 +8,7 @@ const frame_input = @import("frame_input.zig");
 const surface = @import("surface.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
-const text_stack = @import("text_stack.zig");
+const text = @import("text.zig");
 
 pub const RenderCore = struct {
     pub const BackendConfig = types.BackendConfig;
@@ -100,11 +100,11 @@ pub const RenderCore = struct {
     pub const ShapeClustersOp = text_pipeline.ShapeClustersOp;
     pub const RasterizeGlyphOp = text_pipeline.RasterizeGlyphOp;
     pub const ResolveFallbackFaceOp = text_pipeline.ResolveFallbackFaceOp;
-    pub const TextStack = text_stack;
-    pub const TextEngine = text_stack.Engine.Engine;
-    pub const TextEngineAnalysisOptions = text_stack.Engine.AnalysisOptions;
-    pub const TextFontSession = text_stack.FontSession.FontSession;
-    pub const TextFaceRecord = text_stack.FontSession.FontFaceRecord;
+    pub const Text = text;
+    pub const TextEngine = text.Engine.Engine;
+    pub const TextEngineAnalysisOptions = text.Engine.AnalysisOptions;
+    pub const TextFontSession = text.FontSession.FontSession;
+    pub const TextFaceRecord = text.FontSession.FontFaceRecord;
     pub const FrameGeometryError = error{
         InvalidSurfaceSize,
         InvalidGridSize,

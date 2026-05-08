@@ -7,7 +7,7 @@ const c = c_api.c;
 pub fn uploadTextSceneRaster(
     self: anytype,
     scene: render_core.TextScene,
-    outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
 ) !usize {
     try ensureAtlasStorageForRasterOutputs(self, outputs);
     if (hasCurrentContext()) try ensureAtlasTexture(self);
@@ -36,7 +36,7 @@ pub fn clearAtlasCache(self: anytype) void {
 
 pub fn ensureAtlasStorageForRasterOutputs(
     self: anytype,
-    outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
 ) !void {
     var need_w = @max(self.config.cell_px.width, 1);
     var need_h = @max(self.config.cell_px.height, 1);
@@ -152,7 +152,7 @@ pub fn ensureAtlasTexture(self: anytype) !void {
 pub fn textSceneSlotCached(
     self: anytype,
     slot: u32,
-    output: render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    output: render_core.Text.Rasterizer.RasterSpriteOutput,
 ) bool {
     const idx = @as(usize, slot);
     if (idx >= self.atlas_slot_sprite_key.len) return false;
@@ -165,7 +165,7 @@ pub fn textSceneSlotCached(
 pub fn copyRasterOutputToAtlas(
     self: anytype,
     slot: u32,
-    output: render_core.TextStack.Rasterizer.RasterSpriteOutput,
+    output: render_core.Text.Rasterizer.RasterSpriteOutput,
 ) void {
     if (self.atlas_pixels.len == 0) return;
     const slot_idx = @as(usize, slot);

@@ -68,7 +68,7 @@ pub const ShapeRunCache = struct {
         allocator: std.mem.Allocator,
         key: ShapeRunKey,
         run: render_core.ResolvedRun,
-    ) !?render_core.TextStack.ShapeRun.OwnedShapedRun {
+    ) !?render_core.Text.ShapeRun.OwnedShapedRun {
         const cached = self.map.get(key) orelse return null;
         const glyphs = try allocator.alloc(render_core.GlyphInstance, cached.len);
         for (cached, 0..) |glyph, idx| {
@@ -84,7 +84,7 @@ pub const ShapeRunCache = struct {
         return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
     }
 
-    pub fn putRun(self: *ShapeRunCache, key: ShapeRunKey, run: render_core.TextStack.ShapeRun.OwnedShapedRun) !void {
+    pub fn putRun(self: *ShapeRunCache, key: ShapeRunKey, run: render_core.Text.ShapeRun.OwnedShapedRun) !void {
         const templates = try self.allocator.alloc(CachedGlyph, run.glyphs.len);
         errdefer self.allocator.free(templates);
         for (run.glyphs, 0..) |glyph, idx| {

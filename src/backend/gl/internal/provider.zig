@@ -62,7 +62,7 @@ pub fn providerShapeRun(
     text_cache_view: render_core.LineTextCache,
     clusters: []const render_core.CellCluster,
     cell_metrics: render_core.CellMetrics,
-) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const start = @as(usize, @intCast(run.run.cluster_start));
     const count = @as(usize, @intCast(run.run.cluster_count));
@@ -102,7 +102,7 @@ fn shapeRunViaProviderOrFallback(
     cell_metrics: render_core.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
     const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse {
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
     };
@@ -149,7 +149,7 @@ fn shapeRunViaProviderOrFallback(
         const pos = positions[idx];
         const cluster_cp_idx = @min(@as(usize, info.cluster), cluster_map.items.len - 1);
         const cluster_idx = cluster_map.items[cluster_cp_idx];
-        const shaped_advance = render_core.TextStack.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
+        const shaped_advance = render_core.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
         const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[cluster_idx].first_cp))
             @max(shaped_advance, glyphVisualWidthPx(shaped_face.face, info.codepoint))
         else
@@ -199,7 +199,7 @@ pub fn providerRasterizeSprite(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
     req: render_core.SpriteRasterRequest,
-) anyerror!render_core.TextStack.Rasterizer.RasterSpriteOutput {
+) anyerror!render_core.Text.Rasterizer.RasterSpriteOutput {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const width = @max(req.width_px, 1);
     const height = @max(req.height_px, 1);
@@ -351,7 +351,7 @@ pub fn deriveCellMetrics(self: anytype) render_core.CellMetrics {
             return cellMetricsFromFace(face, self.config.font_size_px);
         }
     }
-    return render_core.TextStack.Metrics.defaultCellMetrics(self.config.font_size_px);
+    return render_core.Text.Metrics.defaultCellMetrics(self.config.font_size_px);
 }
 
 pub fn configuredCellMetrics(self: anytype) render_core.CellMetrics {
@@ -374,7 +374,7 @@ pub fn deriveCellSize(self: anytype) render_core.CellSize {
 }
 
 pub fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
-    return render_core.TextStack.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
+    return render_core.Text.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
 }
 
 fn fallbackFaceId(index: usize) u32 {
@@ -401,7 +401,7 @@ fn fallbackProviderShapeRun(
     cell_metrics: render_core.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
     const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
     errdefer allocator.free(glyphs);
     for (clusters[start..end], 0..) |cluster, idx| {
@@ -538,7 +538,7 @@ fn glyphAdvanceFromFace(self: anytype, face: FtFace, glyph_id: u32, cell_metrics
     if (!setFacePixelHeight(self, face)) return @floatFromInt(cell_metrics.cell_w_px);
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return @floatFromInt(cell_metrics.cell_w_px);
     if (face.*.glyph == null) return @floatFromInt(cell_metrics.cell_w_px);
-    return render_core.TextStack.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
+    return render_core.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
 }
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
@@ -565,10 +565,10 @@ fn setFacePixelHeight(self: anytype, face: FtFace) bool {
 }
 
 fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render_core.CellMetrics {
-    return render_core.TextStack.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
+    return render_core.Text.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
 }
 
-fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.TextStack.Metrics.FaceMetrics26Dot6 {
+fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.Text.Metrics.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
     return .{
         .ascender = @intCast(metrics.ascender),
@@ -772,7 +772,7 @@ fn resetFallbackFaces(self: anytype) void {
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
-    render_core.TextStack.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
+    render_core.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
 }
 

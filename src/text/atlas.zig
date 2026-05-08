@@ -1,5 +1,5 @@
-//! Responsibility: own shared atlas math for the render-core text stack.
-//! Ownership: render-core text stack.
+//! Responsibility: own shared atlas math for the render-core text pipeline.
+//! Ownership: render-core text pipeline.
 //! Reason: keep atlas index math and bounds logic out of backend roots.
 
 /// Text-atlas layout contract shared by backend owners.

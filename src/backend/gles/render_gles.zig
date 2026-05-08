@@ -156,7 +156,7 @@ pub const Backend = struct {
     fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     resolve_counters: render_core.ResolveCounters = .{},
     resolve_stage: render_core.ResolveStage = .style_policy,
-    text_engine: ?render_core.TextStack.Engine.Engine = null,
+    text_engine: ?render_core.Text.Engine.Engine = null,
     face_text_cache: text_cache.FaceTextCache,
     shape_run_cache: text_cache.ShapeRunCache,
 
@@ -294,7 +294,7 @@ pub const Backend = struct {
         return self.resolve_stage;
     }
 
-    pub fn textProvider(self: *Backend) render_core.TextStack.FtHbProvider.Adapter {
+    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.Adapter {
         return .{
             .ctx = self,
             .has_codepoint = providerHasCodepoint,
@@ -303,7 +303,7 @@ pub const Backend = struct {
         };
     }
 
-    pub fn fontSession(self: *Backend, faces: []render_core.TextStack.FontSession.FontFaceRecord) render_core.TextStack.FontSession.FontSession {
+    pub fn fontSession(self: *Backend, faces: []render_core.Text.FontSession.FontFaceRecord) render_core.Text.FontSession.FontSession {
         var len: usize = 0;
         if (faces.len > len) {
             faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
@@ -328,8 +328,8 @@ pub const Backend = struct {
         allocator: std.mem.Allocator,
         cells: []const render_core.CellInput,
         grid: render_core.GridMetrics,
-        faces: []render_core.TextStack.FontSession.FontFaceRecord,
-    ) !render_core.TextStack.Engine.OwnedTextAnalysis {
+        faces: []render_core.Text.FontSession.FontFaceRecord,
+    ) !render_core.Text.Engine.OwnedTextAnalysis {
         return self.analyzeTextCellsOptions(allocator, cells, grid, faces, .{});
     }
 
@@ -338,21 +338,21 @@ pub const Backend = struct {
         allocator: std.mem.Allocator,
         cells: []const render_core.CellInput,
         grid: render_core.GridMetrics,
-        faces: []render_core.TextStack.FontSession.FontFaceRecord,
-        options: render_core.TextStack.Engine.AnalysisOptions,
-    ) !render_core.TextStack.Engine.OwnedTextAnalysis {
+        faces: []render_core.Text.FontSession.FontFaceRecord,
+        options: render_core.Text.Engine.AnalysisOptions,
+    ) !render_core.Text.Engine.OwnedTextAnalysis {
         const engine = try self.ensureTextEngine(allocator);
         return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
 
-    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render_core.TextStack.Engine.OwnedTextAnalysis) BackendError!usize {
+    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render_core.Text.Engine.OwnedTextAnalysis) BackendError!usize {
         return self.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     }
 
     pub fn uploadTextSceneRaster(
         self: *Backend,
         scene: render_core.TextScene,
-        outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+        outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
     ) BackendError!usize {
         try self.ensureAtlasStorageForRasterOutputs(outputs);
         var committed: usize = 0;
@@ -368,7 +368,7 @@ pub const Backend = struct {
     pub fn renderTextScene(
         self: *Backend,
         scene: render_core.TextScene,
-        outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput,
+        outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
     ) !TextSceneRenderReport {
         if (self.closed) return error.BackendClosed;
         const committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
@@ -428,7 +428,7 @@ pub const Backend = struct {
         surface_px: render_core.PixelSize,
         cell_px: render_core.CellSize,
     ) BackendError!RenderReport {
-        var faces: [MaxFallbackFonts + 1]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+        var faces: [MaxFallbackFonts + 1]render_core.Text.FontSession.FontFaceRecord = undefined;
         const scene_report = self.renderFrameStateTextScene(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
         return renderReportFromTextScene(scene_report);
     }
@@ -439,7 +439,7 @@ pub const Backend = struct {
         state: anytype,
         surface_px: render_core.PixelSize,
         cell_px: render_core.CellSize,
-        faces: []render_core.TextStack.FontSession.FontFaceRecord,
+        faces: []render_core.Text.FontSession.FontFaceRecord,
     ) !TextSceneRenderReport {
         try self.resize(surface_px, cell_px);
         const rc = render_core.init(self.config, self.capabilities());
@@ -520,7 +520,7 @@ pub const Backend = struct {
                 return cellMetricsFromFace(face, self.config.font_size_px);
             }
         }
-        return render_core.TextStack.Metrics.defaultCellMetrics(self.config.font_size_px);
+        return render_core.Text.Metrics.defaultCellMetrics(self.config.font_size_px);
     }
 
     fn configuredCellMetrics(self: *Backend) render_core.CellMetrics {
@@ -548,7 +548,7 @@ pub const Backend = struct {
         return self.ensureAtlasStorageSized(need_w, need_h);
     }
 
-    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render_core.TextStack.Rasterizer.RasterSpriteOutput) BackendError!void {
+    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput) BackendError!void {
         var need_w = @max(self.config.cell_px.width, 1);
         var need_h = @max(self.config.cell_px.height, 1);
         for (outputs) |output| {
@@ -628,7 +628,7 @@ pub const Backend = struct {
             self.atlas_slot_height[idx] == height;
     }
 
-    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render_core.TextStack.Rasterizer.RasterSpriteOutput) bool {
+    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render_core.Text.Rasterizer.RasterSpriteOutput) bool {
         const idx = @as(usize, slot);
         if (idx >= self.atlas_slot_sprite_key.len) return false;
         if (idx >= self.atlas_slot_width.len or idx >= self.atlas_slot_height.len) return false;
@@ -681,7 +681,7 @@ pub const Backend = struct {
         self.atlas_slot_height[idx] = height;
     }
 
-    fn copyRasterOutputToAtlas(self: *Backend, slot: u32, output: render_core.TextStack.Rasterizer.RasterSpriteOutput) void {
+    fn copyRasterOutputToAtlas(self: *Backend, slot: u32, output: render_core.Text.Rasterizer.RasterSpriteOutput) void {
         if (self.atlas_pixels.len == 0) return;
         const slot_idx = @as(usize, slot);
         const slot_off = slot_idx * self.atlas_slot_stride;
@@ -848,10 +848,10 @@ pub const Backend = struct {
         if (self.text_engine) |*engine| engine.clearAtlas();
     }
 
-    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.TextStack.Engine.Engine {
+    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.Text.Engine.Engine {
         if (self.text_engine == null) {
             var adapter = self.textProvider();
-            self.text_engine = try render_core.TextStack.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
+            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
         }
         return &self.text_engine.?;
     }
@@ -920,7 +920,7 @@ pub const Backend = struct {
         const bh: usize = @intCast(bitmap.rows);
         const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
         const pitch_is_negative = bitmap.pitch < 0;
-        const placement = render_core.TextStack.Metrics.bitmapPlacement(
+        const placement = render_core.Text.Metrics.bitmapPlacement(
             .{ .cell_w_px = gw, .cell_h_px = gh, .baseline_px = @intCast(computeBaselineFromFace(face, gh)) },
             faceMetricsInput(face, 1),
             glyph.*.bitmap_left,
@@ -995,7 +995,7 @@ fn providerShapeRun(
     text_cache_view: render_core.LineTextCache,
     clusters: []const render_core.CellCluster,
     cell_metrics: render_core.CellMetrics,
-) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const start = @as(usize, @intCast(run.run.cluster_start));
     const count = @as(usize, @intCast(run.run.cluster_count));
@@ -1027,7 +1027,7 @@ fn providerShapeRun(
             .x_advance_px = advance_px,
         };
     }
-    var shaped = render_core.TextStack.ShapeRun.OwnedShapedRun{ .allocator = allocator, .run = run, .glyphs = glyphs };
+    var shaped = render_core.Text.ShapeRun.OwnedShapedRun{ .allocator = allocator, .run = run, .glyphs = glyphs };
     errdefer shaped.deinit();
     try backend.shape_run_cache.putRun(shape_key, shaped);
     return shaped;
@@ -1064,7 +1064,7 @@ fn providerRasterizeSprite(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
     req: render_core.SpriteRasterRequest,
-) anyerror!render_core.TextStack.Rasterizer.RasterSpriteOutput {
+) anyerror!render_core.Text.Rasterizer.RasterSpriteOutput {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const width = @max(req.width_px, 1);
     const height = @max(req.height_px, 1);
@@ -1202,7 +1202,7 @@ fn setFacePixelHeight(self: *const Backend, face: FtFace) bool {
 }
 
 fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
-    return render_core.TextStack.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
+    return render_core.Text.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
 }
 
 fn cellSizeFromFace(face: FtFace, font_size_px: u16) render_core.CellSize {
@@ -1211,10 +1211,10 @@ fn cellSizeFromFace(face: FtFace, font_size_px: u16) render_core.CellSize {
 }
 
 fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render_core.CellMetrics {
-    return render_core.TextStack.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
+    return render_core.Text.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
 }
 
-fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.TextStack.Metrics.FaceMetrics26Dot6 {
+fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.Text.Metrics.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
     return .{
         .ascender = @intCast(metrics.ascender),
@@ -1364,7 +1364,7 @@ fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
-    render_core.TextStack.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
+    render_core.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
 }
 
@@ -1401,7 +1401,7 @@ test "gles backend analyzes text cells through provider-backed engine" {
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
     };
-    var faces: [8]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [8]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 2), analysis.groups.groups.len);
@@ -1419,7 +1419,7 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer analysis.deinit();
     const committed = try backend.uploadTextAnalysisRaster(analysis);
@@ -1443,7 +1443,7 @@ test "gles backend text analysis reuses retained scene atlas for unchanged glyph
     const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
 
     var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer first.deinit();
