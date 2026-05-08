@@ -4,7 +4,8 @@
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");
-const render_batch = @import("../render_batch.zig");
+const render_types = @import("../render_types.zig");
+const scene_mod = @import("scene.zig");
 
 const VS15: u32 = 0xfe0e;
 const VS16: u32 = 0xfe0f;
@@ -69,6 +70,17 @@ pub const OwnedRuns = struct {
     }
 };
 
+pub const LegacySparseCells = struct {
+    text_cache: OwnedLineTextCache,
+    renderable: OwnedRenderableCells,
+
+    pub fn deinit(self: *LegacySparseCells) void {
+        self.renderable.deinit();
+        self.text_cache.deinit();
+        self.* = undefined;
+    }
+};
+
 pub fn singleCodepointText(id: u32, cp: u32) contract.CellText {
     return .{
         .id = .{ .value = id },
@@ -88,7 +100,7 @@ pub fn clusterForCell(text: contract.CellText, first_cell: u32, span: u8, style:
     };
 }
 
-pub fn buildLineTextCacheFromLegacy(allocator: std.mem.Allocator, cells: []const render_batch.CellInput) !OwnedLineTextCache {
+pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const render_types.CellInput) !OwnedLineTextCache {
     const texts = try allocator.alloc(contract.CellText, cells.len);
     errdefer allocator.free(texts);
     const codepoints = try allocator.alloc(u32, cells.len);
@@ -104,6 +116,87 @@ pub fn buildLineTextCacheFromLegacy(allocator: std.mem.Allocator, cells: []const
     }
 
     return .{ .allocator = allocator, .texts = texts, .codepoints = codepoints };
+}
+
+pub fn buildSparseCellsWithDamage(
+    allocator: std.mem.Allocator,
+    cells: []const render_types.CellInput,
+    grid_metrics: contract.GridMetrics,
+    damage: scene_mod.DamageInput,
+) !LegacySparseCells {
+    var count: usize = 0;
+    for (cells, 0..) |cell, idx| {
+        if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
+        count += 1;
+    }
+
+    const renderable = try allocator.alloc(contract.RenderableCell, count);
+    errdefer allocator.free(renderable);
+    var unique_codepoints = std.AutoHashMap(u32, u32).init(allocator);
+    defer unique_codepoints.deinit();
+    var unique_count: usize = 0;
+
+    for (cells, 0..) |cell, idx| {
+        if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
+        const entry = try unique_codepoints.getOrPut(cell.codepoint);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = @intCast(unique_count);
+            unique_count += 1;
+        }
+    }
+
+    const texts = try allocator.alloc(contract.CellText, unique_count);
+    errdefer allocator.free(texts);
+    const codepoints = try allocator.alloc(u32, unique_count);
+    errdefer allocator.free(codepoints);
+
+    var iterator = unique_codepoints.iterator();
+    while (iterator.next()) |entry| {
+        const text_idx = @as(usize, @intCast(entry.value_ptr.*));
+        codepoints[text_idx] = entry.key_ptr.*;
+        texts[text_idx] = .{
+            .id = .{ .value = entry.value_ptr.* },
+            .first_cp = entry.key_ptr.*,
+            .codepoints = codepoints[text_idx .. text_idx + 1],
+        };
+    }
+
+    var out_idx: usize = 0;
+    for (cells, 0..) |cell, idx| {
+        if (cell.continuation) continue;
+        const first_cell: u32 = @intCast(idx);
+        const span = inferredCellSpan(cells, idx);
+        if (!includeSpan(damage, grid_metrics, first_cell, span)) continue;
+        const text_id = unique_codepoints.get(cell.codepoint).?;
+        renderable[out_idx] = .{
+            .text_id = .{ .value = text_id },
+            .first_cell = first_cell,
+            .cell_span = span,
+            .style = .regular,
+            .presentation = .any,
+            .fg = cell.fg,
+            .bg = cell.bg,
+            .underline_color = cell.underline_color,
+            .underline_style = switch (cell.underline_style) {
+                .straight => .straight,
+                .double => .double,
+                .curly => .curly,
+                .dotted => .dotted,
+                .dashed => .dashed,
+            },
+            .underline = cell.underline,
+            .strikethrough = cell.strikethrough,
+            .continuation = false,
+        };
+        out_idx += 1;
+    }
+
+    return .{
+        .text_cache = .{ .allocator = allocator, .texts = texts, .codepoints = codepoints },
+        .renderable = .{ .allocator = allocator, .cells = renderable },
+    };
 }
 
 pub fn buildLineTextCacheFromInputs(allocator: std.mem.Allocator, inputs: []const CellTextInput) !OwnedLineTextCache {
@@ -155,9 +248,9 @@ fn findText(texts: []const contract.CellText, cps: []const u32) ?usize {
     return null;
 }
 
-pub fn buildRenderableCellsFromLegacy(
+pub fn buildRenderableCellsFromCells(
     allocator: std.mem.Allocator,
-    cells: []const render_batch.CellInput,
+    cells: []const render_types.CellInput,
     cache: contract.LineTextCache,
 ) !OwnedRenderableCells {
     const out = try allocator.alloc(contract.RenderableCell, cells.len);
@@ -168,7 +261,7 @@ pub fn buildRenderableCellsFromLegacy(
         out[idx] = .{
             .text_id = text.id,
             .first_cell = @intCast(idx),
-            .cell_span = inferredLegacyCellSpan(cells, idx),
+            .cell_span = inferredCellSpan(cells, idx),
             .style = .regular,
             .presentation = .any,
             .fg = cell.fg,
@@ -229,9 +322,20 @@ pub fn detectPresentation(cps: []const u32, fallback: contract.TextPresentation)
 }
 
 pub fn extractClusters(allocator: std.mem.Allocator, cells: []const contract.RenderableCell, cache: contract.LineTextCache) !OwnedClusters {
+    return extractClustersWithDamage(allocator, cells, cache, .{ .cols = @intCast(@max(cells.len, 1)), .rows = 1 }, .{});
+}
+
+pub fn extractClustersWithDamage(
+    allocator: std.mem.Allocator,
+    cells: []const contract.RenderableCell,
+    cache: contract.LineTextCache,
+    grid_metrics: contract.GridMetrics,
+    damage: scene_mod.DamageInput,
+) !OwnedClusters {
     var count: usize = 0;
     for (cells) |cell| {
         if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
         const text = textForCell(cell, cache);
         if (isBlankText(text)) continue;
         count += 1;
@@ -242,6 +346,7 @@ pub fn extractClusters(allocator: std.mem.Allocator, cells: []const contract.Ren
     var out_idx: usize = 0;
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
         const text = textForCell(cell, cache);
         if (isBlankText(text)) continue;
         clusters[out_idx] = .{
@@ -258,6 +363,24 @@ pub fn extractClusters(allocator: std.mem.Allocator, cells: []const contract.Ren
     return .{ .allocator = allocator, .clusters = clusters };
 }
 
+fn includeSpan(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
+    if (damage.full) return true;
+    const row_count = @as(usize, grid_metrics.rows);
+    const valid = damage.dirty_rows.len == row_count and
+        damage.dirty_cols_start.len == row_count and
+        damage.dirty_cols_end.len == row_count;
+    if (!valid) return true;
+
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const row = @as(usize, @intCast(first_cell / cols));
+    if (row >= damage.dirty_rows.len or !damage.dirty_rows[row]) return false;
+    const start_col = @as(u16, @intCast(first_cell % cols));
+    const end_col = start_col +| (@max(cell_span, 1) - 1);
+    const dirty_start = damage.dirty_cols_start[row];
+    const dirty_end = damage.dirty_cols_end[row];
+    return !(end_col < dirty_start or start_col > dirty_end);
+}
+
 fn textForCell(cell: contract.RenderableCell, cache: contract.LineTextCache) contract.CellText {
     const text_idx = @as(usize, @intCast(cell.text_id.value));
     if (text_idx < cache.texts.len) return cache.texts[text_idx];
@@ -272,7 +395,7 @@ fn isBlankText(text: contract.CellText) bool {
     return true;
 }
 
-fn inferredLegacyCellSpan(cells: []const render_batch.CellInput, idx: usize) u8 {
+fn inferredCellSpan(cells: []const render_types.CellInput, idx: usize) u8 {
     var span: usize = 1;
     while (idx + span < cells.len and cells[idx + span].continuation) : (span += 1) {}
     return @intCast(@min(span, std.math.maxInt(u8)));
@@ -337,19 +460,19 @@ test "single codepoint text preserves first codepoint" {
     try @import("std").testing.expectEqual(@as(u32, 'A'), text.first_cp);
 }
 
-test "legacy cells build text cache renderable cells clusters and runs" {
+test "cell inputs build text cache renderable cells clusters and runs" {
     const allocator = std.testing.allocator;
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
         .{ .codepoint = 'C', .fg = white, .bg = black, .continuation = true },
     };
 
-    var cache = try buildLineTextCacheFromLegacy(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromLegacy(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -364,17 +487,17 @@ test "legacy cells build text cache renderable cells clusters and runs" {
 
 test "blank cells do not produce text clusters" {
     const allocator = std.testing.allocator;
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
         .{ .codepoint = ' ', .fg = white, .bg = black },
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black },
     };
 
-    var cache = try buildLineTextCacheFromLegacy(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromLegacy(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -386,17 +509,17 @@ test "blank cells do not produce text clusters" {
 
 test "continuation cells expand base cell spans" {
     const allocator = std.testing.allocator;
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
         .{ .codepoint = 0x4f60, .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
         .{ .codepoint = 'x', .fg = white, .bg = black },
     };
 
-    var cache = try buildLineTextCacheFromLegacy(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromLegacy(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -408,10 +531,88 @@ test "continuation cells expand base cell spans" {
     try std.testing.expectEqual(@as(u32, 2), clusters.clusters[1].first_cell);
 }
 
+test "partial damage filters clean clusters before shaping" {
+    const allocator = std.testing.allocator;
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
+        .{ .codepoint = 'A', .fg = white, .bg = black },
+        .{ .codepoint = 'B', .fg = white, .bg = black },
+        .{ .codepoint = 'C', .fg = white, .bg = black },
+        .{ .codepoint = 'D', .fg = white, .bg = black },
+    };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_starts = [_]u16{ 0, 0 };
+    const dirty_ends = [_]u16{ 0, 0 };
+
+    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
+    defer cache.deinit();
+    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
+    defer renderable.deinit();
+    var clusters = try extractClustersWithDamage(allocator, renderable.cells, cache.view(), .{ .cols = 2, .rows = 2 }, .{
+        .full = false,
+        .dirty_rows = &dirty_rows,
+        .dirty_cols_start = &dirty_starts,
+        .dirty_cols_end = &dirty_ends,
+    });
+    defer clusters.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), clusters.clusters.len);
+    try std.testing.expectEqual(@as(u32, 2), clusters.clusters[0].first_cell);
+    try std.testing.expectEqual(@as(u32, 'C'), clusters.clusters[0].first_cp);
+}
+
+test "sparse cells keep only damaged base cells" {
+    const allocator = std.testing.allocator;
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
+        .{ .codepoint = 'A', .fg = white, .bg = black },
+        .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
+        .{ .codepoint = 'B', .fg = white, .bg = black },
+        .{ .codepoint = 'C', .fg = white, .bg = black },
+    };
+    const dirty_rows = [_]bool{ true, false };
+    const dirty_starts = [_]u16{ 0, 0 };
+    const dirty_ends = [_]u16{ 1, 0 };
+
+    var sparse = try buildSparseCellsWithDamage(allocator, &legacy, .{ .cols = 2, .rows = 2 }, .{
+        .full = false,
+        .dirty_rows = &dirty_rows,
+        .dirty_cols_start = &dirty_starts,
+        .dirty_cols_end = &dirty_ends,
+    });
+    defer sparse.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), sparse.renderable.cells.len);
+    try std.testing.expectEqual(@as(usize, 1), sparse.text_cache.texts.len);
+    try std.testing.expectEqual(@as(u32, 0), sparse.renderable.cells[0].first_cell);
+    try std.testing.expectEqual(@as(u8, 2), sparse.renderable.cells[0].cell_span);
+    try std.testing.expectEqual(@as(u32, 'A'), sparse.text_cache.texts[0].first_cp);
+}
+
+test "sparse cells intern repeated codepoints" {
+    const allocator = std.testing.allocator;
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const legacy = [_]render_types.CellInput{
+        .{ .codepoint = 'Z', .fg = white, .bg = black },
+        .{ .codepoint = 'Z', .fg = white, .bg = black },
+        .{ .codepoint = 'Y', .fg = white, .bg = black },
+    };
+
+    var sparse = try buildSparseCellsWithDamage(allocator, &legacy, .{ .cols = 3, .rows = 1 }, .{ .full = true });
+    defer sparse.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), sparse.text_cache.texts.len);
+    try std.testing.expectEqual(sparse.renderable.cells[0].text_id.value, sparse.renderable.cells[1].text_id.value);
+    try std.testing.expect(sparse.renderable.cells[2].text_id.value != sparse.renderable.cells[0].text_id.value);
+}
+
 test "rich cell text interning deduplicates codepoint sequences" {
     const allocator = std.testing.allocator;
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const underline_i = [_]u32{ 'i', 0x0332, 0x0308 };
     const inputs = [_]CellTextInput{
         .{ .codepoints = &underline_i, .fg = white, .bg = black },
@@ -432,8 +633,8 @@ test "rich cell text interning deduplicates codepoint sequences" {
 
 test "rich cell text detects emoji and text presentation selectors" {
     const allocator = std.testing.allocator;
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const text_x = [_]u32{ 0x2716, VS15 };
     const emoji_x = [_]u32{ 0x2716, VS16 };
     const inputs = [_]CellTextInput{

@@ -13,7 +13,7 @@ pub const TextScene = contract.TextScene;
 pub const TextSpriteDraw = contract.TextSpriteDraw;
 
 pub fn empty(cells: []const contract.RenderableCell) TextScene {
-    return .{ .cells = cells, .background_draws = &.{}, .sprite_draws = &.{}, .decoration_draws = &.{}, .cursor_draws = &.{}, .missing = &.{} };
+    return .{ .cells = cells, .clear_draws = &.{}, .background_draws = &.{}, .sprite_draws = &.{}, .decoration_draws = &.{}, .cursor_draws = &.{}, .missing = &.{} };
 }
 
 pub const CursorShape = enum {
@@ -48,6 +48,7 @@ pub const OwnedTextScene = struct {
     scene: contract.TextScene,
 
     pub fn deinit(self: *OwnedTextScene) void {
+        self.allocator.free(self.scene.clear_draws);
         self.allocator.free(self.scene.background_draws);
         self.allocator.free(self.scene.sprite_draws);
         self.allocator.free(self.scene.decoration_draws);
@@ -112,6 +113,8 @@ pub fn buildSceneWithAtlasCacheOptions(
     errdefer allocator.free(draws);
     var background_draws = std.ArrayList(contract.TextBackgroundDraw).empty;
     errdefer background_draws.deinit(allocator);
+    var clear_draws = std.ArrayList(contract.TextClearDraw).empty;
+    errdefer clear_draws.deinit(allocator);
     var decoration_draws = std.ArrayList(contract.TextDecorationDraw).empty;
     errdefer decoration_draws.deinit(allocator);
     var raster_requests = std.ArrayList(contract.SpriteRasterRequest).empty;
@@ -158,6 +161,7 @@ pub fn buildSceneWithAtlasCacheOptions(
 
     const sprite_draws = try allocator.realloc(draws, out_idx);
 
+    try appendClearDraws(allocator, &clear_draws, cells, cell_metrics, grid_metrics, damage);
     try appendBackgroundDraws(allocator, &background_draws, cells, cell_metrics, grid_metrics, damage);
     try appendDecorationDraws(allocator, &decoration_draws, cells, cell_metrics, grid_metrics, damage);
 
@@ -165,6 +169,7 @@ pub fn buildSceneWithAtlasCacheOptions(
         .cells = cells,
         .full_redraw = damage.full,
         .scroll_up_px = damage.scroll_up_px,
+        .clear_draws = try clear_draws.toOwnedSlice(allocator),
         .background_draws = try background_draws.toOwnedSlice(allocator),
         .sprite_draws = sprite_draws,
         .decoration_draws = try decoration_draws.toOwnedSlice(allocator),
@@ -250,24 +255,101 @@ fn appendBackgroundDraws(
     damage: NormalizedDamage,
 ) !void {
     const cols = @max(@as(u32, grid_metrics.cols), 1);
-    for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (cell.bg.a == 0) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-        const col = cell.first_cell % cols;
+    var idx: usize = 0;
+    while (idx < cells.len) {
+        const cell = cells[idx];
+        if (cell.continuation or !includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) {
+            idx += 1;
+            continue;
+        }
+        const fill_color = cell.bg;
+        if (fill_color.a == 0) {
+            idx += 1;
+            continue;
+        }
+
         const row = cell.first_cell / cols;
+        const span_first_cell = cell.first_cell;
+        var span_cell_count: u32 = @max(cell.cell_span, 1);
+        var next_idx = idx + 1;
+        var span_end_cell = span_first_cell + span_cell_count;
+        while (next_idx < cells.len) : (next_idx += 1) {
+            const next = cells[next_idx];
+            if (next.continuation) break;
+            if (!includeSpan(damage, grid_metrics, next.first_cell, next.cell_span)) break;
+            if (!sameRgba8(next.bg, fill_color)) break;
+            if (next.first_cell / cols != row) break;
+            if (next.first_cell != span_end_cell) break;
+            const next_span = @max(next.cell_span, 1);
+            span_cell_count += next_span;
+            span_end_cell += next_span;
+        }
+
+        const col = span_first_cell % cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         try out.append(allocator, .{
             .x_px = base_x,
             .y_px = base_y,
-            .width_px = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px)),
+            .width_px = @intCast(span_cell_count * @as(u32, cell_metrics.cell_w_px)),
             .height_px = cell_metrics.cell_h_px,
-            .color = cell.bg,
-            .first_cell = cell.first_cell,
-            .cell_span = cell.cell_span,
+            .color = fill_color,
+            .first_cell = span_first_cell,
+            .cell_span = @intCast(@min(span_cell_count, @as(u32, std.math.maxInt(u8)))),
+        });
+        idx = next_idx;
+    }
+}
+
+fn appendClearDraws(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(contract.TextClearDraw),
+    cells: []const contract.RenderableCell,
+    cell_metrics: contract.CellMetrics,
+    grid_metrics: contract.GridMetrics,
+    damage: NormalizedDamage,
+) !void {
+    if (damage.full) return;
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const rows = @as(usize, grid_metrics.rows);
+    var row: usize = 0;
+    while (row < rows and row < damage.dirty_rows.len) : (row += 1) {
+        if (!damage.dirty_rows[row]) continue;
+        const start_col = @min(damage.dirty_cols_start[row], @as(u16, @intCast(cols - 1)));
+        const end_col = @min(damage.dirty_cols_end[row], @as(u16, @intCast(cols - 1)));
+        if (end_col < start_col) continue;
+        const first_cell = @as(u32, @intCast(row)) * cols + @as(u32, start_col);
+        const span_cells = @as(u32, end_col - start_col) + 1;
+        try out.append(allocator, .{
+            .x_px = @as(i32, @intCast(start_col)) * @as(i32, @intCast(cell_metrics.cell_w_px)),
+            .y_px = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px)),
+            .width_px = @intCast(span_cells * @as(u32, cell_metrics.cell_w_px)),
+            .height_px = cell_metrics.cell_h_px,
+            .color = clearColorForSpan(cells, grid_metrics, first_cell, @intCast(@min(span_cells, @as(u32, std.math.maxInt(u8))))),
+            .first_cell = first_cell,
+            .cell_span = @intCast(@min(span_cells, @as(u32, std.math.maxInt(u8)))),
         });
     }
+}
+
+fn clearColorForSpan(cells: []const contract.RenderableCell, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) contract.Rgba8 {
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const span_row = first_cell / cols;
+    const start_col = first_cell % cols;
+    const end_col = start_col + @as(u32, @max(cell_span, 1)) - 1;
+    for (cells) |cell| {
+        if (cell.continuation or cell.bg.a != 0) continue;
+        if (cell.first_cell / cols != span_row) continue;
+        const cell_start = cell.first_cell % cols;
+        const cell_end = cell_start + @as(u32, @max(cell.cell_span, 1)) - 1;
+        if (cell_end < start_col or cell_start > end_col) continue;
+        return .{ .r = cell.bg.r, .g = cell.bg.g, .b = cell.bg.b, .a = 255 };
+    }
+    return .{ .r = 0, .g = 0, .b = 0, .a = 255 };
+}
+
+fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
+    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
 fn appendDecorationDraws(
@@ -291,7 +373,7 @@ fn appendDecorationDraws(
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
         if (cell.underline) try appendUnderlineDraws(allocator, out, cell, base_x, base_y + deco.underline_y_px, width_px, deco.underline_h_px);
-        if (cell.strikethrough) try out.append(allocator, .{
+        if (cell.strikethrough) try appendMergedDecorationDraw(allocator, out, .{
             .kind = .strikethrough,
             .x_px = base_x,
             .y_px = base_y + deco.strikethrough_y_px,
@@ -305,7 +387,26 @@ fn appendDecorationDraws(
 }
 
 fn appendDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
-    try out.append(allocator, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+    try appendMergedDecorationDraw(allocator, out, .{ .kind = .underline, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
+}
+
+fn appendMergedDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), draw: contract.TextDecorationDraw) !void {
+    if (out.items.len > 0) {
+        const last = &out.items[out.items.len - 1];
+        const last_end_x = last.x_px + @as(i32, @intCast(last.width_px));
+        if (last.kind == draw.kind and
+            last.y_px == draw.y_px and
+            last.height_px == draw.height_px and
+            sameRgba8(last.color, draw.color) and
+            last_end_x == draw.x_px)
+        {
+            const merged_cell_span = @as(u32, last.cell_span) + @as(u32, draw.cell_span);
+            last.width_px +%= draw.width_px;
+            last.cell_span = @intCast(@min(merged_cell_span, @as(u32, std.math.maxInt(u8))));
+            return;
+        }
+    }
+    try out.append(allocator, draw);
 }
 
 fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16) !void {
@@ -344,9 +445,25 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
 }
 
 fn foregroundForGroup(cells: []const contract.RenderableCell, first_cell: u32) contract.Rgba8 {
-    const idx = @as(usize, @intCast(first_cell));
-    if (idx < cells.len) return cells[idx].fg;
+    if (findCellByFirstCell(cells, first_cell)) |cell| return cell.fg;
     return .{ .r = 255, .g = 255, .b = 255, .a = 255 };
+}
+
+fn findCellByFirstCell(cells: []const contract.RenderableCell, first_cell: u32) ?contract.RenderableCell {
+    var lo: usize = 0;
+    var hi: usize = cells.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const cell = cells[mid];
+        if (cell.first_cell < first_cell) {
+            lo = mid + 1;
+        } else if (cell.first_cell > first_cell) {
+            hi = mid;
+        } else {
+            return cell;
+        }
+    }
+    return null;
 }
 
 fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics, grid_metrics: contract.GridMetrics, next_group_cell: ?u32) contract.GlyphGroup {
@@ -434,6 +551,62 @@ test "scene emits background draws from non-continuation cells" {
     try std.testing.expectEqual(@as(u8, 1), owned.scene.background_draws[0].color.r);
 }
 
+test "scene merges adjacent same-color background cells on one row" {
+    const bg = contract.Rgba8{ .r = 1, .g = 2, .b = 3, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg, .bg = bg },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg, .bg = bg },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg, .bg = bg },
+    };
+    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.background_draws.len);
+    try std.testing.expectEqual(@as(u16, 24), owned.scene.background_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 3), owned.scene.background_draws[0].cell_span);
+}
+
+test "scene keeps distinct background spans across color changes" {
+    const bg_a = contract.Rgba8{ .r = 1, .g = 2, .b = 3, .a = 255 };
+    const bg_b = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_a, .bg = bg_a },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_a, .bg = bg_a },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_b, .bg = bg_b },
+        .{ .text_id = .{ .value = 3 }, .first_cell = 3, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_a, .bg = bg_a },
+    };
+    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 4, .rows = 1 });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 3), owned.scene.background_draws.len);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.background_draws[0].width_px);
+    try std.testing.expectEqual(@as(i32, 16), owned.scene.background_draws[1].x_px);
+    try std.testing.expectEqual(@as(i32, 24), owned.scene.background_draws[2].x_px);
+}
+
+test "scene emits explicit clears for transparent default backgrounds on partial damage" {
+    const transparent_bg = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 0 };
+    const fg = contract.Rgba8{ .r = 200, .g = 200, .b = 200, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = fg, .bg = transparent_bg },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = fg, .bg = transparent_bg },
+    };
+    const dirty_rows = [_]bool{true};
+    const dirty_starts = [_]u16{0};
+    const dirty_ends = [_]u16{1};
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 2, .rows = 1 }, .{
+        .damage = .{
+            .full = false,
+            .dirty_rows = &dirty_rows,
+            .dirty_cols_start = &dirty_starts,
+            .dirty_cols_end = &dirty_ends,
+        },
+    });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.clear_draws.len);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.clear_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 255), owned.scene.clear_draws[0].color.a);
+    try std.testing.expectEqual(@as(usize, 0), owned.scene.background_draws.len);
+}
+
 test "scene cursor helper emits shared cursor geometry" {
     const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
     const cell_metrics = contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 };
@@ -488,7 +661,10 @@ test "scene damage filters clean rows and carries scroll reuse pixels" {
     defer owned.deinit();
     try std.testing.expect(!owned.scene.full_redraw);
     try std.testing.expectEqual(@as(u16, 16), owned.scene.scroll_up_px);
-    try std.testing.expectEqual(@as(usize, 2), owned.scene.background_draws.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.clear_draws.len);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.clear_draws[0].width_px);
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.background_draws.len);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.background_draws[0].width_px);
     try std.testing.expectEqual(@as(usize, 1), owned.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(u32, 3), owned.scene.sprite_draws[0].first_cell);
 }
@@ -514,6 +690,33 @@ test "scene emits shared-geometry decoration draws from cells" {
     try std.testing.expectEqual(@as(u16, 16), owned.scene.decoration_draws[0].width_px);
     try std.testing.expectEqual(@as(u8, 9), owned.scene.decoration_draws[0].color.r);
     try std.testing.expectEqual(contract.DecorationKind.strikethrough, owned.scene.decoration_draws[1].kind);
+}
+
+test "scene merges contiguous straight underline spans" {
+    const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .underline = true },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .underline = true },
+        .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .underline = true },
+    };
+    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 3, .rows = 1 });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.decoration_draws.len);
+    try std.testing.expectEqual(@as(u16, 24), owned.scene.decoration_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 3), owned.scene.decoration_draws[0].cell_span);
+}
+
+test "scene merges contiguous strikethrough spans" {
+    const color = contract.Rgba8{ .r = 1, .g = 2, .b = 3, .a = 255 };
+    const cells = [_]contract.RenderableCell{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .strikethrough = true },
+        .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .strikethrough = true },
+    };
+    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 2, .rows = 1 });
+    defer owned.deinit();
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.decoration_draws.len);
+    try std.testing.expectEqual(contract.DecorationKind.strikethrough, owned.scene.decoration_draws[0].kind);
+    try std.testing.expectEqual(@as(u16, 16), owned.scene.decoration_draws[0].width_px);
 }
 
 test "scene carries group placement offsets into sprite draw" {

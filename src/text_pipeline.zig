@@ -50,6 +50,10 @@ pub const ResolveCounters = struct {
     shaped_clusters: u64 = 0,
     resolved_runs: u64 = 0,
     sprite_routes: u64 = 0,
+    face_checks: u64 = 0,
+    face_cache_hits: u64 = 0,
+    shape_requests: u64 = 0,
+    shape_cache_hits: u64 = 0,
 };
 
 pub const TextEngineCounters = struct {

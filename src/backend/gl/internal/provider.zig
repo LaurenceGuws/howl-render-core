@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../../render_core.zig").RenderCore;
+const shared_text_cache = @import("../../shared/text_cache.zig");
 const c_api = @import("c_api.zig");
 const c = c_api.c;
 
@@ -31,6 +32,21 @@ pub fn providerHasCodepoint(comptime Backend: type, ctx: *anyopaque, face_id: re
 }
 
 pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const key = shared_text_cache.FaceTextKey{ .face_id = face_id.value, .text_hash = shared_text_cache.hashCellText(text) };
+    const entry = backend.face_text_cache.map.getOrPut(key) catch return uncachedProviderHasCellText(Backend, ctx, face_id, text);
+    if (entry.found_existing) {
+        backend.resolve_counters.face_cache_hits += 1;
+        return entry.value_ptr.*;
+    }
+
+    backend.resolve_counters.face_checks += 1;
+    const result = uncachedProviderHasCellText(Backend, ctx, face_id, text);
+    entry.value_ptr.* = result;
+    return result;
+}
+
+fn uncachedProviderHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
     for (text.codepoints) |cp| {
         if (cp == 0xfe0e or cp == 0xfe0f) continue;
         if (!providerHasCodepoint(Backend, ctx, face_id, cp)) return false;
@@ -43,7 +59,7 @@ pub fn providerShapeRun(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
     run: render_core.ResolvedRun,
-    text_cache: render_core.LineTextCache,
+    text_cache_view: render_core.LineTextCache,
     clusters: []const render_core.CellCluster,
     cell_metrics: render_core.CellMetrics,
 ) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
@@ -55,10 +71,38 @@ pub fn providerShapeRun(
         return .{ .allocator = allocator, .run = run, .glyphs = try allocator.alloc(render_core.GlyphInstance, 0) };
     }
 
-    if (builtin.target.abi == .android) {
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    backend.resolve_counters.shape_requests += 1;
+    const shape_key = shared_text_cache.ShapeRunKey{
+        .face_id = run.run.font.face_id.value,
+        .run_hash = shared_text_cache.hashRunText(text_cache_view, clusters[start..end]),
+        .cell_w_px = cell_metrics.cell_w_px,
+        .cell_h_px = cell_metrics.cell_h_px,
+        .baseline_px = cell_metrics.baseline_px,
+    };
+    if (try backend.shape_run_cache.getOwnedRun(allocator, shape_key, run)) |cached| {
+        backend.resolve_counters.shape_cache_hits += 1;
+        return cached;
     }
 
+    var shaped = if (builtin.target.abi == .android)
+        try fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end)
+    else
+        try shapeRunViaProviderOrFallback(backend, allocator, run, text_cache_view, clusters, cell_metrics, start, end);
+    errdefer shaped.deinit();
+    try backend.shape_run_cache.putRun(shape_key, shaped);
+    return shaped;
+}
+
+fn shapeRunViaProviderOrFallback(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    text_cache_view: render_core.LineTextCache,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+    start: usize,
+    end: usize,
+) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
     const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse {
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
     };
@@ -72,7 +116,7 @@ pub fn providerShapeRun(
     var cluster_map = std.ArrayList(u32).empty;
     defer cluster_map.deinit(allocator);
     for (clusters[start..end], 0..) |cluster, local_idx| {
-        const text = textForCluster(text_cache, cluster);
+        const text = textForCluster(text_cache_view, cluster);
         const cps = if (text.codepoints.len == 0) &[_]u32{text.first_cp} else text.codepoints;
         try run_codepoints.appendSlice(allocator, cps);
         for (cps) |_| try cluster_map.append(allocator, @intCast(start + local_idx));

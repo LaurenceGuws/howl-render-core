@@ -39,6 +39,17 @@ pub const SpriteRouteHit = struct {
     route: contract.SpecialSpriteRoute,
 };
 
+const ResolveMemoKey = struct {
+    text_id: u32,
+    style: contract.FontStyle,
+    presentation: contract.TextPresentation,
+};
+
+const ResolveMemoValue = union(enum) {
+    hit: font_session.FontFaceRecord,
+    miss,
+};
+
 pub fn resolveClusters(
     allocator: std.mem.Allocator,
     session: font_session.FontSession,
@@ -51,6 +62,8 @@ pub fn resolveClusters(
     errdefer missing_list.deinit(allocator);
     var sprite_routes = std.ArrayList(SpriteRouteHit).empty;
     errdefer sprite_routes.deinit(allocator);
+    var resolve_memo = std.AutoHashMap(ResolveMemoKey, ResolveMemoValue).init(allocator);
+    defer resolve_memo.deinit();
 
     var idx: usize = 0;
     while (idx < clusters.len) {
@@ -63,7 +76,7 @@ pub fn resolveClusters(
         }
 
         const text = textForCluster(text_cache, cluster);
-        const face = resolveFace(session, cluster, text) orelse {
+        const face = (try resolveFaceMemoized(&resolve_memo, session, cluster, text)) orelse {
             try missing_list.append(allocator, .{
                 .codepoint = cluster.first_cp,
                 .style = cluster.style,
@@ -79,7 +92,7 @@ pub fn resolveClusters(
         while (idx < clusters.len) : (idx += 1) {
             const next = clusters[idx];
             if (symbol_map.builtinRoute(next.first_cp) != null) break;
-            const next_face = resolveFace(session, next, textForCluster(text_cache, next)) orelse break;
+            const next_face = (try resolveFaceMemoized(&resolve_memo, session, next, textForCluster(text_cache, next))) orelse break;
             if (next_face.id.value != face.id.value or next.style != cluster.style or next.presentation != cluster.presentation) break;
         }
 
@@ -98,6 +111,30 @@ fn resolveFace(session: font_session.FontSession, cluster: contract.CellCluster,
     if (session.findSymbol(cluster.first_cp)) |face| return face;
     if (session.findStyle(cluster.style, cluster.presentation, text)) |face| return face;
     return session.findFallback(cluster.style, cluster.presentation, text);
+}
+
+fn resolveFaceMemoized(
+    memo: *std.AutoHashMap(ResolveMemoKey, ResolveMemoValue),
+    session: font_session.FontSession,
+    cluster: contract.CellCluster,
+    text: contract.CellText,
+) !?font_session.FontFaceRecord {
+    const key = ResolveMemoKey{
+        .text_id = text.id.value,
+        .style = cluster.style,
+        .presentation = cluster.presentation,
+    };
+    const entry = try memo.getOrPut(key);
+    if (!entry.found_existing) {
+        entry.value_ptr.* = if (resolveFace(session, cluster, text)) |face|
+            .{ .hit = face }
+        else
+            .miss;
+    }
+    return switch (entry.value_ptr.*) {
+        .hit => |face| face,
+        .miss => null,
+    };
 }
 
 fn textForCluster(cache: contract.LineTextCache, cluster: contract.CellCluster) contract.CellText {
@@ -186,4 +223,36 @@ test "resolver uses face provider validation" {
     var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
     defer resolved.deinit();
     try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
+}
+
+test "resolver memoizes repeated text face validation" {
+    const Provider = struct {
+        calls: usize = 0,
+
+        fn has(ctx: *anyopaque, face_id: contract.FontFaceId, text: contract.CellText) bool {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            if (face_id.value == 1 and text.first_cp == 'x') return false;
+            return true;
+        }
+    };
+
+    const faces = [_]font_session.FontFaceRecord{
+        .{ .id = .{ .value = 1 }, .role = .primary, .coverage = .all },
+        .{ .id = .{ .value = 2 }, .role = .fallback, .coverage = .all },
+    };
+    const clusters = [_]contract.CellCluster{
+        .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any },
+        .{ .text_id = .{ .value = 0 }, .first_cell = 1, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any },
+        .{ .text_id = .{ .value = 0 }, .first_cell = 2, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any },
+    };
+    const texts = [_]contract.CellText{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{'x'} }};
+    var provider = Provider{};
+    const session = font_session.FontSession{ .faces = &faces, .provider = .{ .ctx = &provider, .has_cell_text = Provider.has } };
+
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    defer resolved.deinit();
+    try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
+    try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
+    try std.testing.expectEqual(@as(usize, 2), provider.calls);
 }

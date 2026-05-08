@@ -190,6 +190,16 @@ pub const TextBackgroundDraw = struct {
     cell_span: u8,
 };
 
+pub const TextClearDraw = struct {
+    x_px: i32,
+    y_px: i32,
+    width_px: u16,
+    height_px: u16,
+    color: Rgba8,
+    first_cell: u32,
+    cell_span: u8,
+};
+
 pub const TextCursorDraw = struct {
     x_px: i32,
     y_px: i32,
@@ -228,6 +238,7 @@ pub const TextScene = struct {
     cells: []const RenderableCell,
     full_redraw: bool = true,
     scroll_up_px: u16 = 0,
+    clear_draws: []const TextClearDraw = &.{},
     background_draws: []const TextBackgroundDraw = &.{},
     sprite_draws: []const TextSpriteDraw,
     decoration_draws: []const TextDecorationDraw = &.{},

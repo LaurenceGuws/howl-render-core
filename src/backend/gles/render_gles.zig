@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
 const clip_rect = @import("../shared/clip_rect.zig");
+const text_cache = @import("../shared/text_cache.zig");
 const c = @cImport({
     if (builtin.target.abi == .android) {
         @cDefine("_Nonnull", "");
@@ -75,11 +76,11 @@ pub const BackendError = error{
     NoContext,
     TargetTextureUnset,
     FramebufferIncomplete,
-} || render_core.RenderBatchValidationError;
+};
 
-/// Render report returned after processing one render batch.
+/// Render report returned after processing one render pass.
 pub const RenderReport = struct {
-    stats: render_core.RenderBatchStats,
+    stats: render_core.RenderStats,
     pass_index: u64,
     atlas_uploads_committed: usize,
 };
@@ -87,6 +88,7 @@ pub const RenderReport = struct {
 pub const TextSceneRenderReport = struct {
     pass_index: u64,
     raster_uploads_committed: usize,
+    clear_draws: usize,
     background_draws: usize,
     sprite_draws: usize,
     decoration_draws: usize,
@@ -154,15 +156,25 @@ pub const Backend = struct {
     fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     resolve_counters: render_core.ResolveCounters = .{},
     resolve_stage: render_core.ResolveStage = .style_policy,
-    retained_frame: render_core.RetainedFrame = .{},
+    text_engine: ?render_core.TextStack.Engine.Engine = null,
+    face_text_cache: text_cache.FaceTextCache,
+    shape_run_cache: text_cache.ShapeRunCache,
 
     /// Initialize a backend instance from shared backend config.
     pub fn init(config: render_core.BackendConfig) Backend {
-        return .{ .config = config };
+        return .{
+            .config = config,
+            .face_text_cache = text_cache.FaceTextCache.init(std.heap.c_allocator),
+            .shape_run_cache = text_cache.ShapeRunCache.init(std.heap.c_allocator),
+        };
     }
 
     /// Release backend resources and prevent further rendering.
     pub fn deinit(self: *Backend) void {
+        if (self.text_engine) |*engine| {
+            engine.deinit();
+            self.text_engine = null;
+        }
         if (self.atlas_pixels.len > 0) {
             std.heap.c_allocator.free(self.atlas_pixels);
             self.atlas_pixels = &.{};
@@ -196,11 +208,12 @@ pub const Backend = struct {
             self.atlas_slot_has_alpha = &.{};
         }
         self.resetLoadedFace();
+        self.shape_run_cache.deinit();
+        self.face_text_cache.deinit();
         if (self.target_fbo != 0 and hasCurrentContext()) {
             c.glDeleteFramebuffers(1, @ptrCast(&self.target_fbo));
             self.target_fbo = 0;
         }
-        self.retained_frame.deinit(std.heap.c_allocator);
         if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             var texture = self.target_texture.?;
             c.glDeleteTextures(1, @ptrCast(&texture));
@@ -328,10 +341,8 @@ pub const Backend = struct {
         faces: []render_core.TextStack.FontSession.FontFaceRecord,
         options: render_core.TextStack.Engine.AnalysisOptions,
     ) !render_core.TextStack.Engine.OwnedTextAnalysis {
-        var adapter = self.textProvider();
-        var engine = try render_core.TextStack.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
-        defer engine.deinit();
-        return engine.analyzeLegacyCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
+        const engine = try self.ensureTextEngine(allocator);
+        return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
 
     pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render_core.TextStack.Engine.OwnedTextAnalysis) BackendError!usize {
@@ -378,6 +389,7 @@ pub const Backend = struct {
         return .{
             .pass_index = self.pass_count,
             .raster_uploads_committed = committed_uploads,
+            .clear_draws = scene.clear_draws.len,
             .background_draws = scene.background_draws.len,
             .sprite_draws = scene.sprite_draws.len,
             .decoration_draws = scene.decoration_draws.len,
@@ -408,37 +420,7 @@ pub const Backend = struct {
         }
     }
 
-    /// Validate and render a legacy batch against backend config/capability.
-    pub fn renderBatch(self: *Backend, batch: render_core.RenderBatch) BackendError!RenderReport {
-        if (self.closed) return error.BackendClosed;
-        const rc = render_core.init(self.config, self.capabilities());
-        try rc.validateRenderBatch(batch);
-        try self.resize(batch.surface_px, batch.cell_px);
-        const committed_uploads = try self.uploadAtlas(batch);
-        if (hasCurrentContext()) {
-            if (self.target_texture == null and self.config.target_texture != 0) {
-                self.target_texture = self.config.target_texture;
-                self.surface_epoch +%= 1;
-            }
-            try self.ensureOwnedTargetTexture();
-            if (self.target_texture == null) return error.TargetTextureUnset;
-            try self.beginTargetPass();
-            defer self.endTargetPass();
-            drawBatch(self, batch);
-        } else if (!builtin.is_test) {
-            return error.NoContext;
-        }
-        self.pass_count += 1;
-        var report = rc.summarizeRenderBatch(batch);
-        report.atlas_uploads = committed_uploads;
-        return .{
-            .stats = report,
-            .pass_index = self.pass_count,
-            .atlas_uploads_committed = committed_uploads,
-        };
-    }
-
-    /// Build batch from VT state and render it.
+    /// Canonical active render path for frame snapshots.
     pub fn renderFrameState(
         self: *Backend,
         allocator: std.mem.Allocator,
@@ -466,29 +448,6 @@ pub const Backend = struct {
         var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
         defer analysis.deinit();
         return self.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
-    }
-
-    pub fn prepareFrameState(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
-    ) BackendError!render_core.OwnedRenderBatch {
-        try self.resize(surface_px, cell_px);
-        const rc = render_core.init(self.config, self.capabilities());
-        return rc.vtStateToRenderBatch(allocator, state, surface_px, cell_px) catch |err| return mapTextSceneRenderError(err);
-    }
-
-    pub fn prepareRetainedFrameState(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: SurfaceFrameData,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
-    ) BackendError!render_core.OwnedRenderBatch {
-        try self.resize(surface_px, cell_px);
-        return self.retained_frame.prepareBatch(allocator, allocator, state, surface_px, cell_px, render_core.defaultTheme, self.capabilities()) catch |err| return mapTextSceneRenderError(err);
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
@@ -581,30 +540,6 @@ pub const Backend = struct {
     fn deriveCellSize(self: *Backend) render_core.CellSize {
         const cell = self.deriveCellMetrics();
         return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
-    }
-
-    fn uploadAtlas(self: *Backend, batch: render_core.RenderBatch) BackendError!usize {
-        if (batch.atlas_uploads.len == 0) return 0;
-        try self.ensureAtlasStorage();
-        var committed: usize = 0;
-        var fast_hits: usize = 0;
-        var resolved_hits: usize = 0;
-        for (batch.atlas_uploads) |upload| {
-            if (self.findCachedSlotForDraw(upload.codepoint, upload.width, upload.height) != null) {
-                fast_hits += 1;
-                continue;
-            }
-            const key = self.resolveGlyphKey(upload.codepoint) orelse missingGlyphKey(upload.codepoint);
-            if (self.findCachedSlot(key, upload.width, upload.height) != null) {
-                resolved_hits += 1;
-                continue;
-            }
-            const slot = self.allocateSlot() orelse continue;
-            self.rasterizeSlot(slot, upload.codepoint, upload.width, upload.height);
-            self.markSlotCached(slot, key, upload.width, upload.height);
-            committed += 1;
-        }
-        return committed;
     }
 
     fn ensureAtlasStorage(self: *Backend) BackendError!void {
@@ -822,6 +757,8 @@ pub const Backend = struct {
 
     fn resetLoadedFace(self: *Backend) void {
         self.resetFallbackFaces();
+        self.face_text_cache.clear();
+        self.shape_run_cache.clear();
         if (self.ft_face != null) {
             if (self.hb_font != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(self.hb_font.?);
@@ -908,6 +845,15 @@ pub const Backend = struct {
         if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
         if (self.atlas_slot_has_alpha.len > 0) @memset(self.atlas_slot_has_alpha, false);
         self.atlas_next_slot = 0;
+        if (self.text_engine) |*engine| engine.clearAtlas();
+    }
+
+    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.TextStack.Engine.Engine {
+        if (self.text_engine == null) {
+            var adapter = self.textProvider();
+            self.text_engine = try render_core.TextStack.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
+        }
+        return &self.text_engine.?;
     }
 
     fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
@@ -1020,6 +966,21 @@ fn providerHasCodepoint(ctx: *anyopaque, face_id: render_core.FontFaceId, codepo
 }
 
 fn providerHasCellText(ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const key = text_cache.FaceTextKey{ .face_id = face_id.value, .text_hash = text_cache.hashCellText(text) };
+    const entry = backend.face_text_cache.map.getOrPut(key) catch return uncachedProviderHasCellText(ctx, face_id, text);
+    if (entry.found_existing) {
+        backend.resolve_counters.face_cache_hits += 1;
+        return entry.value_ptr.*;
+    }
+
+    backend.resolve_counters.face_checks += 1;
+    const result = uncachedProviderHasCellText(ctx, face_id, text);
+    entry.value_ptr.* = result;
+    return result;
+}
+
+fn uncachedProviderHasCellText(ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
     for (text.codepoints) |cp| {
         if (cp == 0xfe0e or cp == 0xfe0f) continue;
         if (!providerHasCodepoint(ctx, face_id, cp)) return false;
@@ -1031,7 +992,7 @@ fn providerShapeRun(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
     run: render_core.ResolvedRun,
-    text_cache: render_core.LineTextCache,
+    text_cache_view: render_core.LineTextCache,
     clusters: []const render_core.CellCluster,
     cell_metrics: render_core.CellMetrics,
 ) anyerror!render_core.TextStack.ShapeRun.OwnedShapedRun {
@@ -1039,6 +1000,19 @@ fn providerShapeRun(
     const start = @as(usize, @intCast(run.run.cluster_start));
     const count = @as(usize, @intCast(run.run.cluster_count));
     const end = @min(start + count, clusters.len);
+    backend.resolve_counters.shape_requests += 1;
+    const shape_key = text_cache.ShapeRunKey{
+        .face_id = run.run.font.face_id.value,
+        .run_hash = text_cache.hashRunText(text_cache_view, clusters[start..end]),
+        .cell_w_px = cell_metrics.cell_w_px,
+        .cell_h_px = cell_metrics.cell_h_px,
+        .baseline_px = cell_metrics.baseline_px,
+    };
+    if (try backend.shape_run_cache.getOwnedRun(allocator, shape_key, run)) |cached| {
+        backend.resolve_counters.shape_cache_hits += 1;
+        return cached;
+    }
+
     const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
     errdefer allocator.free(glyphs);
     for (clusters[start..end], 0..) |cluster, idx| {
@@ -1053,8 +1027,10 @@ fn providerShapeRun(
             .x_advance_px = advance_px,
         };
     }
-    _ = text_cache;
-    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+    var shaped = render_core.TextStack.ShapeRun.OwnedShapedRun{ .allocator = allocator, .run = run, .glyphs = glyphs };
+    errdefer shaped.deinit();
+    try backend.shape_run_cache.putRun(shape_key, shaped);
+    return shaped;
 }
 
 fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
@@ -1280,7 +1256,7 @@ fn mapTextSceneRenderError(err: anyerror) BackendError {
 fn renderReportFromTextScene(report: TextSceneRenderReport) RenderReport {
     return .{
         .stats = .{
-            .fills = report.background_draws + report.decoration_draws + report.cursor_draws,
+            .fills = report.clear_draws + report.background_draws + report.decoration_draws + report.cursor_draws,
             .glyphs = report.sprite_draws,
             .atlas_uploads = report.raster_uploads_committed,
             .has_cursor = report.cursor_draws > 0,
@@ -1289,25 +1265,6 @@ fn renderReportFromTextScene(report: TextSceneRenderReport) RenderReport {
         .pass_index = report.pass_index,
         .atlas_uploads_committed = report.raster_uploads_committed,
     };
-}
-
-fn drawBatch(backend: *const Backend, batch: render_core.RenderBatch) void {
-    c.glViewport(0, 0, @as(c_int, @intCast(batch.surface_px.width)), @as(c_int, @intCast(batch.surface_px.height)));
-    if (batch.full_redraw) {
-        c.glDisable(c.GL_SCISSOR_TEST);
-        c.glClearColor(0.0, 0.0, 0.0, 1.0);
-        c.glClear(c.GL_COLOR_BUFFER_BIT);
-    } else if (batch.scroll_up_rows > 0) {
-        applyScrollReuse(backend, batch);
-    }
-    c.glDisable(c.GL_DEPTH_TEST);
-    c.glEnable(c.GL_BLEND);
-    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    defer c.glDisable(c.GL_BLEND);
-
-    drawFillRects(batch.surface_px, batch.fills);
-    for (batch.glyphs) |glyph| drawGlyph(backend, batch.surface_px, glyph);
-    if (batch.cursor) |cursor| drawCursor(batch, cursor);
 }
 
 fn drawTextScene(backend: *const Backend, surface: render_core.PixelSize, scene: render_core.TextScene) void {
@@ -1324,6 +1281,9 @@ fn drawTextScene(backend: *const Backend, surface: render_core.PixelSize, scene:
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     defer c.glDisable(c.GL_BLEND);
 
+    for (scene.clear_draws) |draw| {
+        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+    }
     for (scene.background_draws) |draw| {
         drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
@@ -1336,11 +1296,6 @@ fn drawTextScene(backend: *const Backend, surface: render_core.PixelSize, scene:
     for (scene.cursor_draws) |draw| {
         drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
-}
-
-fn applyScrollReuse(backend: *const Backend, batch: render_core.RenderBatch) void {
-    const scroll_px = @as(u32, batch.scroll_up_rows) * @as(u32, batch.cell_px.height);
-    applyScrollReusePx(backend, batch.surface_px, @intCast(scroll_px));
 }
 
 fn applyScrollReusePx(backend: *const Backend, surface_px: render_core.PixelSize, scroll_px_u16: u16) void {
@@ -1379,45 +1334,6 @@ fn applyScrollReusePx(backend: *const Backend, surface_px: render_core.PixelSize
     c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }
 
-fn drawGlyph(backend: *const Backend, surface: render_core.PixelSize, glyph: render_core.GlyphQuad) void {
-    if (backend.atlas_pixels.len == 0) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    }
-    const cached_slot = backend.findCachedSlotForDraw(glyph.codepoint, glyph.width, glyph.height) orelse {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    };
-    const slot = @as(usize, cached_slot);
-    const slot_index = slot * backend.atlas_slot_stride;
-    if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    }
-    const src = backend.atlas_pixels[slot_index .. slot_index + backend.atlas_slot_stride];
-    const gw = @min(glyph.width, backend.atlas_cell_w);
-    const gh = @min(glyph.height, backend.atlas_cell_h);
-    if (gw == 0 or gh == 0) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-        return;
-    }
-    var drew_any = false;
-    for (0..gh) |yy| {
-        for (0..gw) |xx| {
-            const idx = yy * @as(usize, backend.atlas_cell_w) + xx;
-            const alpha = src[idx];
-            if (alpha == 0) continue;
-            drew_any = true;
-            var color = glyph.fg;
-            color.a = @intCast((@as(u16, color.a) * @as(u16, alpha)) / 255);
-            drawRect(surface, glyph.x + @as(i32, @intCast(xx)), glyph.y + @as(i32, @intCast(yy)), 1, 1, color);
-        }
-    }
-    if (!drew_any) {
-        drawRect(surface, glyph.x, glyph.y, glyph.width, glyph.height, glyph.fg);
-    }
-}
-
 fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) void {
     if (backend.atlas_pixels.len == 0) {
         drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
@@ -1452,27 +1368,6 @@ fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, g
     _ = cell_h;
 }
 
-fn drawCursor(batch: render_core.RenderBatch, cursor: render_core.CursorDraw) void {
-    const base_x: i32 = @as(i32, @intCast(cursor.cell_col)) * @as(i32, @intCast(batch.cell_px.width));
-    const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(batch.cell_px.height));
-    const cell_w: u16 = batch.cell_px.width;
-    const cell_h: u16 = batch.cell_px.height;
-    const cursor_geom = render_core.TextStack.Metrics.cursorGeometry(.{ .cell_w_px = cell_w, .cell_h_px = cell_h, .baseline_px = @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)) });
-
-    switch (cursor.shape) {
-        .block => drawRect(batch.surface_px, base_x, base_y, cell_w, cell_h, cursor.color),
-        .beam => drawRect(batch.surface_px, base_x, base_y, cursor_geom.beam_w_px, cell_h, cursor.color),
-        .underline => drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - cursor_geom.underline_h_px)), cell_w, cursor_geom.underline_h_px, cursor.color),
-        .hollow_block => {
-            const stroke = cursor_geom.hollow_stroke_px;
-            drawRect(batch.surface_px, base_x, base_y, cell_w, stroke, cursor.color);
-            drawRect(batch.surface_px, base_x, base_y + @as(i32, @intCast(cell_h - stroke)), cell_w, stroke, cursor.color);
-            drawRect(batch.surface_px, base_x, base_y, stroke, cell_h, cursor.color);
-            drawRect(batch.surface_px, base_x + @as(i32, @intCast(cell_w - stroke)), base_y, stroke, cell_h, cursor.color);
-        },
-    }
-}
-
 fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16, color: render_core.Rgba8) void {
     const clipped = clip_rect.clipRect(surface, x, y, width, height) orelse return;
     const inv_255 = 1.0 / 255.0;
@@ -1491,38 +1386,6 @@ fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: 
         @as(f32, @floatFromInt(color.a)) * inv_255,
     );
     c.glClear(c.GL_COLOR_BUFFER_BIT);
-}
-
-fn drawFillRects(surface: render_core.PixelSize, fills: []const render_core.FillRect) void {
-    if (fills.len == 0) return;
-    const inv_255 = 1.0 / 255.0;
-    c.glEnable(c.GL_SCISSOR_TEST);
-    defer c.glDisable(c.GL_SCISSOR_TEST);
-
-    var active_color: ?render_core.Rgba8 = null;
-    for (fills) |fill| {
-        const clipped = clip_rect.clipRect(surface, fill.x, fill.y, fill.width, fill.height) orelse continue;
-        if (active_color == null or !sameColor(active_color.?, fill.color)) {
-            active_color = fill.color;
-            c.glClearColor(
-                @as(f32, @floatFromInt(fill.color.r)) * inv_255,
-                @as(f32, @floatFromInt(fill.color.g)) * inv_255,
-                @as(f32, @floatFromInt(fill.color.b)) * inv_255,
-                @as(f32, @floatFromInt(fill.color.a)) * inv_255,
-            );
-        }
-        c.glScissor(
-            clipped.x,
-            clipped.y,
-            clipped.w,
-            clipped.h,
-        );
-        c.glClear(c.GL_COLOR_BUFFER_BIT);
-    }
-}
-
-fn sameColor(a: render_core.Rgba8, b: render_core.Rgba8) bool {
-    return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
 
 test "gles backend analyzes text cells through provider-backed engine" {
@@ -1568,6 +1431,28 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     try std.testing.expect(backend.atlas_pixels.len > 0);
     try std.testing.expect(slot_idx < backend.atlas_slot_width.len);
     try std.testing.expectEqual(@as(u16, 8), backend.atlas_slot_width[slot_idx]);
+}
+
+test "gles backend text analysis reuses retained scene atlas for unchanged glyphs" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
+    var faces: [4]render_core.TextStack.FontSession.FontFaceRecord = undefined;
+
+    var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    defer first.deinit();
+    try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
+
+    var second = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    defer second.deinit();
+    try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
+    try std.testing.expectEqual(first.scene.scene.sprite_draws[0].sprite.slot, second.scene.scene.sprite_draws[0].sprite.slot);
 }
 
 test "gles backend renderFrameState uses text scene renderer" {

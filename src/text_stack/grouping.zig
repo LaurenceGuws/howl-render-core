@@ -219,7 +219,7 @@ test "group shaped run creates one group per glyph cluster" {
     const clusters = [_]contract.CellCluster{
         .{ .text_id = .{ .value = 0 }, .first_cell = 4, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any },
     };
-    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{ 'x' } }} };
+    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{'x'} }} };
     var shaped = try shape_run.shapeRun(std.testing.allocator, .{ .run = .{
         .cluster_start = 0,
         .cluster_count = 1,
@@ -296,7 +296,7 @@ test "grouping preserves multicell span as ligature-shaped group" {
     const clusters = [_]contract.CellCluster{
         .{ .text_id = .{ .value = 0 }, .first_cell = 2, .cell_span = 2, .first_cp = 'x', .style = .regular, .presentation = .any },
     };
-    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{ 'x' } }} };
+    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{'x'} }} };
     var shaped = try shape_run.shapeRun(std.testing.allocator, .{ .run = .{
         .cluster_start = 0,
         .cluster_count = 1,

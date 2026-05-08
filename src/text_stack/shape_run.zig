@@ -148,8 +148,8 @@ test "stub shaper emits one glyph per cluster with run face" {
         .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .first_cp = 'b', .style = .regular, .presentation = .any },
     };
     const text_cache = contract.LineTextCache{ .texts = &.{
-        .{ .id = .{ .value = 0 }, .first_cp = 'a', .codepoints = &.{ 'a' } },
-        .{ .id = .{ .value = 1 }, .first_cp = 'b', .codepoints = &.{ 'b' } },
+        .{ .id = .{ .value = 0 }, .first_cp = 'a', .codepoints = &.{'a'} },
+        .{ .id = .{ .value = 1 }, .first_cp = 'b', .codepoints = &.{'b'} },
     } };
     const run = contract.ResolvedRun{ .run = .{
         .cluster_start = 0,

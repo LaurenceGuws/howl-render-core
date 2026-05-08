@@ -3,35 +3,29 @@
 //! Reason: keep hosts/backends on one coherent entrypoint.
 
 const std = @import("std");
-const render_batch = @import("render_batch.zig");
+const render_types = @import("render_types.zig");
 const vt_state = @import("vt_state.zig");
 const surface = @import("frame_state.zig");
-const retained_frame = @import("retained_frame.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
 const text_stack = @import("text_stack.zig");
 
 pub const RenderCore = struct {
-    pub const BackendConfig = render_batch.BackendConfig;
-    pub const BackendCapability = render_batch.BackendCapability;
-    pub const PixelSize = render_batch.PixelSize;
-    pub const CellSize = render_batch.CellSize;
-    pub const GridSize = render_batch.GridSize;
-    pub const Rgba8 = render_batch.Rgba8;
-    pub const FillRect = render_batch.FillRect;
-    pub const GlyphQuad = render_batch.GlyphQuad;
-    pub const CursorShape = render_batch.CursorShape;
-    pub const CursorDraw = render_batch.CursorDraw;
-    pub const AtlasUpload = render_batch.AtlasUpload;
-    pub const RenderBatchStats = render_batch.RenderBatchStats;
-    pub const RenderBatch = render_batch.RenderBatch;
-    pub const CellInput = render_batch.CellInput;
-    pub const GridInput = render_batch.GridInput;
-    pub const CursorInput = render_batch.CursorInput;
-    pub const VtState = render_batch.VtState;
+    pub const BackendConfig = render_types.BackendConfig;
+    pub const BackendCapability = render_types.BackendCapability;
+    pub const PixelSize = render_types.PixelSize;
+    pub const CellSize = render_types.CellSize;
+    pub const GridSize = render_types.GridSize;
+    pub const Rgba8 = render_types.Rgba8;
+    pub const FillRect = render_types.FillRect;
+    pub const GlyphQuad = render_types.GlyphQuad;
+    pub const AtlasUpload = render_types.AtlasUpload;
+    pub const RenderStats = render_types.RenderStats;
+    pub const TextCellInput = render_types.CellInput;
+    pub const CellInput = render_types.CellInput;
     pub const FrameTheme = vt_state.FrameTheme;
+    pub const OwnedFrameTextInput = vt_state.OwnedFrameTextInput;
     pub const OwnedTextSceneInput = vt_state.OwnedTextSceneInput;
-    pub const OwnedRenderBatch = render_batch.OwnedRenderBatch;
     pub const SurfaceState = surface.SurfaceState;
     pub const SurfaceColor = surface.Color;
     pub const UnderlineStyle = surface.UnderlineStyle;
@@ -43,7 +37,6 @@ pub const RenderCore = struct {
     pub const SurfaceCursorShape = surface.CursorShape;
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
-    pub const RetainedFrame = retained_frame.RetainedFrame;
     pub const SurfaceHandle = struct {
         texture_id: u32,
         width: u16,
@@ -74,6 +67,7 @@ pub const RenderCore = struct {
     pub const SpritePosition = text_contract.SpritePosition;
     pub const TextSpriteDraw = text_contract.TextSpriteDraw;
     pub const TextBackgroundDraw = text_contract.TextBackgroundDraw;
+    pub const TextClearDraw = text_contract.TextClearDraw;
     pub const TextCursorDraw = text_contract.TextCursorDraw;
     pub const DecorationKind = text_contract.DecorationKind;
     pub const TextDecorationDraw = text_contract.TextDecorationDraw;
@@ -107,16 +101,18 @@ pub const RenderCore = struct {
     pub const RasterizeGlyphOp = text_pipeline.RasterizeGlyphOp;
     pub const ResolveFallbackFaceOp = text_pipeline.ResolveFallbackFaceOp;
     pub const TextStack = text_stack;
-    pub const RenderBatchValidationError = render_batch.RenderBatchValidationError;
-    pub const RenderBatchBuildError = render_batch.RenderBatchBuildError;
+    pub const TextEngine = text_stack.Engine.Engine;
+    pub const TextEngineAnalysisOptions = text_stack.Engine.AnalysisOptions;
+    pub const TextFontSession = text_stack.FontSession.FontSession;
+    pub const TextFaceRecord = text_stack.FontSession.FontFaceRecord;
     pub const FrameGeometryError = error{
         InvalidSurfaceSize,
         InvalidGridSize,
     };
     pub const defaultTheme = vt_state.default_theme;
 
-    config: render_batch.BackendConfig,
-    capability: render_batch.BackendCapability,
+    config: render_types.BackendConfig,
+    capability: render_types.BackendCapability,
 
     pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
         return .{
@@ -125,31 +121,7 @@ pub const RenderCore = struct {
         };
     }
 
-    pub fn renderBatch(self: *const RenderCore, allocator: std.mem.Allocator, frame: VtState) RenderBatchBuildError!OwnedRenderBatch {
-        return render_batch.renderBatch(allocator, frame, self.capability);
-    }
-
-    pub fn vtStateToRenderBatch(
-        self: *const RenderCore,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: PixelSize,
-        cell_px: CellSize,
-    ) RenderBatchBuildError!OwnedRenderBatch {
-        return vt_state.vtStateToRenderBatch(allocator, state, surface_px, cell_px, self.capability);
-    }
-
-    pub fn vtStateToRenderBatchWithTheme(
-        self: *const RenderCore,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: PixelSize,
-        cell_px: CellSize,
-        theme: FrameTheme,
-    ) RenderBatchBuildError!OwnedRenderBatch {
-        return vt_state.vtStateToRenderBatchWithTheme(allocator, state, surface_px, cell_px, theme, self.capability);
-    }
-
+    /// Canonical active-path frame-to-text input conversion.
     pub fn vtStateToTextSceneInput(
         _: *const RenderCore,
         allocator: std.mem.Allocator,
@@ -158,12 +130,20 @@ pub const RenderCore = struct {
         return vt_state.vtStateToTextSceneInput(allocator, state);
     }
 
-    pub fn validateRenderBatch(self: *const RenderCore, batch: RenderBatch) RenderBatchValidationError!void {
-        return render_batch.validateRenderBatch(self.config, self.capability, batch);
+    pub fn vtStateToFrameTextInput(
+        _: *const RenderCore,
+        allocator: std.mem.Allocator,
+        state: anytype,
+    ) !OwnedFrameTextInput {
+        return vt_state.vtStateToFrameTextInput(allocator, state);
     }
 
-    pub fn summarizeRenderBatch(_: *const RenderCore, batch: RenderBatch) RenderBatchStats {
-        return render_batch.summarizeRenderBatch(batch);
+    pub fn buildFrameTextInput(
+        self: *const RenderCore,
+        allocator: std.mem.Allocator,
+        state: anytype,
+    ) !OwnedFrameTextInput {
+        return self.vtStateToFrameTextInput(allocator, state);
     }
 
     /// Derive grid dimensions from pixel-space area and cell-size policy.
@@ -183,26 +163,3 @@ pub const RenderCore = struct {
         return deriveGridSize(grid_px, cell_px);
     }
 };
-
-test "render-core object: validate and summarize surface" {
-    const rc = RenderCore.init(
-        .{
-            .surface_px = .{ .width = 16, .height = 16 },
-            .cell_px = .{ .width = 8, .height = 16 },
-        },
-        .{
-            .max_atlas_slots = 8,
-            .supports_fill_rect = true,
-            .supports_glyph_quads = true,
-        },
-    );
-
-    const batch = render_batch.RenderBatch{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 16 },
-        .grid = .{ .cols = 2, .rows = 1 },
-    };
-    try rc.validateRenderBatch(batch);
-    const stats = rc.summarizeRenderBatch(batch);
-    try std.testing.expectEqual(@as(usize, 0), stats.glyphs);
-}

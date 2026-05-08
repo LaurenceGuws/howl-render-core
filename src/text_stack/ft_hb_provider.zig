@@ -90,7 +90,7 @@ test "ft hb adapter carries injected shaper and rasterizer" {
     };
     const text_provider = adapter.textProvider();
     const clusters = [_]contract.CellCluster{.{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'a', .style = .regular, .presentation = .any }};
-    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'a', .codepoints = &.{ 'a' } }} };
+    const text_cache = contract.LineTextCache{ .texts = &.{.{ .id = .{ .value = 0 }, .first_cp = 'a', .codepoints = &.{'a'} }} };
     const run = contract.ResolvedRun{ .run = .{ .cluster_start = 0, .cluster_count = 1, .font = .{ .face_id = .{ .value = 1 }, .style = .regular, .presentation = .any } } };
     var shaped = try text_provider.shaper.shapeRun(std.testing.allocator, run, text_cache, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
     defer shaped.deinit();

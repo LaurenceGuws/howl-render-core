@@ -1,6 +1,6 @@
-//! Responsibility: run deterministic render-core batch measurements.
+//! Responsibility: run deterministic render-core text-scene measurements.
 //! Ownership: render-core benchmark surface for synthetic frame workloads.
-//! Reason: isolate batch-build cost before host and backend noise.
+//! Reason: isolate active text analysis cost before host and backend noise.
 
 const std = @import("std");
 const render = @import("howl_render");
@@ -41,7 +41,16 @@ const WorkloadResult = struct {
 
 const Workload = struct {
     name: []const u8,
-    state: render.VtState,
+    cells: []render.TextCellInput,
+    grid: render.GridMetrics,
+    damage: struct {
+        full: bool,
+        scroll_up_rows: u16 = 0,
+        dirty_rows: []const bool,
+        dirty_cols_start: []const u16,
+        dirty_cols_end: []const u16,
+    },
+    cell_px: render.CellSize,
     dirty_cells_per_run: usize,
 };
 
@@ -171,9 +180,18 @@ fn rgba(r: u8, g: u8, b: u8) render.Rgba8 {
     return .{ .r = r, .g = g, .b = b, .a = 255 };
 }
 
-fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Rgba8) ![]render.CellInput {
+fn defaultCellMetrics(cell_px: render.CellSize) render.CellMetrics {
+    const h = @max(cell_px.height, 1);
+    return .{
+        .cell_w_px = @max(cell_px.width, 1),
+        .cell_h_px = h,
+        .baseline_px = @intCast(@max(h - @divFloor(h, 5), 1)),
+    };
+}
+
+fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Rgba8) ![]render.TextCellInput {
     const len = @as(usize, rows) * @as(usize, cols);
-    const cells = try allocator.alloc(render.CellInput, len);
+    const cells = try allocator.alloc(render.TextCellInput, len);
     for (cells) |*cell| {
         cell.* = .{ .codepoint = ' ', .fg = rgba(240, 240, 240), .bg = bg };
     }
@@ -231,14 +249,11 @@ fn buildAsciiFullWorkload(allocator: std.mem.Allocator) !Workload {
     }
     return .{
         .name = "ascii_full",
+        .cell_px = .{ .width = 9, .height = 18 },
         .dirty_cells_per_run = @as(usize, rows) * @as(usize, cols),
-        .state = .{
-            .surface_px = .{ .width = cols * 9, .height = rows * 18 },
-            .cell_px = .{ .width = 9, .height = 18 },
-            .grid = .{ .cells = cells, .cols = cols, .rows = rows },
-            .cursor = .{ .col = 10, .row = 4, .shape = .block, .color = rgba(255, 220, 120) },
-            .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
-        },
+        .cells = cells,
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
 }
 
@@ -262,14 +277,11 @@ fn buildSparseRowsWorkload(allocator: std.mem.Allocator) !Workload {
     }
     return .{
         .name = "sparse_rows",
+        .cell_px = .{ .width = 9, .height = 18 },
         .dirty_cells_per_run = active_rows.len * 80,
-        .state = .{
-            .surface_px = .{ .width = cols * 9, .height = rows * 18 },
-            .cell_px = .{ .width = 9, .height = 18 },
-            .grid = .{ .cells = cells, .cols = cols, .rows = rows },
-            .cursor = .{ .col = 12, .row = 18, .shape = .beam, .color = accent },
-            .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
-        },
+        .cells = cells,
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
 }
 
@@ -292,14 +304,11 @@ fn buildMixedBoxWorkload(allocator: std.mem.Allocator) !Workload {
     }
     return .{
         .name = "mixed_box_full",
+        .cell_px = .{ .width = 10, .height = 18 },
         .dirty_cells_per_run = @as(usize, rows) * @as(usize, cols),
-        .state = .{
-            .surface_px = .{ .width = cols * 10, .height = rows * 18 },
-            .cell_px = .{ .width = 10, .height = 18 },
-            .grid = .{ .cells = cells, .cols = cols, .rows = rows },
-            .cursor = .{ .col = 50, .row = 20, .shape = .underline, .color = rgba(255, 255, 255) },
-            .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
-        },
+        .cells = cells,
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
 }
 
@@ -322,13 +331,11 @@ fn buildWideDirtySpansWorkload(allocator: std.mem.Allocator) !Workload {
     }
     return .{
         .name = "wide_dirty_spans",
+        .cell_px = .{ .width = 9, .height = 17 },
         .dirty_cells_per_run = dirty_rows_list.len * 108,
-        .state = .{
-            .surface_px = .{ .width = cols * 9, .height = rows * 17 },
-            .cell_px = .{ .width = 9, .height = 17 },
-            .grid = .{ .cells = cells, .cols = cols, .rows = rows },
-            .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
-        },
+        .cells = cells,
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
 }
 
@@ -342,35 +349,47 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     const upload_values = try allocator.alloc(usize, runs);
     defer allocator.free(upload_values);
 
-    const config = render.BackendConfig{
-        .surface_px = workload.state.surface_px,
-        .cell_px = workload.state.cell_px,
+    const cell_metrics = defaultCellMetrics(workload.cell_px);
+    const session = render.TextFontSession{
+        .primary_face = .{ .value = 1 },
+        .metrics = cell_metrics,
     };
-    const capability = render.BackendCapability{
-        .max_atlas_slots = 4096,
-        .supports_fill_rect = true,
-        .supports_glyph_quads = true,
+    const analysis_options = render.TextEngineAnalysisOptions{
+        .scene = .{
+            .damage = .{
+                .full = workload.damage.full,
+                .scroll_up_rows = workload.damage.scroll_up_rows,
+                .dirty_rows = workload.damage.dirty_rows,
+                .dirty_cols_start = workload.damage.dirty_cols_start,
+                .dirty_cols_end = workload.damage.dirty_cols_end,
+            },
+        },
     };
-    const rc = render.init(config, capability);
 
     var i: usize = 0;
     while (i < runs) : (i += 1) {
         var counting = CountingAllocator.init(allocator);
         counting.resetWindow();
         const start = nowNs(io);
-        var owned = try rc.renderBatch(counting.allocator(), workload.state);
+        var engine = render.TextEngine.init(counting.allocator());
+        defer engine.deinit();
+        var analysis = try engine.analyzeCellsWithSessionOptions(
+            workload.cells,
+            workload.grid,
+            session,
+            analysis_options,
+        );
         const end = nowNs(io);
-        const stats = owned.batch.stats();
+        defer analysis.deinit();
         observations[i] = .{
             .ns = end - start,
             .alloc_count = counting.window_alloc_count,
             .alloc_bytes = counting.window_alloc_bytes,
             .peak_live_bytes = counting.window_peak_live_bytes,
         };
-        fill_values[i] = stats.fills;
-        glyph_values[i] = stats.glyphs;
-        upload_values[i] = stats.atlas_uploads;
-        owned.deinit();
+        fill_values[i] = analysis.scene.scene.background_draws.len + analysis.scene.scene.decoration_draws.len + analysis.scene.scene.cursor_draws.len;
+        glyph_values[i] = analysis.scene.scene.sprite_draws.len;
+        upload_values[i] = analysis.raster_plan.outputs.len;
     }
 
     const ns_values = try allocator.alloc(u64, runs);

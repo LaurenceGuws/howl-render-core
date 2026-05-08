@@ -5,7 +5,7 @@
 const std = @import("std");
 const contract = @import("../text_contract.zig");
 const pipeline = @import("../text_pipeline.zig");
-const render_batch = @import("../render_batch.zig");
+const render_types = @import("../render_types.zig");
 const atlas_cache = @import("atlas_cache.zig");
 const cluster = @import("cluster.zig");
 const font_resolver = @import("font_resolver.zig");
@@ -50,9 +50,15 @@ pub const Engine = struct {
         self.* = undefined;
     }
 
+    pub fn clearAtlas(self: *Engine) void {
+        self.atlas.len = 0;
+        self.atlas.next_slot = 0;
+    }
+
     pub fn prepareScene(_: *Engine, req: PrepareSceneRequest) PrepareSceneResult {
         return .{ .scene = .{
             .cells = req.cells,
+            .clear_draws = &.{},
             .background_draws = &.{},
             .sprite_draws = &.{},
             .decoration_draws = &.{},
@@ -61,28 +67,26 @@ pub const Engine = struct {
         } };
     }
 
-    pub fn analyzeLegacyCells(self: *Engine, cells: []const render_batch.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
-        return self.analyzeLegacyCellsGrid(cells, .{ .cols = @intCast(@max(cells.len, 1)) }, face_id);
+    pub fn analyzeCells(self: *Engine, cells: []const render_types.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
+        return self.analyzeCellsGrid(cells, .{ .cols = @intCast(@max(cells.len, 1)) }, face_id);
     }
 
-    pub fn analyzeLegacyCellsGrid(self: *Engine, cells: []const render_batch.CellInput, grid_metrics: contract.GridMetrics, face_id: contract.FontFaceId) !OwnedTextAnalysis {
-        return self.analyzeLegacyCellsWithSession(cells, grid_metrics, .{ .primary_face = face_id });
+    pub fn analyzeCellsGrid(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, face_id: contract.FontFaceId) !OwnedTextAnalysis {
+        return self.analyzeCellsWithSession(cells, grid_metrics, .{ .primary_face = face_id });
     }
 
-    pub fn analyzeLegacyCellsWithSession(self: *Engine, cells: []const render_batch.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
-        return self.analyzeLegacyCellsWithSessionOptions(cells, grid_metrics, session, .{});
+    pub fn analyzeCellsWithSession(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
+        return self.analyzeCellsWithSessionOptions(cells, grid_metrics, session, .{});
     }
 
-    pub fn analyzeLegacyCellsWithSessionOptions(self: *Engine, cells: []const render_batch.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
-        var text_cache = try cluster.buildLineTextCacheFromLegacy(self.allocator, cells);
-        errdefer text_cache.deinit();
-        var renderable = try cluster.buildRenderableCellsFromLegacy(self.allocator, cells, text_cache.view());
-        errdefer renderable.deinit();
-        return self.analyzePrepared(text_cache, renderable, grid_metrics, session, options);
+    pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
+        var sparse = try cluster.buildSparseCellsWithDamage(self.allocator, cells, grid_metrics, options.scene.damage);
+        errdefer sparse.deinit();
+        return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options);
     }
 
-    pub fn analyzeLegacyCellsWithProvider(self: *Engine, cells: []const render_batch.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, provider: provider_mod.TextProvider) !OwnedTextAnalysis {
-        return self.analyzeLegacyCellsWithSession(cells, grid_metrics, provider.applyToSession(session));
+    pub fn analyzeCellsWithProvider(self: *Engine, cells: []const render_types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, provider: provider_mod.TextProvider) !OwnedTextAnalysis {
+        return self.analyzeCellsWithSession(cells, grid_metrics, provider.applyToSession(session));
     }
 
     pub fn analyzeCellTextInputs(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
@@ -109,7 +113,7 @@ pub const Engine = struct {
         errdefer owned_text_cache.deinit();
         var owned_renderable = renderable;
         errdefer owned_renderable.deinit();
-        var clusters = try cluster.extractClusters(self.allocator, owned_renderable.cells, owned_text_cache.view());
+        var clusters = try cluster.extractClustersWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), grid_metrics, options.scene.damage);
         errdefer clusters.deinit();
         var runs = try font_resolver.resolveClusters(self.allocator, session, clusters.clusters, owned_text_cache.view());
         errdefer runs.deinit();
@@ -231,16 +235,16 @@ test "text engine skeleton preserves input cells" {
     try std.testing.expectEqual(@as(usize, 0), result.scene.sprite_draws.len);
 }
 
-test "text engine analyzes legacy cells into clusters and runs" {
+test "text engine analyzes cell inputs into clusters and runs" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), analysis.text_cache.texts.len);
@@ -258,13 +262,13 @@ test "text engine analyzes legacy cells into clusters and runs" {
 test "text engine records sprite routes through resolver" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 0x2500, .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), analysis.runs.runs.len);
@@ -282,15 +286,15 @@ test "text engine records sprite routes through resolver" {
 test "text engine scene is grid positioned" {
     var engine = Engine.init(std.testing.allocator);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
         .{ .codepoint = 'c', .fg = white, .bg = black },
         .{ .codepoint = 'd', .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeLegacyCellsGrid(&cells, .{ .cols = 2, .rows = 2 }, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsGrid(&cells, .{ .cols = 2, .rows = 2 }, .{ .value = 1 });
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), analysis.scene.scene.sprite_draws.len);
@@ -301,13 +305,13 @@ test "text engine scene is grid positioned" {
 test "text engine reuses atlas slots across analyses" {
     var engine = try Engine.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
-    var first = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
+    var first = try engine.analyzeCells(&cells, .{ .value = 1 });
     const first_slot = first.scene.scene.sprite_draws[0].sprite.slot;
     first.deinit();
-    var second = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    var second = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer second.deinit();
     try std.testing.expectEqual(first_slot, second.scene.scene.sprite_draws[0].sprite.slot);
     try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
@@ -330,10 +334,10 @@ test "text engine accepts configurable shaper" {
     var stub = Stub{};
     var engine = try Engine.initWithShaper(std.testing.allocator, 8, .{ .ctx = &stub, .shape_run = Stub.shape });
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{.{ .codepoint = 'q', .fg = white, .bg = black }};
-    var analysis = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{.{ .codepoint = 'q', .fg = white, .bg = black }};
+    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
     try std.testing.expectEqual(@as(usize, 1), analysis.shaped_runs.runs.len);
@@ -352,10 +356,10 @@ test "text engine accepts unified provider rasterizer" {
     var stub = Stub{};
     var engine = try Engine.initWithProvider(std.testing.allocator, 8, .{ .rasterizer = .{ .ctx = &stub, .rasterize_sprite = Stub.raster } });
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{.{ .codepoint = 'r', .fg = white, .bg = black }};
-    var analysis = try engine.analyzeLegacyCells(&cells, .{ .value = 1 });
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{.{ .codepoint = 'r', .fg = white, .bg = black }};
+    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
 }
@@ -363,10 +367,10 @@ test "text engine accepts unified provider rasterizer" {
 test "text engine analysis options produce scene cursor draws" {
     var engine = try Engine.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_batch.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
-    var analysis = try engine.analyzeLegacyCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render_types.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{
         .primary_face = .{ .value = 1 },
         .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
     }, .{
@@ -380,8 +384,8 @@ test "text engine analysis options produce scene cursor draws" {
 test "text engine analyzes rich multi-codepoint cell inputs" {
     var engine = try Engine.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332, 0x0308 };
     const emoji = [_]u32{ 0x2716, 0xfe0f };
     const inputs = [_]cluster.CellTextInput{
@@ -410,8 +414,8 @@ test "text engine uses ft hb adapter coverage for fallback" {
     var adapter = ft_hb_provider.Adapter{ .ctx = &dummy, .has_codepoint = Backend.has };
     var engine = try Engine.initWithProvider(std.testing.allocator, 16, adapter.textProvider());
     defer engine.deinit();
-    const white = render_batch.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_batch.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = render_types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render_types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332 };
     const inputs = [_]cluster.CellTextInput{.{ .codepoints = &combining, .fg = white, .bg = black }};
     const faces = [_]font_session.FontFaceRecord{

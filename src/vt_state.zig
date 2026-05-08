@@ -4,15 +4,15 @@
 
 const std = @import("std");
 const frame_state = @import("frame_state.zig");
-const render_batch = @import("render_batch.zig");
+const render_types = @import("render_types.zig");
 const text_engine = @import("text_stack/engine.zig");
 const text_scene = @import("text_stack/scene.zig");
 
 pub const FrameTheme = struct {
-    default_fg: render_batch.Rgba8,
-    default_bg: render_batch.Rgba8,
-    cursor_color: render_batch.Rgba8,
-    ansi16: [16]render_batch.Rgba8,
+    default_fg: render_types.Rgba8,
+    default_bg: render_types.Rgba8,
+    cursor_color: render_types.Rgba8,
+    ansi16: [16]render_types.Rgba8,
 };
 pub const default_theme = FrameTheme{
     .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
@@ -38,7 +38,7 @@ pub const default_theme = FrameTheme{
     },
 };
 
-fn indexed256(idx: u8, t: FrameTheme) render_batch.Rgba8 {
+fn indexed256(idx: u8, t: FrameTheme) render_types.Rgba8 {
     if (idx < 16) return t.ansi16[idx];
     if (idx < 232) {
         const i: u32 = idx - 16;
@@ -51,7 +51,7 @@ fn indexed256(idx: u8, t: FrameTheme) render_batch.Rgba8 {
     return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
 }
 
-fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_batch.Rgba8 {
+fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_types.Rgba8 {
     return switch (color.kind) {
         .default => if (is_fg) t.default_fg else t.default_bg,
         .indexed => indexed256(@intCast(color.value & 0xFF), t),
@@ -64,12 +64,12 @@ fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_batch.Rgba8 {
     };
 }
 
-fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_batch.Rgba8 {
+fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) render_types.Rgba8 {
     if (!is_fg and color.kind == .default) return .{ .r = t.default_bg.r, .g = t.default_bg.g, .b = t.default_bg.b, .a = 0 };
     return colorToRgba8(color, is_fg, t);
 }
 
-fn mapCursorShape(shape: anytype) render_batch.CursorShape {
+fn mapCursorShape(shape: anytype) text_scene.CursorShape {
     return switch (shape) {
         .block => .block,
         .underline => .underline,
@@ -86,7 +86,7 @@ fn mapTextSceneCursorShape(shape: anytype) text_scene.CursorShape {
     return .block;
 }
 
-fn mapUnderlineStyle(style: frame_state.UnderlineStyle) render_batch.UnderlineStyle {
+fn mapUnderlineStyle(style: frame_state.UnderlineStyle) render_types.UnderlineStyle {
     return switch (style) {
         .straight => .straight,
         .double => .double,
@@ -100,79 +100,19 @@ fn damageScrollUpRows(damage: anytype) u16 {
     return if (@hasField(@TypeOf(damage), "scroll_up_rows")) damage.scroll_up_rows else 0;
 }
 
-pub const OwnedTextSceneInput = struct {
+pub const OwnedFrameTextInput = struct {
     allocator: std.mem.Allocator,
-    cells: []render_batch.CellInput,
+    cells: []render_types.CellInput,
     grid: @import("text_contract.zig").GridMetrics,
     options: text_engine.AnalysisOptions,
 
-    pub fn deinit(self: *OwnedTextSceneInput) void {
+    pub fn deinit(self: *OwnedFrameTextInput) void {
         self.allocator.free(self.cells);
         self.* = undefined;
     }
 };
 
-pub fn vtStateToRenderBatch(
-    allocator: std.mem.Allocator,
-    state: anytype,
-    surface_px: render_batch.PixelSize,
-    cell_px: render_batch.CellSize,
-    capability: render_batch.BackendCapability,
-) render_batch.RenderBatchBuildError!render_batch.OwnedRenderBatch {
-    return vtStateToRenderBatchWithTheme(
-        allocator,
-        state,
-        surface_px,
-        cell_px,
-        default_theme,
-        capability,
-    );
-}
-
-pub fn vtStateToRenderBatchWithTheme(
-    allocator: std.mem.Allocator,
-    state: anytype,
-    surface_px: render_batch.PixelSize,
-    cell_px: render_batch.CellSize,
-    t: FrameTheme,
-    capability: render_batch.BackendCapability,
-) render_batch.RenderBatchBuildError!render_batch.OwnedRenderBatch {
-    const cell_inputs = try allocator.alloc(render_batch.CellInput, state.grid.cells.len);
-    defer allocator.free(cell_inputs);
-
-    for (state.grid.cells, cell_inputs) |src, *dst| {
-        dst.* = .{
-            .codepoint = src.codepoint,
-            .fg = colorToTextSceneRgba8(src.fg_color, true, t),
-            .bg = colorToTextSceneRgba8(src.bg_color, false, t),
-            .underline_color = if (src.attrs.underline_color_set) colorToTextSceneRgba8(src.underline_color, true, t) else .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-            .underline_style = mapUnderlineStyle(src.underline_style),
-            .underline = src.attrs.underline,
-            .strikethrough = src.attrs.strikethrough,
-            .continuation = src.flags.continuation,
-        };
-    }
-
-    const cursor_input: ?render_batch.CursorInput = if (state.cursor.visible) .{
-        .col = state.cursor.col,
-        .row = state.cursor.row,
-        .shape = mapCursorShape(state.cursor.shape),
-        .color = t.cursor_color,
-    } else null;
-
-    return render_batch.renderBatch(allocator, .{
-        .surface_px = surface_px,
-        .cell_px = cell_px,
-        .grid = .{ .cells = cell_inputs, .cols = state.grid.cols, .rows = state.grid.rows },
-        .cursor = cursor_input,
-        .damage = .{
-            .full = state.damage.full,
-            .dirty_rows = state.damage.dirty_rows,
-            .dirty_cols_start = state.damage.dirty_cols_start,
-            .dirty_cols_end = state.damage.dirty_cols_end,
-        },
-    }, capability);
-}
+pub const OwnedTextSceneInput = OwnedFrameTextInput;
 
 pub fn vtStateToTextSceneInput(
     allocator: std.mem.Allocator,
@@ -181,20 +121,35 @@ pub fn vtStateToTextSceneInput(
     return vtStateToTextSceneInputWithTheme(allocator, state, default_theme);
 }
 
+pub fn vtStateToFrameTextInput(
+    allocator: std.mem.Allocator,
+    state: anytype,
+) !OwnedFrameTextInput {
+    return vtStateToFrameTextInputWithTheme(allocator, state, default_theme);
+}
+
 pub fn vtStateToTextSceneInputWithTheme(
     allocator: std.mem.Allocator,
     state: anytype,
     t: FrameTheme,
 ) !OwnedTextSceneInput {
-    const cell_inputs = try allocator.alloc(render_batch.CellInput, state.grid.cells.len);
+    return vtStateToFrameTextInputWithTheme(allocator, state, t);
+}
+
+pub fn vtStateToFrameTextInputWithTheme(
+    allocator: std.mem.Allocator,
+    state: anytype,
+    t: FrameTheme,
+) !OwnedFrameTextInput {
+    const cell_inputs = try allocator.alloc(render_types.CellInput, state.grid.cells.len);
     errdefer allocator.free(cell_inputs);
 
     for (state.grid.cells, cell_inputs) |src, *dst| {
         dst.* = .{
             .codepoint = src.codepoint,
-            .fg = colorToRgba8(src.fg_color, true, t),
-            .bg = colorToRgba8(src.bg_color, false, t),
-            .underline_color = if (src.attrs.underline_color_set) colorToRgba8(src.underline_color, true, t) else .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+            .fg = colorToTextSceneRgba8(src.fg_color, true, t),
+            .bg = colorToTextSceneRgba8(src.bg_color, false, t),
+            .underline_color = if (src.attrs.underline_color_set) colorToTextSceneRgba8(src.underline_color, true, t) else .{ .r = 0, .g = 0, .b = 0, .a = 0 },
             .underline_style = mapUnderlineStyle(src.underline_style),
             .underline = src.attrs.underline,
             .strikethrough = src.attrs.strikethrough,
@@ -226,21 +181,6 @@ pub fn vtStateToTextSceneInputWithTheme(
     };
 }
 
-test "vt_state preserves underline and strikethrough attrs in batch input" {
-    const cells = [_]frame_state.Cell{.{
-        .codepoint = 'A',
-        .attrs = .{ .underline = true, .strikethrough = true },
-    }};
-    const state = .{
-        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = .block },
-        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
-    };
-    var owned = try vtStateToRenderBatch(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, .{ .max_atlas_slots = 4, .supports_fill_rect = true, .supports_glyph_quads = true });
-    defer owned.deinit();
-    try std.testing.expectEqual(@as(usize, 3), owned.batch.fills.len);
-}
-
 test "vt_state converts frame state to text scene input" {
     const cells = [_]frame_state.Cell{.{
         .codepoint = 'A',
@@ -258,6 +198,7 @@ test "vt_state converts frame state to text scene input" {
     try std.testing.expectEqual(@as(u21, 'A'), input.cells[0].codepoint);
     try std.testing.expect(input.cells[0].underline);
     try std.testing.expectEqual(@as(u8, 0xCC), input.cells[0].underline_color.r);
+    try std.testing.expectEqual(@as(u8, 0), input.cells[0].bg.a);
     try std.testing.expect(input.options.scene.cursor != null);
     try std.testing.expect(input.options.scene.damage.full);
 }
