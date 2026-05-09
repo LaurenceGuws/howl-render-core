@@ -78,36 +78,36 @@ pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, deco
     @memset(pixels, 0);
     const width = @max(width_px, 1);
     const height = @max(height_px, 1);
-    const period = @as(f64, @floatFromInt(@max(decoration.period_px, 2)));
-    const amplitude = @max(decoration.amplitude_px, 1);
-    const stroke = @max(decoration.stroke_px, 1);
-    const center_y = @as(f64, @floatFromInt(@min(decoration.y_px, height - 1)));
-    const amp = @as(f64, @floatFromInt(amplitude));
-    const stroke_i: i32 = @intCast(stroke);
+    const max_x = @max(decoration.period_px, 1);
+    const cell_width = max_x + 1;
+    const xfactor = std.math.tau / @as(f64, @floatFromInt(max_x));
+    const half_height = @as(f64, @floatFromInt(@max(decoration.amplitude_px, 1)));
+    const thickness: i32 = @intCast(decoration.stroke_px);
+    const position = @min(decoration.y_px, height - 1);
 
     var x: u16 = 0;
     while (x < width) : (x += 1) {
-        const xf = @as(f64, @floatFromInt(x));
-        const wave = amp * std.math.cos((xf / period) * std.math.tau);
+        const cell_x = x % cell_width;
+        const wave = half_height * std.math.cos(@as(f64, @floatFromInt(cell_x)) * xfactor);
         const floor_y = std.math.floor(wave);
-        const upper_y: i32 = @as(i32, @intFromFloat(floor_y)) - stroke_i;
+        const upper_y: i32 = @as(i32, @intFromFloat(std.math.floor(wave - @as(f64, @floatFromInt(thickness)))));
         const lower_y: i32 = @as(i32, @intFromFloat(std.math.ceil(wave)));
         const lower_alpha: u8 = @intFromFloat(@round((wave - floor_y) * 255.0));
         const upper_alpha: u8 = 255 - lower_alpha;
 
-        addAlpha(pixels, width, height, x, center_y, upper_y, upper_alpha);
+        addAlpha(pixels, width, height, x, position, upper_y, upper_alpha);
         var fill_y = upper_y + 1;
-        while (fill_y <= upper_y + stroke_i) : (fill_y += 1) {
-            addAlpha(pixels, width, height, x, center_y, fill_y, 255);
+        while (fill_y <= upper_y + thickness) : (fill_y += 1) {
+            addAlpha(pixels, width, height, x, position, fill_y, 255);
         }
-        addAlpha(pixels, width, height, x, center_y, lower_y, lower_alpha);
+        addAlpha(pixels, width, height, x, position, lower_y, lower_alpha);
     }
 }
 
-fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, center_y: f64, y_offset: i32, alpha: u8) void {
+fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, position: u16, y_offset: i32, alpha: u8) void {
     if (alpha == 0) return;
-    const y_float = center_y + @as(f64, @floatFromInt(y_offset));
-    const y_clamped = std.math.clamp(@as(i32, @intFromFloat(@round(y_float))), 0, @as(i32, @intCast(height - 1)));
+    const raw_y = @as(i32, @intCast(position)) + y_offset;
+    const y_clamped = std.math.clamp(raw_y, 0, @as(i32, @intCast(height - 1)));
     const idx = @as(usize, @intCast(y_clamped)) * @as(usize, width) + @as(usize, x);
     pixels[idx] = @intCast(@min(@as(u16, pixels[idx]) + @as(u16, alpha), 255));
 }

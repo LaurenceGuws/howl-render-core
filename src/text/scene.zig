@@ -447,7 +447,7 @@ fn appendUnderlineDraws(
             var off: u16 = 0;
             while (off < width) : (off += step) try appendDecorationDraw(allocator, out, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
-        .curly => try appendUndercurlSprite(allocator, sprite_out, raster_requests, cache, cell, x, row_y, width, cell_metrics, color),
+        .curly => try appendUndercurlSprite(allocator, sprite_out, raster_requests, cache, cell, x, row_y, width, deco, cell_metrics, color),
     }
 }
 
@@ -460,14 +460,23 @@ fn appendUndercurlSprite(
     x: i32,
     row_y: i32,
     width: u16,
+    deco: metrics.DecorationGeometry,
     cell_metrics: contract.CellMetrics,
     color: contract.Rgba8,
 ) !void {
     const cell_h = @max(cell_metrics.cell_h_px, 1);
-    const stroke: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 9, 10), 1, 4));
-    const amplitude: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 11, 12), 1, 2));
-    const period: u16 = @max(cell_metrics.cell_w_px * 2, 8);
-    const y_px: u16 = @intCast(std.math.clamp(@as(i32, @intCast(cell_h)) - @as(i32, @intCast(amplitude)) - @as(i32, @intCast(stroke)), 0, @as(i32, @intCast(cell_h - 1))));
+    const underline_position: u16 = @intCast(std.math.clamp(deco.underline_y_px, 0, @as(i32, @intCast(cell_h - 1))));
+    const underline_thickness = deco.underline_h_px;
+    const half_thickness = underline_thickness / 2;
+    const half_remainder = underline_thickness % 2;
+    const position_base = @min(underline_position, saturatingSub(cell_h, half_thickness + half_remainder));
+    const bounded_thickness = @max(@as(u16, 1), @min(underline_thickness, saturatingSub(cell_h, position_base + 1)));
+    const max_height = cell_h - saturatingSub(position_base, bounded_thickness / 2);
+    const amplitude: u16 = @max(@as(u16, 1), max_height / 4);
+    const stroke: u16 = if (bounded_thickness < 3) 0 else bounded_thickness - 2;
+    var y_px: u16 = @intCast(@min(@as(u32, position_base) + @as(u32, amplitude) * 2, @as(u32, cell_h - 1)));
+    if (y_px + amplitude > cell_h - 1) y_px = saturatingSub(cell_h - 1, amplitude);
+    const period: u16 = @max(saturatingSub(cell_metrics.cell_w_px, 1), 1);
     const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
     const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
     const residency = cache.ensureDetailed(key, false);
@@ -482,6 +491,10 @@ fn appendUndercurlSprite(
         .first_cell = cell.first_cell,
         .cell_span = cell.cell_span,
     });
+}
+
+fn saturatingSub(a: u16, b: u16) u16 {
+    return if (a > b) a - b else 0;
 }
 
 fn foregroundForGroup(cells: []const contract.RenderableCell, first_cell: u32) contract.Rgba8 {
@@ -767,7 +780,7 @@ test "scene emits undercurl sprite for curly underline" {
     try std.testing.expectEqual(@as(usize, 1), owned.scene.raster_requests.len);
     try std.testing.expectEqual(contract.SpriteRasterKind.undercurl, owned.scene.raster_requests[0].kind);
     try std.testing.expectEqual(@as(u16, 32), owned.scene.sprite_draws[0].width_px);
-    try std.testing.expect(owned.scene.raster_requests[0].decoration.amplitude_px > 1);
+    try std.testing.expect(owned.scene.raster_requests[0].decoration.amplitude_px >= 1);
 }
 
 test "scene merges contiguous strikethrough spans" {
