@@ -39,6 +39,7 @@ pub fn defaultCellMetrics(font_px: u16) contract.CellMetrics {
         .cell_w_px = @max(@divFloor(h, 2), 1),
         .cell_h_px = h,
         .baseline_px = @intCast(@max(h - @divFloor(h, 5), 1)),
+        .box_thickness_px = defaultBoxThickness(h),
     };
 }
 
@@ -56,8 +57,22 @@ pub fn defaultFontMetrics(cell: contract.CellMetrics) contract.FontMetrics {
     };
 }
 
+pub fn defaultBoxThickness(cell_h_px: u16) u16 {
+    _ = cell_h_px;
+    // Kitty default: ceil(scale(1) * box_drawing_scale[1](1pt) * dpi(96) / 72).
+    return 2;
+}
+
 fn scaledDecorationThickness(cell_h_px: u16) u16 {
     return @intCast(@max(@divTrunc(@as(u32, @max(cell_h_px, 1)) + 15, 16), 1));
+}
+
+/// Resolves generated box drawing stroke metrics from cell metrics.
+pub fn boxDrawingRasterMetrics(cell: contract.CellMetrics) contract.BoxDrawingRasterMetrics {
+    const light = if (cell.box_thickness_px == 0) defaultBoxThickness(cell.cell_h_px) else cell.box_thickness_px;
+    const doubled = @min(@as(u32, light) * 2, std.math.maxInt(u16));
+    const incremented = @min(@as(u32, light) + 1, std.math.maxInt(u16));
+    return .{ .light_stroke_px = light, .heavy_stroke_px = @intCast(@max(doubled, incremented)) };
 }
 
 pub fn decorationGeometry(cell: contract.CellMetrics, font: contract.FontMetrics) DecorationGeometry {
@@ -121,6 +136,7 @@ pub fn cellMetricsFromFaceMetrics(input: FaceMetrics26Dot6) contract.CellMetrics
         .cell_w_px = @max(w, 1),
         .cell_h_px = @max(h, 1),
         .baseline_px = @intCast(baselineFromFaceMetrics(input, h)),
+        .box_thickness_px = defaultBoxThickness(h),
     };
 }
 

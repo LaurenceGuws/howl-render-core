@@ -337,6 +337,21 @@ test "text engine rerasterizes sprites after cell metrics change" {
     try std.testing.expectEqual(@as(u16, 32), second.raster_plan.outputs[0].height_px);
 }
 
+test "text engine rerasterizes sprites after box thickness change" {
+    var engine = try Engine.initCapacity(std.testing.allocator, 8);
+    defer engine.deinit();
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{.{ .codepoint = 0x256d, .fg = white, .bg = black }};
+    var first = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 1 } });
+    const first_key = first.scene.scene.sprite_draws[0].sprite.key.value;
+    first.deinit();
+    var second = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 3 } });
+    defer second.deinit();
+    try std.testing.expect(first_key != second.scene.scene.sprite_draws[0].sprite.key.value);
+    try std.testing.expectEqual(@as(usize, 1), second.raster_plan.outputs.len);
+}
+
 test "text engine accepts configurable shaper" {
     const Stub = struct {
         hits: usize = 0,

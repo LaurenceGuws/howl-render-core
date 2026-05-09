@@ -47,6 +47,7 @@ pub const CellMetrics = struct {
     cell_w_px: u16,
     cell_h_px: u16,
     baseline_px: i16,
+    box_thickness_px: u16 = 0,
 };
 
 pub const GridMetrics = struct {
@@ -241,12 +242,19 @@ pub const DecorationSpriteRaster = struct {
     y_px: u16 = 0,
 };
 
+/// Stroke metrics for generated box drawing and related terminal sprites.
+pub const BoxDrawingRasterMetrics = struct {
+    light_stroke_px: u16 = 1,
+    heavy_stroke_px: u16 = 2,
+};
+
 /// Request to rasterize either shaped glyphs or a generated text sprite.
 pub const SpriteRasterRequest = struct {
     kind: SpriteRasterKind = .glyph,
     key: SpriteKey,
     group: GlyphGroup,
     decoration: DecorationSpriteRaster = .{},
+    box_drawing: BoxDrawingRasterMetrics = .{},
     placement: GlyphPlacement = .{},
     width_px: u16,
     height_px: u16,

@@ -188,6 +188,9 @@ fn routeSpriteKey(route: contract.SpecialSpriteRoute, cluster: contract.CellClus
     h.update(std.mem.asBytes(&cell_metrics.cell_w_px));
     h.update(std.mem.asBytes(&cell_metrics.cell_h_px));
     h.update(std.mem.asBytes(&cell_metrics.baseline_px));
+    const box = metrics.boxDrawingRasterMetrics(cell_metrics);
+    h.update(std.mem.asBytes(&box.light_stroke_px));
+    h.update(std.mem.asBytes(&box.heavy_stroke_px));
     return .{ .value = h.final() };
 }
 

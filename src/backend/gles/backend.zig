@@ -531,6 +531,7 @@ pub const Backend = struct {
             .cell_w_px = cell_w,
             .cell_h_px = cell_h,
             .baseline_px = @intCast(std.math.clamp(baseline, 1, @as(i32, @intCast(cell_h)))),
+            .box_thickness_px = render_core.Text.Metrics.defaultBoxThickness(cell_h),
         };
     }
 

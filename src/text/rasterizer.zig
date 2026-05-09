@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");
+const metrics = @import("metrics.zig");
 
 pub const RasterSpriteRequest = struct {
     key: contract.SpriteKey,
@@ -56,6 +57,7 @@ pub fn requestForGroup(group: contract.GlyphGroup, cell_metrics: contract.CellMe
         .width_px = @intCast(@as(u32, width_cells) * @as(u32, cell_metrics.cell_w_px)),
         .height_px = cell_metrics.cell_h_px,
         .baseline_px = cell_metrics.baseline_px,
+        .box_drawing = metrics.boxDrawingRasterMetrics(cell_metrics),
         .color_mode = if (group.kind == .emoji) .color else .alpha,
     };
 }
@@ -106,30 +108,53 @@ pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, deco
 
 /// Rasterizes backend-independent special sprites that should not depend on font fallback.
 pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32) bool {
+    const baseline: i16 = @intCast(@min(height_px, @as(u16, @intCast(std.math.maxInt(i16)))));
+    return rasterizeGeneratedSpecialAlphaWithMetrics(pixels, width_px, height_px, codepoint, metrics.boxDrawingRasterMetrics(.{ .cell_w_px = width_px, .cell_h_px = height_px, .baseline_px = baseline }));
+}
+
+/// Rasterizes backend-independent special sprites with explicit stroke metrics.
+pub fn rasterizeGeneratedSpecialAlphaWithMetrics(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
     @memset(pixels, 0);
     const width = @max(width_px, 1);
     const height = @max(height_px, 1);
     switch (codepoint) {
+        0x2504 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 2),
+        0x2505 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 2),
+        0x2506 => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.light_stroke_px, 2),
+        0x2507 => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.heavy_stroke_px, 2),
+        0x2508 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 3),
+        0x2509 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 3),
+        0x250a => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.light_stroke_px, 3),
+        0x250b => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.heavy_stroke_px, 3),
+        0x254c => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 1),
+        0x254d => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 1),
+        0x254e => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.light_stroke_px, 1),
+        0x254f => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.heavy_stroke_px, 1),
+        0x2500...0x2503, 0x250c...0x254b, 0x2550...0x256c, 0x2574...0x257f => if (lineSpec(codepoint)) |lines| rasterizeBoxLines(pixels, width, height, lines, box_drawing) else return false,
         0xe0b0 => rasterizePowerlineTriangle(pixels, width, height, true, false),
         0xe0b2 => rasterizePowerlineTriangle(pixels, width, height, false, false),
-        0xe0b1 => rasterizePowerlineHalfDiagonal(pixels, width, height, true),
-        0xe0b3 => rasterizePowerlineHalfDiagonal(pixels, width, height, false),
-        0xe0b4 => rasterizePowerlineD(pixels, width, height, true, true),
-        0xe0b6 => rasterizePowerlineD(pixels, width, height, false, true),
-        0xe0b5 => rasterizePowerlineD(pixels, width, height, true, false),
-        0xe0b7 => rasterizePowerlineD(pixels, width, height, false, false),
+        0xe0b1 => rasterizePowerlineHalfDiagonal(pixels, width, height, true, box_drawing),
+        0xe0b3 => rasterizePowerlineHalfDiagonal(pixels, width, height, false, box_drawing),
+        0xe0b4 => rasterizePowerlineD(pixels, width, height, true, true, box_drawing),
+        0xe0b6 => rasterizePowerlineD(pixels, width, height, false, true, box_drawing),
+        0xe0b5 => rasterizePowerlineD(pixels, width, height, true, false, box_drawing),
+        0xe0b7 => rasterizePowerlineD(pixels, width, height, false, false, box_drawing),
         0xe0b8 => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_left),
-        0xe0b9, 0xe0bf => rasterizeCrossLine(pixels, width, height, true),
+        0xe0b9, 0xe0bf => rasterizeCrossLine(pixels, width, height, true, box_drawing),
         0xe0ba => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_right),
-        0xe0bb, 0xe0bd => rasterizeCrossLine(pixels, width, height, false),
+        0xe0bb, 0xe0bd => rasterizeCrossLine(pixels, width, height, false, box_drawing),
         0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
-        0x2571 => rasterizeCrossLine(pixels, width, height, false),
-        0x2572 => rasterizeCrossLine(pixels, width, height, true),
+        0x2571 => rasterizeCrossLine(pixels, width, height, false, box_drawing),
+        0x2572 => rasterizeCrossLine(pixels, width, height, true, box_drawing),
         0x2573 => {
-            rasterizeCrossLine(pixels, width, height, false);
-            rasterizeCrossLine(pixels, width, height, true);
+            rasterizeCrossLine(pixels, width, height, false, box_drawing);
+            rasterizeCrossLine(pixels, width, height, true, box_drawing);
         },
+        0x256d => rasterizeRoundedCorner(pixels, width, height, .top_left, box_drawing),
+        0x256e => rasterizeRoundedCorner(pixels, width, height, .top_right, box_drawing),
+        0x2570 => rasterizeRoundedCorner(pixels, width, height, .bottom_left, box_drawing),
+        0x256f => rasterizeRoundedCorner(pixels, width, height, .bottom_right, box_drawing),
         0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
         0x1fb00...0x1fb13 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 1)),
@@ -143,8 +168,335 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
     return true;
 }
 
-fn rasterizeCrossLine(pixels: []u8, width: u16, height: u16, left: bool) void {
-    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
+const RoundedCorner = enum { top_left, top_right, bottom_left, bottom_right };
+
+const BoxLineStyle = enum { none, light, heavy, double };
+
+const BoxLines = struct {
+    up: BoxLineStyle = .none,
+    right: BoxLineStyle = .none,
+    down: BoxLineStyle = .none,
+    left: BoxLineStyle = .none,
+};
+
+fn lineSpec(cp: u32) ?BoxLines {
+    return switch (cp) {
+        0x2500 => .{ .left = .light, .right = .light },
+        0x2501 => .{ .left = .heavy, .right = .heavy },
+        0x2502 => .{ .up = .light, .down = .light },
+        0x2503 => .{ .up = .heavy, .down = .heavy },
+        0x250c => .{ .down = .light, .right = .light },
+        0x250d => .{ .down = .light, .right = .heavy },
+        0x250e => .{ .down = .heavy, .right = .light },
+        0x250f => .{ .down = .heavy, .right = .heavy },
+        0x2510 => .{ .down = .light, .left = .light },
+        0x2511 => .{ .down = .light, .left = .heavy },
+        0x2512 => .{ .down = .heavy, .left = .light },
+        0x2513 => .{ .down = .heavy, .left = .heavy },
+        0x2514 => .{ .up = .light, .right = .light },
+        0x2515 => .{ .up = .light, .right = .heavy },
+        0x2516 => .{ .up = .heavy, .right = .light },
+        0x2517 => .{ .up = .heavy, .right = .heavy },
+        0x2518 => .{ .up = .light, .left = .light },
+        0x2519 => .{ .up = .light, .left = .heavy },
+        0x251a => .{ .up = .heavy, .left = .light },
+        0x251b => .{ .up = .heavy, .left = .heavy },
+        0x251c => .{ .up = .light, .down = .light, .right = .light },
+        0x251d => .{ .up = .light, .down = .light, .right = .heavy },
+        0x251e => .{ .up = .heavy, .right = .light, .down = .light },
+        0x251f => .{ .down = .heavy, .right = .light, .up = .light },
+        0x2520 => .{ .up = .heavy, .down = .heavy, .right = .light },
+        0x2521 => .{ .down = .light, .right = .heavy, .up = .heavy },
+        0x2522 => .{ .up = .light, .right = .heavy, .down = .heavy },
+        0x2523 => .{ .up = .heavy, .down = .heavy, .right = .heavy },
+        0x2524 => .{ .up = .light, .down = .light, .left = .light },
+        0x2525 => .{ .up = .light, .down = .light, .left = .heavy },
+        0x2526 => .{ .up = .heavy, .left = .light, .down = .light },
+        0x2527 => .{ .down = .heavy, .left = .light, .up = .light },
+        0x2528 => .{ .up = .heavy, .down = .heavy, .left = .light },
+        0x2529 => .{ .down = .light, .left = .heavy, .up = .heavy },
+        0x252a => .{ .up = .light, .left = .heavy, .down = .heavy },
+        0x252b => .{ .up = .heavy, .down = .heavy, .left = .heavy },
+        0x252c => .{ .down = .light, .left = .light, .right = .light },
+        0x252d => .{ .left = .heavy, .right = .light, .down = .light },
+        0x252e => .{ .right = .heavy, .left = .light, .down = .light },
+        0x252f => .{ .down = .light, .left = .heavy, .right = .heavy },
+        0x2530 => .{ .down = .heavy, .left = .light, .right = .light },
+        0x2531 => .{ .right = .light, .left = .heavy, .down = .heavy },
+        0x2532 => .{ .left = .light, .right = .heavy, .down = .heavy },
+        0x2533 => .{ .down = .heavy, .left = .heavy, .right = .heavy },
+        0x2534 => .{ .up = .light, .left = .light, .right = .light },
+        0x2535 => .{ .left = .heavy, .right = .light, .up = .light },
+        0x2536 => .{ .right = .heavy, .left = .light, .up = .light },
+        0x2537 => .{ .up = .light, .left = .heavy, .right = .heavy },
+        0x2538 => .{ .up = .heavy, .left = .light, .right = .light },
+        0x2539 => .{ .right = .light, .left = .heavy, .up = .heavy },
+        0x253a => .{ .left = .light, .right = .heavy, .up = .heavy },
+        0x253b => .{ .up = .heavy, .left = .heavy, .right = .heavy },
+        0x253c => .{ .up = .light, .down = .light, .left = .light, .right = .light },
+        0x253d => .{ .left = .heavy, .right = .light, .up = .light, .down = .light },
+        0x253e => .{ .right = .heavy, .left = .light, .up = .light, .down = .light },
+        0x253f => .{ .up = .light, .down = .light, .left = .heavy, .right = .heavy },
+        0x2540 => .{ .up = .heavy, .down = .light, .left = .light, .right = .light },
+        0x2541 => .{ .down = .heavy, .up = .light, .left = .light, .right = .light },
+        0x2542 => .{ .up = .heavy, .down = .heavy, .left = .light, .right = .light },
+        0x2543 => .{ .left = .heavy, .up = .heavy, .right = .light, .down = .light },
+        0x2544 => .{ .right = .heavy, .up = .heavy, .left = .light, .down = .light },
+        0x2545 => .{ .left = .heavy, .down = .heavy, .right = .light, .up = .light },
+        0x2546 => .{ .right = .heavy, .down = .heavy, .left = .light, .up = .light },
+        0x2547 => .{ .down = .light, .up = .heavy, .left = .heavy, .right = .heavy },
+        0x2548 => .{ .up = .light, .down = .heavy, .left = .heavy, .right = .heavy },
+        0x2549 => .{ .right = .light, .left = .heavy, .up = .heavy, .down = .heavy },
+        0x254a => .{ .left = .light, .right = .heavy, .up = .heavy, .down = .heavy },
+        0x254b => .{ .up = .heavy, .down = .heavy, .left = .heavy, .right = .heavy },
+        0x2550 => .{ .left = .double, .right = .double },
+        0x2551 => .{ .up = .double, .down = .double },
+        0x2552 => .{ .down = .light, .right = .double },
+        0x2553 => .{ .down = .double, .right = .light },
+        0x2554 => .{ .down = .double, .right = .double },
+        0x2555 => .{ .down = .light, .left = .double },
+        0x2556 => .{ .down = .double, .left = .light },
+        0x2557 => .{ .down = .double, .left = .double },
+        0x2558 => .{ .up = .light, .right = .double },
+        0x2559 => .{ .up = .double, .right = .light },
+        0x255a => .{ .up = .double, .right = .double },
+        0x255b => .{ .up = .light, .left = .double },
+        0x255c => .{ .up = .double, .left = .light },
+        0x255d => .{ .up = .double, .left = .double },
+        0x255e => .{ .up = .light, .down = .light, .right = .double },
+        0x255f => .{ .up = .double, .down = .double, .right = .light },
+        0x2560 => .{ .up = .double, .down = .double, .right = .double },
+        0x2561 => .{ .up = .light, .down = .light, .left = .double },
+        0x2562 => .{ .up = .double, .down = .double, .left = .light },
+        0x2563 => .{ .up = .double, .down = .double, .left = .double },
+        0x2564 => .{ .down = .light, .left = .double, .right = .double },
+        0x2565 => .{ .down = .double, .left = .light, .right = .light },
+        0x2566 => .{ .down = .double, .left = .double, .right = .double },
+        0x2567 => .{ .up = .light, .left = .double, .right = .double },
+        0x2568 => .{ .up = .double, .left = .light, .right = .light },
+        0x2569 => .{ .up = .double, .left = .double, .right = .double },
+        0x256a => .{ .up = .light, .down = .light, .left = .double, .right = .double },
+        0x256b => .{ .up = .double, .down = .double, .left = .light, .right = .light },
+        0x256c => .{ .up = .double, .down = .double, .left = .double, .right = .double },
+        0x2574 => .{ .left = .light },
+        0x2575 => .{ .up = .light },
+        0x2576 => .{ .right = .light },
+        0x2577 => .{ .down = .light },
+        0x2578 => .{ .left = .heavy },
+        0x2579 => .{ .up = .heavy },
+        0x257a => .{ .right = .heavy },
+        0x257b => .{ .down = .heavy },
+        0x257c => .{ .left = .light, .right = .heavy },
+        0x257d => .{ .up = .light, .down = .heavy },
+        0x257e => .{ .left = .heavy, .right = .light },
+        0x257f => .{ .up = .heavy, .down = .light },
+        else => null,
+    };
+}
+
+fn rasterizeBoxLines(pixels: []u8, width: u16, height: u16, lines: BoxLines, box_drawing: contract.BoxDrawingRasterMetrics) void {
+    const light = @max(box_drawing.light_stroke_px, 1);
+    const heavy = @max(box_drawing.heavy_stroke_px, light);
+
+    const h_light = centeredRange(height, height / 2, light);
+    const h_heavy = centeredRange(height, height / 2, heavy);
+    const h_double_top = saturatingSubU16(h_light.start, light);
+    const h_double_bottom = @min(h_light.end + light, height);
+
+    const v_light = centeredRange(width, width / 2, light);
+    const v_heavy = centeredRange(width, width / 2, heavy);
+    const v_double_left = saturatingSubU16(v_light.start, light);
+    const v_double_right = @min(v_light.end + light, width);
+
+    // These bounds mirror Ghostty/Kitty box connector rules: each arm stops at
+    // the correct neighboring stroke edge instead of naively overpainting center.
+    const up_bottom = if (lines.left == .heavy or lines.right == .heavy)
+        h_heavy.end
+    else if (lines.left != lines.right or lines.down == lines.up)
+        if (lines.left == .double or lines.right == .double) h_double_bottom else h_light.end
+    else if (lines.left == .none and lines.right == .none)
+        h_light.end
+    else
+        h_light.start;
+
+    const down_top = if (lines.left == .heavy or lines.right == .heavy)
+        h_heavy.start
+    else if (lines.left != lines.right or lines.up == lines.down)
+        if (lines.left == .double or lines.right == .double) h_double_top else h_light.start
+    else if (lines.left == .none and lines.right == .none)
+        h_light.start
+    else
+        h_light.end;
+
+    const left_right = if (lines.up == .heavy or lines.down == .heavy)
+        v_heavy.end
+    else if (lines.up != lines.down or lines.left == lines.right)
+        if (lines.up == .double or lines.down == .double) v_double_right else v_light.end
+    else if (lines.up == .none and lines.down == .none)
+        v_light.end
+    else
+        v_light.start;
+
+    const right_left = if (lines.up == .heavy or lines.down == .heavy)
+        v_heavy.start
+    else if (lines.up != lines.down or lines.right == lines.left)
+        if (lines.up == .double or lines.down == .double) v_double_left else v_light.start
+    else if (lines.up == .none and lines.down == .none)
+        v_light.start
+    else
+        v_light.end;
+
+    drawBoxVerticalArm(pixels, width, height, lines.up, 0, up_bottom, v_light, v_heavy, v_double_left, v_double_right, lines.left == .double, lines.right == .double, light);
+    drawBoxHorizontalArm(pixels, width, height, lines.right, right_left, width, h_light, h_heavy, h_double_top, h_double_bottom, lines.up == .double, lines.down == .double, light);
+    drawBoxVerticalArm(pixels, width, height, lines.down, down_top, height, v_light, v_heavy, v_double_left, v_double_right, lines.left == .double, lines.right == .double, light);
+    drawBoxHorizontalArm(pixels, width, height, lines.left, 0, left_right, h_light, h_heavy, h_double_top, h_double_bottom, lines.up == .double, lines.down == .double, light);
+}
+
+fn drawBoxVerticalArm(pixels: []u8, width: u16, height: u16, style: BoxLineStyle, y0: u16, y1: u16, light_range: Range, heavy_range: Range, double_left: u16, double_right: u16, joins_left_double: bool, joins_right_double: bool, light: u16) void {
+    if (y1 <= y0) return;
+    switch (style) {
+        .none => {},
+        .light => fillRectRange(pixels, width, height, light_range.start, y0, light_range.end, y1),
+        .heavy => fillRectRange(pixels, width, height, heavy_range.start, y0, heavy_range.end, y1),
+        .double => {
+            const left_y1 = if (joins_left_double) @min(light_range.start + light, y1) else y1;
+            const right_y1 = if (joins_right_double) @min(light_range.start + light, y1) else y1;
+            fillRectRange(pixels, width, height, double_left, y0, light_range.start, left_y1);
+            fillRectRange(pixels, width, height, light_range.end, y0, double_right, right_y1);
+        },
+    }
+}
+
+fn drawBoxHorizontalArm(pixels: []u8, width: u16, height: u16, style: BoxLineStyle, x0: u16, x1: u16, light_range: Range, heavy_range: Range, double_top: u16, double_bottom: u16, joins_up_double: bool, joins_down_double: bool, light: u16) void {
+    if (x1 <= x0) return;
+    switch (style) {
+        .none => {},
+        .light => fillRectRange(pixels, width, height, x0, light_range.start, x1, light_range.end),
+        .heavy => fillRectRange(pixels, width, height, x0, heavy_range.start, x1, heavy_range.end),
+        .double => {
+            const top_x0 = if (joins_up_double) @max(saturatingSubU16(width / 2, light / 2) + light, x0) else x0;
+            const bottom_x0 = if (joins_down_double) @max(saturatingSubU16(width / 2, light / 2) + light, x0) else x0;
+            fillRectRange(pixels, width, height, top_x0, double_top, x1, light_range.start);
+            fillRectRange(pixels, width, height, bottom_x0, light_range.end, x1, double_bottom);
+        },
+    }
+}
+
+fn fillRectRange(pixels: []u8, stride: u16, canvas_height: u16, x0: u16, y0: u16, x1: u16, y1: u16) void {
+    const left = @min(x0, stride);
+    const top = @min(y0, canvas_height);
+    const right = @min(x1, stride);
+    const bottom = @min(y1, canvas_height);
+    if (right <= left or bottom <= top) return;
+    fillRectAlpha(pixels, stride, left, top, right - left, bottom - top, 255);
+}
+
+const BoxLineAxis = enum { horizontal, vertical };
+
+fn rasterizeDashedBoxLine(pixels: []u8, width: u16, height: u16, axis: BoxLineAxis, stroke_px: u16, gaps: u16) void {
+    const stroke = @max(stroke_px, 1);
+    const size = if (axis == .horizontal) width else height;
+    const dash_count = @max(gaps + 1, 1);
+    const dash_len = @max(size / (dash_count * 2 - 1), stroke);
+    var dash: u16 = 0;
+    while (dash < dash_count) : (dash += 1) {
+        const start = @min(dash * dash_len * 2, size);
+        const end = @min(start + dash_len, size);
+        if (end <= start) continue;
+        if (axis == .horizontal) {
+            const y = centeredRange(height, height / 2, stroke);
+            if (y.end > y.start) fillRectAlpha(pixels, width, start, y.start, end - start, y.end - y.start, 255);
+        } else {
+            const x = centeredRange(width, width / 2, stroke);
+            if (x.end > x.start) fillRectAlpha(pixels, width, x.start, start, x.end - x.start, end - start, 255);
+        }
+    }
+}
+
+fn rasterizeRoundedCorner(pixels: []u8, width: u16, height: u16, corner: RoundedCorner, box_drawing: contract.BoxDrawingRasterMetrics) void {
+    // Match Kitty's rounded box corner SDF so the arc aligns with centered box strokes.
+    const stroke_u = @max(box_drawing.light_stroke_px, 1);
+    const stroke = @as(f64, @floatFromInt(stroke_u));
+    const hori = centeredRange(height, height / 2, stroke_u);
+    const vert = centeredRange(width, width / 2, stroke_u);
+    const adjusted_hx = @as(f64, @floatFromInt(vert.start)) + @as(f64, @floatFromInt(vert.end - vert.start)) / 2.0;
+    const adjusted_hy = @as(f64, @floatFromInt(hori.start)) + @as(f64, @floatFromInt(hori.end - hori.start)) / 2.0;
+    const radius = @min(adjusted_hx, adjusted_hy);
+    const bx = adjusted_hx - radius;
+    const by = adjusted_hy - radius;
+    const half_stroke = stroke / 2.0;
+    const aa = 0.5;
+    const x_shift = switch (corner) {
+        .top_right, .bottom_right => adjusted_hx,
+        .top_left, .bottom_left => -adjusted_hx,
+    };
+    const y_shift = switch (corner) {
+        .top_left, .top_right => -adjusted_hy,
+        .bottom_left, .bottom_right => adjusted_hy,
+    };
+
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const sample_y = @as(f64, @floatFromInt(y)) + y_shift + 0.5;
+            const sample_x = @as(f64, @floatFromInt(x)) + x_shift + 0.5;
+            const pos_y = sample_y - adjusted_hy;
+            const pos_x = sample_x - adjusted_hx;
+            const qx = @abs(pos_x) - bx;
+            const qy = @abs(pos_y) - by;
+            const dx = if (qx > 0.0) qx else 0.0;
+            const dy = if (qy > 0.0) qy else 0.0;
+            const dist = @sqrt(dx * dx + dy * dy) + @min(@max(qx, qy), 0.0) - radius;
+            const edge_aa: f64 = if (qx > 1e-7 and qy > 1e-7) aa else 0.0;
+            const outer = half_stroke - dist;
+            const inner = -half_stroke - dist;
+            const alpha = smoothStep(-edge_aa, edge_aa, outer) - smoothStep(-edge_aa, edge_aa, inner);
+            if (alpha <= 0.0) continue;
+            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
+            pixels[idx] = @max(pixels[idx], @as(u8, @intFromFloat(@round(std.math.clamp(alpha, 0.0, 1.0) * 255.0))));
+        }
+    }
+
+    snapRoundedCornerConnections(pixels, width, height, corner, stroke_u);
+}
+
+fn snapRoundedCornerConnections(pixels: []u8, width: u16, height: u16, corner: RoundedCorner, stroke_px: u16) void {
+    const h_range = centeredRange(height, height / 2, stroke_px);
+    const v_range = centeredRange(width, width / 2, stroke_px);
+    const h_x: u16 = switch (corner) {
+        .top_left, .bottom_left => width - 1,
+        .top_right, .bottom_right => 0,
+    };
+    const v_y: u16 = switch (corner) {
+        .top_left, .top_right => height - 1,
+        .bottom_left, .bottom_right => 0,
+    };
+
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        pixels[@as(usize, y) * @as(usize, width) + @as(usize, h_x)] = if (y >= h_range.start and y < h_range.end) 255 else 0;
+    }
+
+    var x: u16 = 0;
+    while (x < width) : (x += 1) {
+        pixels[@as(usize, v_y) * @as(usize, width) + @as(usize, x)] = if (x >= v_range.start and x < v_range.end) 255 else 0;
+    }
+}
+
+fn centeredRange(size: u16, center: u16, thickness: u16) Range {
+    const start = saturatingSubU16(center, thickness / 2);
+    return .{ .start = start, .end = @min(start + thickness, size) };
+}
+
+fn smoothStep(edge0: f64, edge1: f64, x: f64) f64 {
+    if (edge0 == edge1) return if (x < edge0) 0.0 else 1.0;
+    const t = std.math.clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+
+fn rasterizeCrossLine(pixels: []u8, width: u16, height: u16, left: bool, box_drawing: contract.BoxDrawingRasterMetrics) void {
+    const line_w = @as(f64, @floatFromInt(@max(box_drawing.light_stroke_px, 1)));
     if (left) {
         drawLineAlpha(pixels, width, height, 0, 0, @floatFromInt(width - 1), @floatFromInt(height - 1), line_w);
     } else {
@@ -344,56 +696,12 @@ fn fillQuadrant(pixels: []u8, width: u16, height: u16, quadrant: BlockQuadrant) 
 const ShadeDensity = enum { light, medium, dark };
 
 fn fillShade(pixels: []u8, width: u16, height: u16, density: ShadeDensity) void {
-    const light = density == .light or density == .dark;
-    const invert = density == .dark;
-    const xnum: u16 = 12;
-    const square_w = @max(@as(u16, 1), width / xnum);
-    const square_h = square_w;
-    var cols = @max(@as(u16, 1), width / square_w);
-    var rows = @max(@as(u16, 1), height / square_h);
-    if (cols > 1 and ((cols & 1) != (xnum & 1))) cols -= 1;
-    if (rows > 1 and ((rows & 1) != 0)) rows -= 1;
-
-    const excess_cols = saturatingSubU16(width, square_w * cols);
-    const excess_rows = saturatingSubU16(height, square_h * rows);
-    const col_ext = @as(f64, @floatFromInt(excess_cols)) / @as(f64, @floatFromInt(cols));
-    const row_ext = @as(f64, @floatFromInt(excess_rows)) / @as(f64, @floatFromInt(rows));
-
-    var old_ey: u16 = 0;
-    var r: u16 = 0;
-    while (r < rows) : (r += 1) {
-        const ey: u16 = @intFromFloat(std.math.ceil(@as(f64, @floatFromInt(r)) * row_ext));
-        const extra_row = ey != old_ey;
-        var old_ex: u16 = 0;
-        var c: u16 = 0;
-        while (c < cols) : (c += 1) {
-            const ex: u16 = @intFromFloat(std.math.ceil(@as(f64, @floatFromInt(c)) * col_ext));
-            const extra_col = ex != old_ex;
-            const x0 = c * square_w + ex;
-            const y0 = r * square_h + ey;
-            if (extra_row and y0 < height) {
-                var xc: u16 = 0;
-                while (xc < square_w and x0 + xc < width) : (xc += 1) pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0 + xc)] = shadeExtraAlpha(light, invert, c);
-            }
-            if (extra_col and x0 < width) {
-                var yr: u16 = 0;
-                while (yr < square_h and y0 + yr < height) : (yr += 1) pixels[@as(usize, y0 + yr) * @as(usize, width) + @as(usize, x0)] = shadeExtraAlpha(light, invert, r);
-            }
-            if (extra_row and extra_col and x0 < width and y0 < height) pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0)] = 50;
-            const is_blank = invert != (((r & 1) != (c & 1)) or (light and (r & 1) == 1));
-            if (!is_blank) fillRectAlpha(pixels, width, x0, y0, @min(square_w, width - x0), @min(square_h, height - y0), 255);
-            old_ex = ex;
-        }
-        old_ey = ey;
-    }
-}
-
-fn shadeExtraAlpha(light: bool, invert: bool, index: u16) u8 {
-    if (light) {
-        if (invert) return if ((index & 1) == 1) 255 else 70;
-        return if ((index & 1) == 1) 0 else 70;
-    }
-    return if (((index & 1) == 1) == invert) 120 else 30;
+    const alpha: u8 = switch (density) {
+        .light => 0x40,
+        .medium => 0x80,
+        .dark => 0xc0,
+    };
+    fillRectAlpha(pixels, width, 0, 0, width, height, alpha);
 }
 
 fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool, inverted: bool) void {
@@ -410,9 +718,9 @@ fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool,
     }
 }
 
-fn rasterizePowerlineHalfDiagonal(pixels: []u8, width: u16, height: u16, left: bool) void {
+fn rasterizePowerlineHalfDiagonal(pixels: []u8, width: u16, height: u16, left: bool, box_drawing: contract.BoxDrawingRasterMetrics) void {
     const mid = @as(f64, @floatFromInt(height - 1)) / 2.0;
-    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
+    const line_w = @as(f64, @floatFromInt(@max(box_drawing.light_stroke_px, 1)));
     if (left) {
         drawLineAlpha(pixels, width, height, 0, 0, @floatFromInt(width - 1), mid, line_w);
         drawLineAlpha(pixels, width, height, @floatFromInt(width - 1), mid, 0, @floatFromInt(height - 1), line_w);
@@ -422,11 +730,11 @@ fn rasterizePowerlineHalfDiagonal(pixels: []u8, width: u16, height: u16, left: b
     }
 }
 
-fn rasterizePowerlineD(pixels: []u8, width: u16, height: u16, left: bool, filled: bool) void {
+fn rasterizePowerlineD(pixels: []u8, width: u16, height: u16, left: bool, filled: bool, box_drawing: contract.BoxDrawingRasterMetrics) void {
     if (filled) {
         rasterizePowerlineFilledD(pixels, width, height, left);
     } else {
-        rasterizePowerlineRoundedD(pixels, width, height, left);
+        rasterizePowerlineRoundedD(pixels, width, height, left, box_drawing);
     }
 }
 
@@ -500,8 +808,8 @@ fn supersampledCoverage(x: u16, y: u16, comptime inside: anytype, ctx: anytype) 
     return @intCast((hits * 255 + (factor * factor / 2)) / (factor * factor));
 }
 
-fn rasterizePowerlineRoundedD(pixels: []u8, width: u16, height: u16, left: bool) void {
-    const gap = @max(height / 12, 1);
+fn rasterizePowerlineRoundedD(pixels: []u8, width: u16, height: u16, left: bool, box_drawing: contract.BoxDrawingRasterMetrics) void {
+    const gap = @max(box_drawing.light_stroke_px, 1);
     const half_gap = @as(f64, @floatFromInt(gap)) / 2.0;
     const curve_w = if (width > gap) width - gap else width;
     const curve_h = if (height > gap) height - gap else height;
@@ -634,10 +942,7 @@ fn lineY(x1: f64, y1: f64, x2: f64, y2: f64, x: f64) f64 {
 
 fn rasterizeBrailleAlpha(pixels: []u8, width: u16, height: u16, mask: u8) void {
     if (mask == 0) return;
-    var x_gaps: [4]u16 = undefined;
-    var y_gaps: [8]u16 = undefined;
-    const dot_w = distributeDots(width, 2, x_gaps[0..2], x_gaps[2..4]);
-    const dot_h = distributeDots(height, 4, y_gaps[0..4], y_gaps[4..8]);
+    const layout = brailleLayout(width, height);
     var bit: u8 = 0;
     while (bit < 8) : (bit += 1) {
         if ((mask & (@as(u8, 1) << @intCast(bit))) == 0) continue;
@@ -652,31 +957,107 @@ fn rasterizeBrailleAlpha(pixels: []u8, width: u16, height: u16, mask: u8) void {
             3, 6 => 2,
             else => 3,
         };
-        const x = x_gaps[col] + col * dot_w;
-        const y = y_gaps[row] + row * dot_h;
-        fillRectAlpha(pixels, width, x, y, @min(dot_w, width - x), @min(dot_h, height - y), 255);
+        const x = layout.x[col];
+        const y = layout.y[row];
+        drawBrailleDotAlpha(pixels, width, height, x, y, layout.dot);
     }
 }
 
-fn distributeDots(available_space: u16, dot_count: u16, summed_gaps: []u16, gaps: []u16) u16 {
-    const count = @max(dot_count, 1);
-    const dot_size: u16 = @max(1, available_space / (2 * count));
-    var extra = if (available_space > 2 * count * dot_size) available_space - 2 * count * dot_size else 0;
-    for (gaps[0..count]) |*gap| gap.* = dot_size;
-    var idx: usize = 0;
-    while (extra > 0) : (extra -= 1) {
-        gaps[idx] += 1;
-        idx = (idx + 1) % count;
+fn drawBrailleDotAlpha(pixels: []u8, width: u16, height: u16, x0: u16, y0: u16, dot: u16) void {
+    const w = @min(dot, width - x0);
+    const h = @min(dot, height - y0);
+    if (w == 0 or h == 0) return;
+    if (w == 1 and h == 1) {
+        pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0)] = 255;
+        return;
     }
-    gaps[0] /= 2;
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        var sum: u16 = 0;
-        var j: usize = 0;
-        while (j <= i) : (j += 1) sum += gaps[j];
-        summed_gaps[i] = sum;
+
+    const factor = 4;
+    const cx = @as(f64, @floatFromInt(x0)) + @as(f64, @floatFromInt(w)) / 2.0;
+    const cy = @as(f64, @floatFromInt(y0)) + @as(f64, @floatFromInt(h)) / 2.0;
+    const rx = @max(@as(f64, @floatFromInt(w)) / 2.0, 0.5);
+    const ry = @max(@as(f64, @floatFromInt(h)) / 2.0, 0.5);
+    var y: u16 = 0;
+    while (y < h) : (y += 1) {
+        var x: u16 = 0;
+        while (x < w) : (x += 1) {
+            var hits: u16 = 0;
+            var sy: u8 = 0;
+            while (sy < factor) : (sy += 1) {
+                var sx: u8 = 0;
+                while (sx < factor) : (sx += 1) {
+                    const px = @as(f64, @floatFromInt(x0 + x)) + (@as(f64, @floatFromInt(sx)) + 0.5) / factor;
+                    const py = @as(f64, @floatFromInt(y0 + y)) + (@as(f64, @floatFromInt(sy)) + 0.5) / factor;
+                    const nx = (px - cx) / rx;
+                    const ny = (py - cy) / ry;
+                    if (nx * nx + ny * ny <= 1.0) hits += 1;
+                }
+            }
+            const alpha: u8 = @intCast((hits * 255 + (factor * factor / 2)) / (factor * factor));
+            if (alpha == 0) continue;
+            const idx = @as(usize, y0 + y) * @as(usize, width) + @as(usize, x0 + x);
+            pixels[idx] = @max(pixels[idx], alpha);
+        }
     }
-    return dot_size;
+}
+
+const BrailleLayout = struct { dot: u16, x: [2]u16, y: [4]u16 };
+
+fn brailleLayout(width: u16, height: u16) BrailleLayout {
+    var dot: i32 = @intCast(@min(width / 4, height / 8));
+    var x_spacing: i32 = @intCast(width / 4);
+    var y_spacing: i32 = @intCast(height / 8);
+    var x_margin = @divFloor(x_spacing, 2);
+    var y_margin = @divFloor(y_spacing, 2);
+    var x_left: i32 = @as(i32, @intCast(width)) - 2 * x_margin - x_spacing - 2 * dot;
+    var y_left: i32 = @as(i32, @intCast(height)) - 2 * y_margin - 3 * y_spacing - 4 * dot;
+
+    if (x_left >= 2 and y_left >= 4 and dot == 0) {
+        dot += 1;
+        x_left -= 2;
+        y_left -= 4;
+    }
+    if (x_left >= 2 and x_margin == 0) {
+        x_margin += 1;
+        x_left -= 2;
+    }
+    if (y_left >= 2 and y_margin == 0) {
+        y_margin += 1;
+        y_left -= 2;
+    }
+    if (x_left >= 1) {
+        x_spacing += 1;
+        x_left -= 1;
+    }
+    if (y_left >= 3) {
+        y_spacing += 1;
+        y_left -= 3;
+    }
+    if (x_left >= 2) {
+        x_margin += 1;
+        x_left -= 2;
+    }
+    if (y_left >= 2) {
+        y_margin += 1;
+        y_left -= 2;
+    }
+    if (x_left >= 2 and y_left >= 4) {
+        dot += 1;
+    }
+
+    const safe_dot: u16 = @intCast(@max(dot, 1));
+    const x0: u16 = @intCast(@max(x_margin, 0));
+    const y0: u16 = @intCast(@max(y_margin, 0));
+    return .{
+        .dot = safe_dot,
+        .x = .{ x0, @intCast(@min(@as(i32, @intCast(width - 1)), x_margin + dot + x_spacing)) },
+        .y = .{
+            y0,
+            @intCast(@min(@as(i32, @intCast(height - 1)), y_margin + dot + y_spacing)),
+            @intCast(@min(@as(i32, @intCast(height - 1)), y_margin + 2 * dot + 2 * y_spacing)),
+            @intCast(@min(@as(i32, @intCast(height - 1)), y_margin + 3 * dot + 3 * y_spacing)),
+        },
+    };
 }
 
 fn fillRectAlpha(pixels: []u8, stride: u16, x: u16, y: u16, width: u16, height: u16, alpha: u8) void {
@@ -751,9 +1132,17 @@ test "raster request preserves group key and dimensions" {
     try std.testing.expectEqual(@as(u64, 42), req.key.value);
     try std.testing.expectEqual(@as(u16, 16), req.width_px);
     try std.testing.expectEqual(@as(i16, 12), req.baseline_px);
+    try std.testing.expectEqual(@as(u16, 2), req.box_drawing.light_stroke_px);
     var out = try placeholderRaster(std.testing.allocator, req);
     defer out.deinit();
     try std.testing.expectEqual(@as(usize, 16 * 16), out.pixels.len);
+}
+
+test "raster request preserves configured box drawing thickness" {
+    const group = contract.GlyphGroup{ .first_cell = 0, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 43 }, .kind = .box_fallback };
+    const req = requestForGroup(group, .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 3 });
+    try std.testing.expectEqual(@as(u16, 3), req.box_drawing.light_stroke_px);
+    try std.testing.expectEqual(@as(u16, 6), req.box_drawing.heavy_stroke_px);
 }
 
 test "undercurl raster request generates alpha mask" {
@@ -787,6 +1176,42 @@ test "generated special raster draws braille dots" {
     }
     try std.testing.expect(top_left > 0);
     try std.testing.expectEqual(@as(usize, 0), bottom_right);
+}
+
+test "generated braille preserves gaps at small cell sizes" {
+    const width = 6;
+    const height = 12;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x28ff));
+
+    var blank_col = false;
+    for (0..width) |x| {
+        var lit = false;
+        for (0..height) |y| lit = lit or pixels[y * width + x] != 0;
+        if (!lit) blank_col = true;
+    }
+    var blank_row = false;
+    for (0..height) |y| {
+        var lit = false;
+        for (0..width) |x| lit = lit or pixels[y * width + x] != 0;
+        if (!lit) blank_row = true;
+    }
+
+    try std.testing.expect(blank_col);
+    try std.testing.expect(blank_row);
+}
+
+test "generated braille uses antialiased dots when possible" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x28ff));
+
+    var partial = false;
+    for (pixels) |alpha| {
+        if (alpha > 0 and alpha < 255) partial = true;
+    }
+    try std.testing.expect(partial);
 }
 
 test "generated special raster draws powerline triangle" {
@@ -842,7 +1267,7 @@ test "generated special raster draws stroked powerline D" {
         if (alpha != 0) lit += 1;
     }
     try std.testing.expect(lit > 0);
-    try std.testing.expect(lit < pixels.len / 3);
+    try std.testing.expect(lit < pixels.len / 2);
 }
 
 test "generated special raster draws eighth block" {
@@ -889,19 +1314,14 @@ test "generated special raster uses Kitty eighth distribution" {
     try std.testing.expectEqual(@as(usize, height), right_lit);
 }
 
-test "generated special raster uses Kitty shade intensity" {
+test "generated special raster uses uniform shade intensity" {
     const width = 13;
     const height = 13;
     var pixels = [_]u8{0} ** (width * height);
     try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2592));
-    var saw_dim = false;
-    var saw_full = false;
     for (pixels) |alpha| {
-        if (alpha > 0 and alpha < 255) saw_dim = true;
-        if (alpha == 255) saw_full = true;
+        try std.testing.expectEqual(@as(u8, 0x80), alpha);
     }
-    try std.testing.expect(saw_dim);
-    try std.testing.expect(saw_full);
 }
 
 test "generated special raster draws Kitty sextants" {
@@ -994,6 +1414,206 @@ test "generated special raster draws box diagonal lines" {
     }
     try std.testing.expect(lit > 0);
     try std.testing.expect(lit < pixels.len / 2);
+}
+
+test "generated special raster draws double box lines" {
+    const width = 12;
+    const height = 18;
+    var hline = [_]u8{0} ** (width * height);
+    var vline = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&hline, width, height, 0x2550));
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&vline, width, height, 0x2551));
+
+    var h_rows: usize = 0;
+    for (0..height) |y| {
+        var row_lit = false;
+        for (0..width) |x| row_lit = row_lit or hline[y * width + x] != 0;
+        if (row_lit) h_rows += 1;
+    }
+    var v_cols: usize = 0;
+    for (0..width) |x| {
+        var col_lit = false;
+        for (0..height) |y| col_lit = col_lit or vline[y * width + x] != 0;
+        if (col_lit) v_cols += 1;
+    }
+
+    try std.testing.expect(h_rows >= 2);
+    try std.testing.expect(v_cols >= 2);
+    try std.testing.expect(hline[(height / 2) * width + width / 2] == 0);
+    try std.testing.expect(vline[(height / 2) * width + width / 2] == 0);
+}
+
+test "generated special raster draws dashed box lines" {
+    const width = 18;
+    const height = 18;
+    var hline = [_]u8{0} ** (width * height);
+    var vline = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&hline, width, height, 0x2504));
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&vline, width, height, 0x2506));
+
+    var h_lit: usize = 0;
+    var h_blank: usize = 0;
+    const y = height / 2;
+    for (0..width) |x| {
+        if (hline[y * width + x] != 0) h_lit += 1 else h_blank += 1;
+    }
+    var v_lit: usize = 0;
+    var v_blank: usize = 0;
+    const x = width / 2;
+    for (0..height) |yy| {
+        if (vline[yy * width + x] != 0) v_lit += 1 else v_blank += 1;
+    }
+
+    try std.testing.expect(h_lit > 0 and h_blank > 0);
+    try std.testing.expect(v_lit > 0 and v_blank > 0);
+}
+
+test "generated box connectors stop at stroke edges" {
+    const width = 10;
+    const height = 20;
+    const box = contract.BoxDrawingRasterMetrics{ .light_stroke_px = 2, .heavy_stroke_px = 4 };
+    const h = centeredRange(height, height / 2, box.light_stroke_px);
+    const v = centeredRange(width, width / 2, box.light_stroke_px);
+
+    var top_right = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&top_right, width, height, 0x2510, box));
+    try std.testing.expectEqual(@as(u8, 255), top_right[h.start * width + v.start - 1]);
+    try std.testing.expectEqual(@as(u8, 255), top_right[h.start * width + v.start]);
+    try std.testing.expectEqual(@as(u8, 255), top_right[h.start * width + v.end - 1]);
+    try std.testing.expectEqual(@as(u8, 0), top_right[h.start * width + v.end]);
+
+    var bottom_left = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&bottom_left, width, height, 0x2514, box));
+    try std.testing.expectEqual(@as(u8, 0), bottom_left[h.start * width + v.start - 1]);
+    try std.testing.expectEqual(@as(u8, 255), bottom_left[h.start * width + v.start]);
+    try std.testing.expectEqual(@as(u8, 255), bottom_left[h.start * width + v.end]);
+}
+
+test "generated tee connectors use centered light joins" {
+    const width = 10;
+    const height = 20;
+    const box = contract.BoxDrawingRasterMetrics{ .light_stroke_px = 2, .heavy_stroke_px = 4 };
+    const h = centeredRange(height, height / 2, box.light_stroke_px);
+    const v = centeredRange(width, width / 2, box.light_stroke_px);
+
+    var left_tee = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&left_tee, width, height, 0x251c, box));
+    try std.testing.expectEqual(@as(u8, 0), left_tee[h.start * width + v.start - 1]);
+    try std.testing.expectEqual(@as(u8, 255), left_tee[h.start * width + v.end - 1]);
+    try std.testing.expectEqual(@as(u8, 255), left_tee[h.start * width + width - 1]);
+    try std.testing.expectEqual(@as(u8, 255), left_tee[(h.start - 1) * width + v.start]);
+    try std.testing.expectEqual(@as(u8, 255), left_tee[h.end * width + v.start]);
+
+    var top_tee = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&top_tee, width, height, 0x252c, box));
+    try std.testing.expectEqual(@as(u8, 255), top_tee[h.start * width + v.start - 1]);
+    try std.testing.expectEqual(@as(u8, 255), top_tee[h.start * width + v.end]);
+    try std.testing.expectEqual(@as(u8, 255), top_tee[h.end * width + v.start]);
+    try std.testing.expectEqual(@as(u8, 0), top_tee[(h.start - 1) * width + v.start]);
+}
+
+test "generated special raster draws rounded box corners" {
+    const width = 18;
+    const height = 18;
+    const Case = struct {
+        cp: u32,
+        corner: RoundedCorner,
+    };
+    const cases = [_]Case{
+        .{ .cp = 0x256d, .corner = .top_left },
+        .{ .cp = 0x256e, .corner = .top_right },
+        .{ .cp = 0x2570, .corner = .bottom_left },
+        .{ .cp = 0x256f, .corner = .bottom_right },
+    };
+
+    for (cases) |case| {
+        var pixels = [_]u8{0} ** (width * height);
+        try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, case.cp));
+        var lit: usize = 0;
+        var partial_alpha = false;
+        var expected_quadrant: usize = 0;
+        var wrong_outer_quadrant: usize = 0;
+        for (0..height) |y| {
+            for (0..width) |x| {
+                const alpha = pixels[y * width + x];
+                if (alpha == 0) continue;
+                lit += 1;
+                if (alpha < 255) partial_alpha = true;
+
+                const expected = switch (case.corner) {
+                    .top_left => x >= width / 2 and y >= height / 2,
+                    .top_right => x < width / 2 and y >= height / 2,
+                    .bottom_left => x >= width / 2 and y < height / 2,
+                    .bottom_right => x < width / 2 and y < height / 2,
+                };
+                if (expected) expected_quadrant += 1;
+
+                const wrong_outer = switch (case.corner) {
+                    .top_left => x < width / 2 and y < height / 2,
+                    .top_right => x >= width / 2 and y < height / 2,
+                    .bottom_left => x < width / 2 and y >= height / 2,
+                    .bottom_right => x >= width / 2 and y >= height / 2,
+                };
+                if (wrong_outer) wrong_outer_quadrant += 1;
+            }
+        }
+
+        try std.testing.expect(lit > 0);
+        try std.testing.expect(lit < pixels.len / 2);
+        try std.testing.expect(partial_alpha);
+        try std.testing.expect(expected_quadrant > 0);
+        try std.testing.expectEqual(@as(usize, 0), wrong_outer_quadrant);
+    }
+}
+
+test "generated rounded corners align with straight box arms" {
+    const width = 10;
+    const height = 20;
+    const box = contract.BoxDrawingRasterMetrics{ .light_stroke_px = 2, .heavy_stroke_px = 4 };
+    var corner = [_]u8{0} ** (width * height);
+    var hline = [_]u8{0} ** (width * height);
+    var vline = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&corner, width, height, 0x256d, box));
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&hline, width, height, 0x2500, box));
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&vline, width, height, 0x2502, box));
+
+    var corner_h_rows: usize = 0;
+    var hline_rows: usize = 0;
+    var y: usize = 0;
+    while (y < height) : (y += 1) {
+        if (corner[y * width + width - 1] != 0) corner_h_rows += 1;
+        if (hline[y * width + width - 1] != 0) hline_rows += 1;
+    }
+
+    var corner_v_cols: usize = 0;
+    var vline_cols: usize = 0;
+    var x: usize = 0;
+    while (x < width) : (x += 1) {
+        if (corner[(height - 1) * width + x] != 0) corner_v_cols += 1;
+        if (vline[(height - 1) * width + x] != 0) vline_cols += 1;
+    }
+
+    try std.testing.expectEqual(hline_rows, corner_h_rows);
+    try std.testing.expectEqual(vline_cols, corner_v_cols);
+}
+
+test "generated rounded corners honor box drawing thickness" {
+    const width = 24;
+    const height = 24;
+    var thin = [_]u8{0} ** (width * height);
+    var thick = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&thin, width, height, 0x256d, .{ .light_stroke_px = 1, .heavy_stroke_px = 2 }));
+    try std.testing.expect(rasterizeGeneratedSpecialAlphaWithMetrics(&thick, width, height, 0x256d, .{ .light_stroke_px = 4, .heavy_stroke_px = 8 }));
+
+    var thin_lit: usize = 0;
+    var thick_lit: usize = 0;
+    for (thin) |alpha| {
+        if (alpha != 0) thin_lit += 1;
+    }
+    for (thick) |alpha| {
+        if (alpha != 0) thick_lit += 1;
+    }
+    try std.testing.expect(thick_lit > thin_lit * 2);
 }
 
 test "generated special raster draws box crossing diagonals" {
