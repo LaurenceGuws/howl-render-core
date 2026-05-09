@@ -71,6 +71,10 @@ pub fn providerShapeRun(
     const start = @as(usize, @intCast(run.run.cluster_start));
     const count = @as(usize, @intCast(run.run.cluster_count));
     const end = @min(start + count, clusters.len);
+    if (end <= start) {
+        return .{ .allocator = allocator, .run = run, .glyphs = try allocator.alloc(render_core.GlyphInstance, 0) };
+    }
+
     backend.resolve_counters.shape_requests += 1;
     const shape_key = text_cache.ShapeRunKey{
         .face_id = run.run.font.face_id.value,
