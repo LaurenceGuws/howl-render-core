@@ -124,9 +124,31 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
         0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
+        0x1fb00...0x1fb13 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 1)),
+        0x1fb14...0x1fb27 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 2)),
+        0x1fb28...0x1fb3b => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 3)),
         else => return false,
     }
     return true;
+}
+
+fn rasterizeSextantAlpha(pixels: []u8, width: u16, height: u16, which: u8) void {
+    drawSextantRow(pixels, width, height, which % 4, 0);
+    drawSextantRow(pixels, width, height, which / 4, 1);
+    drawSextantRow(pixels, width, height, which / 16, 2);
+}
+
+fn drawSextantRow(pixels: []u8, width: u16, height: u16, row_bits: u8, row: u16) void {
+    if ((row_bits & 1) != 0) fillSextantCell(pixels, width, height, row, 0);
+    if ((row_bits & 2) != 0) fillSextantCell(pixels, width, height, row, 1);
+}
+
+fn fillSextantCell(pixels: []u8, width: u16, height: u16, row: u16, col: u16) void {
+    const y0: u16 = @intCast(@as(u32, height) * @as(u32, row) / 3);
+    const y1: u16 = @intCast(@as(u32, height) * @as(u32, row + 1) / 3);
+    const x0: u16 = if (col == 0) 0 else width / 2;
+    const x1: u16 = if (col == 0) width / 2 else width;
+    if (x1 > x0 and y1 > y0) fillRectAlpha(pixels, width, x0, y0, x1 - x0, y1 - y0, 255);
 }
 
 fn rasterizeBlockElementAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) void {
@@ -789,6 +811,51 @@ test "generated special raster uses Kitty shade intensity" {
     }
     try std.testing.expect(saw_dim);
     try std.testing.expect(saw_full);
+}
+
+test "generated special raster draws Kitty sextants" {
+    const width = 8;
+    const height = 15;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x1fb00));
+    var top_left: usize = 0;
+    var top_right: usize = 0;
+    var lower_rows: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (y < height / 3 and x < width / 2) top_left += 1;
+            if (y < height / 3 and x >= width / 2) top_right += 1;
+            if (y >= height / 3) lower_rows += 1;
+        }
+    }
+    try std.testing.expect(top_left > 0);
+    try std.testing.expectEqual(@as(usize, 0), top_right);
+    try std.testing.expectEqual(@as(usize, 0), lower_rows);
+}
+
+test "generated special raster draws upper-range sextant mapping" {
+    const width = 8;
+    const height = 15;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x1fb14));
+    var top_right: usize = 0;
+    var middle_rows: usize = 0;
+    var bottom_left: usize = 0;
+    var bottom_right: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (y < height / 3 and x >= width / 2) top_right += 1;
+            if (y >= height / 3 and y < height * 2 / 3) middle_rows += 1;
+            if (y >= height * 2 / 3 and x < width / 2) bottom_left += 1;
+            if (y >= height * 2 / 3 and x >= width / 2) bottom_right += 1;
+        }
+    }
+    try std.testing.expect(top_right > 0);
+    try std.testing.expect(middle_rows > 0);
+    try std.testing.expect(bottom_left > 0);
+    try std.testing.expectEqual(@as(usize, 0), bottom_right);
 }
 
 test "raster plan creates one output per request" {
