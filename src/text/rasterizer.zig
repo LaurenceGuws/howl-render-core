@@ -104,6 +104,71 @@ pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, deco
     }
 }
 
+/// Rasterizes backend-independent special sprites that should not depend on font fallback.
+pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32) bool {
+    if (codepoint < 0x2800 or codepoint > 0x28ff) return false;
+    @memset(pixels, 0);
+    rasterizeBrailleAlpha(pixels, @max(width_px, 1), @max(height_px, 1), @intCast(codepoint - 0x2800));
+    return true;
+}
+
+fn rasterizeBrailleAlpha(pixels: []u8, width: u16, height: u16, mask: u8) void {
+    if (mask == 0) return;
+    var x_gaps: [4]u16 = undefined;
+    var y_gaps: [8]u16 = undefined;
+    const dot_w = distributeDots(width, 2, x_gaps[0..2], x_gaps[2..4]);
+    const dot_h = distributeDots(height, 4, y_gaps[0..4], y_gaps[4..8]);
+    var bit: u8 = 0;
+    while (bit < 8) : (bit += 1) {
+        if ((mask & (@as(u8, 1) << @intCast(bit))) == 0) continue;
+        const dot_number = bit + 1;
+        const col: u16 = switch (dot_number) {
+            1, 2, 3, 7 => 0,
+            else => 1,
+        };
+        const row: u16 = switch (dot_number) {
+            1, 4 => 0,
+            2, 5 => 1,
+            3, 6 => 2,
+            else => 3,
+        };
+        const x = x_gaps[col] + col * dot_w;
+        const y = y_gaps[row] + row * dot_h;
+        fillRectAlpha(pixels, width, x, y, @min(dot_w, width - x), @min(dot_h, height - y), 255);
+    }
+}
+
+fn distributeDots(available_space: u16, dot_count: u16, summed_gaps: []u16, gaps: []u16) u16 {
+    const count = @max(dot_count, 1);
+    const dot_size: u16 = @max(1, available_space / (2 * count));
+    var extra = if (available_space > 2 * count * dot_size) available_space - 2 * count * dot_size else 0;
+    for (gaps[0..count]) |*gap| gap.* = dot_size;
+    var idx: usize = 0;
+    while (extra > 0) : (extra -= 1) {
+        gaps[idx] += 1;
+        idx = (idx + 1) % count;
+    }
+    gaps[0] /= 2;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        var sum: u16 = 0;
+        var j: usize = 0;
+        while (j <= i) : (j += 1) sum += gaps[j];
+        summed_gaps[i] = sum;
+    }
+    return dot_size;
+}
+
+fn fillRectAlpha(pixels: []u8, stride: u16, x: u16, y: u16, width: u16, height: u16, alpha: u8) void {
+    var yy = y;
+    while (yy < y + height) : (yy += 1) {
+        var xx = x;
+        while (xx < x + width) : (xx += 1) {
+            pixels[@as(usize, yy) * @as(usize, stride) + @as(usize, xx)] = alpha;
+        }
+    }
+}
+
 fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, position: u16, y_offset: i32, alpha: u8) void {
     if (alpha == 0) return;
     const raw_y = @as(i32, @intCast(position)) + y_offset;
@@ -177,6 +242,26 @@ test "undercurl raster request generates alpha mask" {
     }
     try std.testing.expect(lit > 0);
     try std.testing.expect(lit < out.pixels.len);
+}
+
+test "generated special raster draws braille dots" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2801));
+    try std.testing.expect(!rasterizeGeneratedSpecialAlpha(&pixels, width, height, 'A'));
+    var top_left: usize = 0;
+    var bottom_right: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            const alpha = pixels[y * width + x];
+            if (alpha == 0) continue;
+            if (x < width / 2 and y < height / 4) top_left += 1;
+            if (x >= width / 2 and y >= height * 3 / 4) bottom_right += 1;
+        }
+    }
+    try std.testing.expect(top_left > 0);
+    try std.testing.expectEqual(@as(usize, 0), bottom_right);
 }
 
 test "raster plan creates one output per request" {

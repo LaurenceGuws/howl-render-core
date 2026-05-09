@@ -220,6 +220,16 @@ pub fn providerRasterizeSprite(
     }
 
     if (req.group.kind == .box_fallback) {
+        if (render_core.Text.Rasterizer.rasterizeGeneratedSpecialAlpha(pixels, width, height, req.group.first_cp)) {
+            return .{
+                .allocator = allocator,
+                .key = req.key,
+                .width_px = width,
+                .height_px = height,
+                .color_mode = req.color_mode,
+                .pixels = pixels,
+            };
+        }
         rasterizeSpecialSpriteAlpha(pixels, width, height, req.group.first_cp);
         return .{
             .allocator = allocator,

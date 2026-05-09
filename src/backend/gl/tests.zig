@@ -126,6 +126,32 @@ test "backend text provider rasterizer draws box fallback alpha" {
     try std.testing.expect(lit < out.pixels.len);
 }
 
+test "backend text provider rasterizer draws generated braille alpha" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+    var adapter = backend.textProvider();
+    const provider = adapter.textProvider();
+    const group = render_core.GlyphGroup{
+        .first_cell = 0,
+        .first_cp = 0x2801,
+        .cell_span = 1,
+        .glyphs = &.{},
+        .sprite_key = .{ .value = 2801 },
+        .kind = .box_fallback,
+    };
+    var out = try provider.rasterizer.rasterize(std.testing.allocator, render_core.Text.Rasterizer.requestForGroup(group, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }));
+    defer out.deinit();
+    var lit: usize = 0;
+    for (out.pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit < out.pixels.len / 2);
+}
+
 test "backend analyzes text cells through provider-backed engine" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },

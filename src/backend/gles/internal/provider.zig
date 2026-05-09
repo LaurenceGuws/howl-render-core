@@ -119,6 +119,9 @@ pub fn providerRasterizeSprite(
     }
 
     if (req.group.kind == .box_fallback) {
+        if (render_core.Text.Rasterizer.rasterizeGeneratedSpecialAlpha(pixels, width, height, req.group.first_cp)) {
+            return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
+        }
         rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
         return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
     }
