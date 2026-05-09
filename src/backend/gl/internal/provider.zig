@@ -16,10 +16,7 @@ const HbFont = c_api.HbFont;
 pub const primary_face_id: u32 = 1;
 
 fn lockFt(self: anytype) void {
-    while (!self.ft_mutex.tryLock()) {
-        std.atomic.spinLoopHint();
-        std.Thread.yield() catch {};
-    }
+    self.ft_mutex.lock();
 }
 
 fn unlockFt(self: anytype) void {

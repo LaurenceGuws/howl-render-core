@@ -3,6 +3,9 @@
 //! Reason: keep text semantics out of backend draw/upload code.
 
 const std = @import("std");
+const c = @cImport({
+    @cInclude("time.h");
+});
 const contract = @import("../text_contract.zig");
 const pipeline = @import("../text_pipeline.zig");
 const types = @import("../types.zig");
@@ -16,6 +19,28 @@ const provider_mod = @import("provider.zig");
 const rasterizer = @import("rasterizer.zig");
 const scene_mod = @import("scene.zig");
 const shape_run = @import("shape_run.zig");
+
+pub const PrepareTimings = struct {
+    input_us: u64 = 0,
+    sparse_us: u64 = 0,
+    clusters_us: u64 = 0,
+    resolve_us: u64 = 0,
+    shape_us: u64 = 0,
+    group_us: u64 = 0,
+    scene_us: u64 = 0,
+    raster_us: u64 = 0,
+    atlas_us: u64 = 0,
+};
+
+fn monotonicNs() u64 {
+    var ts: c.struct_timespec = undefined;
+    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
+}
+
+fn elapsedUs(start_ns: u64) u64 {
+    return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);
+}
 
 pub const Engine = struct {
     allocator: std.mem.Allocator,
@@ -80,9 +105,12 @@ pub const Engine = struct {
     }
 
     pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
+        var timings = PrepareTimings{};
+        const sparse_start_ns = monotonicNs();
         var sparse = try cluster.buildSparseCellsWithDamage(self.allocator, cells, grid_metrics, options.scene.damage);
+        timings.sparse_us = elapsedUs(sparse_start_ns);
         errdefer sparse.deinit();
-        return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options);
+        return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options, timings);
     }
 
     pub fn analyzeCellsWithProvider(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, provider: provider_mod.TextProvider) !OwnedTextAnalysis {
@@ -98,7 +126,7 @@ pub const Engine = struct {
         errdefer text_cache.deinit();
         var renderable = try cluster.buildRenderableCellsFromInputs(self.allocator, inputs, text_cache.view());
         errdefer renderable.deinit();
-        return self.analyzePrepared(text_cache, renderable, grid_metrics, session, options);
+        return self.analyzePrepared(text_cache, renderable, grid_metrics, session, options, .{});
     }
 
     fn analyzePrepared(
@@ -108,26 +136,40 @@ pub const Engine = struct {
         grid_metrics: contract.GridMetrics,
         session: font_session.FontSession,
         options: AnalysisOptions,
+        initial_timings: PrepareTimings,
     ) !OwnedTextAnalysis {
+        var timings = initial_timings;
         var owned_text_cache = text_cache;
         errdefer owned_text_cache.deinit();
         var owned_renderable = renderable;
         errdefer owned_renderable.deinit();
+        const clusters_start_ns = monotonicNs();
         var clusters = try cluster.extractClustersWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), grid_metrics, options.scene.damage);
+        timings.clusters_us = elapsedUs(clusters_start_ns);
         errdefer clusters.deinit();
+        const resolve_start_ns = monotonicNs();
         var runs = try font_resolver.resolveClusters(self.allocator, session, clusters.clusters, owned_text_cache.view());
+        timings.resolve_us = elapsedUs(resolve_start_ns);
         errdefer runs.deinit();
+        const shape_start_ns = monotonicNs();
         var shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs.runs, owned_text_cache.view(), clusters.clusters, session.metrics);
+        timings.shape_us = elapsedUs(shape_start_ns);
         errdefer shaped_runs.deinit();
+        const group_start_ns = monotonicNs();
         var font_groups = try grouping.groupShapedRuns(self.allocator, shaped_runs.runs, clusters.clusters, session.metrics);
         errdefer font_groups.deinit();
         var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, runs.sprite_routes, clusters.clusters, session.metrics);
         errdefer sprite_groups.deinit();
         var groups = try grouping.concatGroups(self.allocator, font_groups.groups, sprite_groups.groups);
+        timings.group_us = elapsedUs(group_start_ns);
         errdefer groups.deinit();
+        const scene_start_ns = monotonicNs();
         var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, owned_renderable.cells, groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        timings.scene_us = elapsedUs(scene_start_ns);
         errdefer scene.deinit();
+        const raster_start_ns = monotonicNs();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
+        timings.raster_us = elapsedUs(raster_start_ns);
         errdefer raster_plan.deinit();
         var counters = pipeline.TextEngineCounters{
             .cell_texts = owned_text_cache.texts.len,
@@ -164,6 +206,7 @@ pub const Engine = struct {
             .scene = scene,
             .raster_plan = raster_plan,
             .counters = counters,
+            .timings = timings,
         };
     }
 };
@@ -180,6 +223,7 @@ pub const OwnedTextAnalysis = struct {
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
     counters: pipeline.TextEngineCounters = .{},
+    timings: PrepareTimings = .{},
 
     pub fn deinit(self: *OwnedTextAnalysis) void {
         self.raster_plan.deinit();

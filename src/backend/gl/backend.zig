@@ -11,9 +11,29 @@ const atlas_mod = @import("internal/atlas.zig");
 const c_api = @import("internal/c_api.zig");
 const provider_mod = @import("internal/provider.zig");
 const c = c_api.c;
+const time_c = @cImport({
+    if (builtin.target.abi == .android) {
+        @cDefine("_Nonnull", "");
+        @cDefine("_Nullable", "");
+        @cDefine("_Null_unspecified", "");
+    }
+    @cInclude("time.h");
+});
 const FtLibrary = c_api.FtLibrary;
 const FtFace = c_api.FtFace;
 const HbFont = c_api.HbFont;
+
+const ThreadMutex = struct {
+    state: std.Io.Mutex = .init,
+
+    pub fn lock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexLock(&self.state);
+    }
+
+    pub fn unlock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexUnlock(&self.state);
+    }
+};
 
 const primary_face_id: u32 = provider_mod.primary_face_id;
 const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
@@ -54,8 +74,8 @@ fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
 }
 
 fn monotonicNs() u64 {
-    var ts: c.struct_timespec = undefined;
-    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
+    var ts: time_c.struct_timespec = undefined;
+    if (time_c.clock_gettime(time_c.CLOCK_MONOTONIC, &ts) != 0) return 0;
     return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
 }
 
@@ -111,6 +131,10 @@ pub const TextSceneRenderReport = struct {
 };
 
 pub const PreparedTextScene = render_core.Text.Engine.OwnedTextAnalysis;
+
+fn elapsedUs(start_ns: u64) u64 {
+    return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);
+}
 
 pub const FrameLayout = struct {
     cell_px: render_core.CellSize,
@@ -181,8 +205,8 @@ pub const Backend = struct {
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
-    ft_mutex: std.atomic.Mutex = .unlocked,
-    font_analysis_mutex: std.atomic.Mutex = .unlocked,
+    ft_mutex: ThreadMutex = .{},
+    font_analysis_mutex: ThreadMutex = .{},
     fallback_faces: [MaxFallbackFonts]?FtFace = [_]?FtFace{null} ** MaxFallbackFonts,
     fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     target_texture: ?u32 = null,
@@ -567,7 +591,9 @@ pub const Backend = struct {
     ) !PreparedTextScene {
         try self.resize(surface_px, cell_px);
         const rc = render_core.init(self.config, self.capabilities());
+        const input_start_ns = monotonicNs();
         var input = try rc.vtStateToTextSceneInput(allocator, state);
+        const input_us = elapsedUs(input_start_ns);
         defer input.deinit();
         if (!self.target_content_valid) {
             if (self.text_engine) |*engine| engine.clearAtlas();
@@ -581,7 +607,9 @@ pub const Backend = struct {
             errdefer analysis.deinit();
             const old_atlas_w = self.atlas_cell_w;
             const old_atlas_h = self.atlas_cell_h;
+            const atlas_start_ns = monotonicNs();
             try self.ensureAtlasStorageForRasterOutputs(analysis.raster_plan.outputs);
+            analysis.timings.atlas_us += elapsedUs(atlas_start_ns);
             const atlas_grew = self.atlas_cell_w != old_atlas_w or self.atlas_cell_h != old_atlas_h;
             if (retry_after_atlas_growth and atlas_grew) {
                 analysis.deinit();
@@ -589,6 +617,7 @@ pub const Backend = struct {
                 retry_after_atlas_growth = false;
                 continue;
             }
+            analysis.timings.input_us = input_us;
             return analysis;
         }
     }
@@ -711,10 +740,7 @@ pub const Backend = struct {
 
     fn ensureFreeTypeLibrary(self: *Backend) bool {
         if (self.ft_lib != null) return true;
-        while (!self.ft_mutex.tryLock()) {
-            std.atomic.spinLoopHint();
-            std.Thread.yield() catch {};
-        }
+        self.ft_mutex.lock();
         defer self.ft_mutex.unlock();
         if (self.ft_lib != null) return true;
         var lib: FtLibrary = undefined;
@@ -724,10 +750,7 @@ pub const Backend = struct {
     }
 
     fn lockFontAnalysis(self: *Backend) void {
-        while (!self.font_analysis_mutex.tryLock()) {
-            std.atomic.spinLoopHint();
-            std.Thread.yield() catch {};
-        }
+        self.font_analysis_mutex.lock();
     }
 
     fn unlockFontAnalysis(self: *Backend) void {
