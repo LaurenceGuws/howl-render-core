@@ -106,10 +106,136 @@ pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, deco
 
 /// Rasterizes backend-independent special sprites that should not depend on font fallback.
 pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32) bool {
-    if (codepoint < 0x2800 or codepoint > 0x28ff) return false;
     @memset(pixels, 0);
-    rasterizeBrailleAlpha(pixels, @max(width_px, 1), @max(height_px, 1), @intCast(codepoint - 0x2800));
+    const width = @max(width_px, 1);
+    const height = @max(height_px, 1);
+    switch (codepoint) {
+        0xe0b0 => rasterizePowerlineTriangle(pixels, width, height, true, false),
+        0xe0b2 => rasterizePowerlineTriangle(pixels, width, height, false, false),
+        0xe0b1 => rasterizePowerlineHalfDiagonal(pixels, width, height, true),
+        0xe0b3 => rasterizePowerlineHalfDiagonal(pixels, width, height, false),
+        0xe0b4 => rasterizePowerlineD(pixels, width, height, true, true),
+        0xe0b6 => rasterizePowerlineD(pixels, width, height, false, true),
+        0xe0b5 => rasterizePowerlineD(pixels, width, height, true, false),
+        0xe0b7 => rasterizePowerlineD(pixels, width, height, false, false),
+        0xe0b8 => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_left),
+        0xe0ba => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_right),
+        0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
+        0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
+        0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
+        else => return false,
+    }
     return true;
+}
+
+fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool, inverted: bool) void {
+    const x1: f64 = if (left) 0 else @floatFromInt(width - 1);
+    const x2: f64 = if (left) @floatFromInt(width - 1) else 0;
+    const y_mid = @as(f64, @floatFromInt(height - 1)) / 2.0;
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const yf = @as(f64, @floatFromInt(y)) + 0.5;
+            const xf = @as(f64, @floatFromInt(x)) + 0.5;
+            const upper = lineY(x1, 0, x2, y_mid, xf);
+            const lower = lineY(x1, @floatFromInt(height - 1), x2, y_mid, xf);
+            const inside = yf >= upper and yf <= lower;
+            if (inside != inverted) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+        }
+    }
+}
+
+fn rasterizePowerlineHalfDiagonal(pixels: []u8, width: u16, height: u16, left: bool) void {
+    const mid = @as(f64, @floatFromInt(height - 1)) / 2.0;
+    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
+    if (left) {
+        drawLineAlpha(pixels, width, height, 0, 0, @floatFromInt(width - 1), mid, line_w);
+        drawLineAlpha(pixels, width, height, @floatFromInt(width - 1), mid, 0, @floatFromInt(height - 1), line_w);
+    } else {
+        drawLineAlpha(pixels, width, height, @floatFromInt(width - 1), 0, 0, mid, line_w);
+        drawLineAlpha(pixels, width, height, 0, mid, @floatFromInt(width - 1), @floatFromInt(height - 1), line_w);
+    }
+}
+
+fn rasterizePowerlineD(pixels: []u8, width: u16, height: u16, left: bool, filled: bool) void {
+    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
+    const radius_x = @as(f64, @floatFromInt(@max(width, 1)));
+    const radius_y = @as(f64, @floatFromInt(@max(height - 1, 1))) / 2.0;
+    const center_x: f64 = if (left) 0 else @floatFromInt(width - 1);
+    const center_y = @as(f64, @floatFromInt(height - 1)) / 2.0;
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const xf = @as(f64, @floatFromInt(x)) + 0.5;
+            const yf = @as(f64, @floatFromInt(y)) + 0.5;
+            const nx = (xf - center_x) / radius_x;
+            const ny = (yf - center_y) / radius_y;
+            const d = nx * nx + ny * ny;
+            const correct_side = if (left) xf >= center_x else xf <= center_x;
+            if (!correct_side) continue;
+            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
+            if (filled) {
+                if (d <= 1.0) pixels[idx] = 255;
+            } else {
+                const edge = @abs(@sqrt(d) - 1.0) * @min(radius_x, radius_y);
+                const coverage = std.math.clamp(line_w - edge + 0.5, 0.0, 1.0);
+                if (coverage > 0) pixels[idx] = @intFromFloat(@round(coverage * 255.0));
+            }
+        }
+    }
+}
+
+const PowerlineCorner = enum { top_left, top_right, bottom_left, bottom_right };
+
+fn rasterizePowerlineCornerTriangle(pixels: []u8, width: u16, height: u16, corner: PowerlineCorner) void {
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const xf = @as(f64, @floatFromInt(x)) + 0.5;
+            const yf = @as(f64, @floatFromInt(y)) + 0.5;
+            const diag_down = lineY(0, 0, @floatFromInt(width - 1), @floatFromInt(height - 1), xf);
+            const diag_up = lineY(@floatFromInt(width - 1), 0, 0, @floatFromInt(height - 1), xf);
+            const inside = switch (corner) {
+                .top_left => yf <= diag_up,
+                .top_right => yf <= diag_down,
+                .bottom_left => yf >= diag_down,
+                .bottom_right => yf >= diag_up,
+            };
+            if (inside) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+        }
+    }
+}
+
+fn drawLineAlpha(pixels: []u8, width: u16, height: u16, x1: f64, y1: f64, x2: f64, y2: f64, line_width: f64) void {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len2 = @max(dx * dx + dy * dy, 1.0);
+    const half = @max(line_width, 1.0) / 2.0;
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const px = @as(f64, @floatFromInt(x)) + 0.5;
+            const py = @as(f64, @floatFromInt(y)) + 0.5;
+            const t = std.math.clamp(((px - x1) * dx + (py - y1) * dy) / len2, 0.0, 1.0);
+            const cx = x1 + t * dx;
+            const cy = y1 + t * dy;
+            const dist = @sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
+            const coverage = std.math.clamp(half - dist + 0.5, 0.0, 1.0);
+            if (coverage <= 0) continue;
+            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
+            pixels[idx] = @max(pixels[idx], @as(u8, @intFromFloat(@round(coverage * 255.0))));
+        }
+    }
+}
+
+fn lineY(x1: f64, y1: f64, x2: f64, y2: f64, x: f64) f64 {
+    if (x1 == x2) return y1;
+    const m = (y2 - y1) / (x2 - x1);
+    return m * x + y1 - m * x1;
 }
 
 fn rasterizeBrailleAlpha(pixels: []u8, width: u16, height: u16, mask: u8) void {
@@ -249,7 +375,8 @@ test "generated special raster draws braille dots" {
     const height = 16;
     var pixels = [_]u8{0} ** (width * height);
     try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2801));
-    try std.testing.expect(!rasterizeGeneratedSpecialAlpha(&pixels, width, height, 'A'));
+    var other = [_]u8{0} ** (width * height);
+    try std.testing.expect(!rasterizeGeneratedSpecialAlpha(&other, width, height, 'A'));
     var top_left: usize = 0;
     var bottom_right: usize = 0;
     for (0..height) |y| {
@@ -262,6 +389,33 @@ test "generated special raster draws braille dots" {
     }
     try std.testing.expect(top_left > 0);
     try std.testing.expectEqual(@as(usize, 0), bottom_right);
+}
+
+test "generated special raster draws powerline triangle" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b0));
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit > pixels.len / 4);
+    try std.testing.expectEqual(@as(u8, 0), pixels[0]);
+}
+
+test "generated special raster draws powerline separator" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b1));
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit < pixels.len / 2);
 }
 
 test "raster plan creates one output per request" {
