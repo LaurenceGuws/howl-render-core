@@ -127,9 +127,83 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
         0x1fb00...0x1fb13 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 1)),
         0x1fb14...0x1fb27 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 2)),
         0x1fb28...0x1fb3b => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 3)),
+        0x1cd00...0x1cde5 => rasterizeOctantAlpha(pixels, width, height, @intCast(codepoint - 0x1cd00)),
+        0x1fbe6 => rasterizeOctantAlpha(pixels, width, height, 0xe6),
+        0x1fbe7 => rasterizeOctantAlpha(pixels, width, height, 0xe7),
         else => return false,
     }
     return true;
+}
+
+fn rasterizeOctantAlpha(pixels: []u8, width: u16, height: u16, which: u8) void {
+    const mask = kittyOctantMask(which);
+    if ((mask & 0x01) != 0) fillOctantSegment(pixels, width, height, 0, true);
+    if ((mask & 0x02) != 0) fillOctantSegment(pixels, width, height, 1, true);
+    if ((mask & 0x04) != 0) fillOctantSegment(pixels, width, height, 2, true);
+    if ((mask & 0x08) != 0) fillOctantSegment(pixels, width, height, 3, true);
+    if ((mask & 0x10) != 0) fillOctantSegment(pixels, width, height, 0, false);
+    if ((mask & 0x20) != 0) fillOctantSegment(pixels, width, height, 1, false);
+    if ((mask & 0x40) != 0) fillOctantSegment(pixels, width, height, 2, false);
+    if ((mask & 0x80) != 0) fillOctantSegment(pixels, width, height, 3, false);
+}
+
+fn fillOctantSegment(pixels: []u8, width: u16, height: u16, which: u8, left: bool) void {
+    const y_range = fourthRange(height, which);
+    const x0: u16 = if (left) 0 else width / 2;
+    const x1: u16 = if (left) width / 2 else width;
+    if (x1 > x0 and y_range.end > y_range.start) fillRectAlpha(pixels, width, x0, y_range.start, x1 - x0, y_range.end - y_range.start, 255);
+}
+
+fn fourthRange(size: u16, which: u8) Range {
+    const thickness = @max(@as(u16, 1), size / 4);
+    const block = thickness * 4;
+    if (block == size) return .{ .start = thickness * which, .end = thickness * (@as(u16, which) + 1) };
+    if (block > size) {
+        const start = @min(@as(u16, which) * thickness, saturatingSubU16(size, thickness));
+        return .{ .start = start, .end = start + thickness };
+    }
+
+    var thicknesses = [_]u16{thickness} ** 4;
+    var extra = size - block;
+    const order = [_]usize{ 1, 2, 3, 0 };
+    for (order) |idx| {
+        if (extra == 0) break;
+        thicknesses[idx] += 1;
+        extra -= 1;
+    }
+    var pos: u16 = 0;
+    var idx: usize = 0;
+    while (idx < which) : (idx += 1) pos += thicknesses[idx];
+    return .{ .start = pos, .end = pos + thicknesses[which] };
+}
+
+fn kittyOctantMask(which: u8) u8 {
+    const a: u8 = 1;
+    const b: u8 = 2;
+    const c: u8 = 4;
+    const d: u8 = 8;
+    const m: u8 = 16;
+    const n: u8 = 32;
+    const o: u8 = 64;
+    const p: u8 = 128;
+    const mapping = [_]u8{
+        b, b | m, a | b | m, n, a | n, a | m | n, b | n, a | b | n, b | m | n, c, a | c, c | m, a | c | m, a | b | c, b | c | m, a | b | c | m,
+        c | n, a | c | n, c | m | n, a | c | m | n, b | c | n, a | b | c | n, b | c | m | n, a | b | c | m | n, o, a | o, m | o, a | m | o, b | o, a | b | o, b | m | o, a | b | m | o,
+        a | n | o, m | n | o, a | m | n | o, b | n | o, a | b | n | o, b | m | n | o, a | b | m | n | o, c | o, a | c | o, c | m | o, a | c | m | o, b | c | o, a | b | c | o, b | c | m | o, a | b | c | m | o, c | n | o,
+        a | c | n | o, c | m | n | o, a | c | m | n | o, b | c | n | o, a | b | c | n | o, b | c | m | n | o, a | d, d | m, a | d | m, b | d, a | b | d, b | d | m, a | b | d | m, d | n, a | d | n, d | m | n,
+        a | d | m | n, b | d | n, a | b | d | n, b | d | m | n, a | b | d | m | n, a | c | d, c | d | m, a | c | d | m, b | c | d, b | c | d | m, a | b | c | d | m, c | d | n, a | c | d | n, a | c | d | m | n, b | c | d | n, a | b | c | d | n,
+        b | c | d | m | n, d | o, a | d | o, d | m | o, a | d | m | o, b | d | o, a | b | d | o, b | d | m | o, a | b | d | m | o, d | n | o, a | d | n | o, d | m | n | o, a | d | m | n | o, b | d | n | o, a | b | d | n | o, b | d | m | n | o,
+        ~(c | p), c | d | o, a | c | d | o, c | d | m | o, a | c | d | m | o, b | c | d | o, ~(m | n | p), b | c | d | m | o, ~(n | p), c | d | n | o, a | c | d | n | o, c | d | m | n | o, ~(b | p), b | c | d | n | o, ~(m | p), ~(a | p),
+        ~p, a | p, m | p, a | m | p, b | p, a | b | p, b | m | p, a | b | m | p, n | p, a | n | p, m | n | p, a | m | n | p, b | n | p, a | b | n | p, b | m | n | p, ~(c | d | o),
+        c | p, a | c | p, c | m | p, a | c | m | p, b | c | p, a | b | c | p, b | c | m | p, ~(d | n | o), c | n | p, a | c | n | p, c | m | n | p, ~(b | d | o), b | c | n | p, ~(d | m | o), ~(a | d | o), ~(d | o),
+        a | o | p, m | o | p, a | m | o | p, b | o | p, b | m | o | p, a | b | m | o | p, n | o | p, a | n | o | p, a | m | n | o | p, b | n | o | p, a | b | n | o | p, b | m | n | o | p, c | o | p, a | c | o | p, c | m | o | p, a | c | m | o | p,
+        b | c | o | p, a | b | c | o | p, b | c | m | o | p, ~(n | d), c | n | o | p, a | c | n | o | p, c | m | n | o | p, ~(b | d), b | c | n | o | p, ~(d | m), ~(a | d), ~d, a | d | p, d | m | p, a | d | m | p, b | d | p,
+        a | b | d | p, b | d | m | p, a | b | d | m | p, d | n | p, a | d | n | p, d | m | n | p, a | d | m | n | p, b | d | n | p, a | b | d | n | p, b | d | m | n | p, ~(c | o), c | d | p, a | c | d | p, c | d | m | p, a | c | d | m | p, b | c | d | p,
+        a | b | c | d | p, b | c | d | m | p, ~(n | o), c | d | n | p, a | c | d | n | p, c | d | m | n | p, ~(b | o), b | c | d | n | p, ~(m | o), ~(a | o), ~o, d | o | p, a | d | o | p, d | m | o | p, a | d | m | o | p, b | d | o | p,
+        a | b | d | o | p, b | d | m | o | p, ~(c | n), d | n | o | p, a | d | n | o | p, d | m | n | o | p, ~(b | c), b | d | n | o | p, ~(c | m), ~(a | c), ~c, a | c | d | o | p, c | d | m | o | p, ~(b | n), b | c | d | o | p, ~(a | n),
+        ~n, c | d | n | o | p, ~(b | m), ~b, ~m, ~a, b | c, n | o,
+    };
+    return mapping[which];
 }
 
 fn rasterizeSextantAlpha(pixels: []u8, width: u16, height: u16, which: u8) void {
@@ -856,6 +930,40 @@ test "generated special raster draws upper-range sextant mapping" {
     try std.testing.expect(middle_rows > 0);
     try std.testing.expect(bottom_left > 0);
     try std.testing.expectEqual(@as(usize, 0), bottom_right);
+}
+
+test "generated special raster draws Kitty octants" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x1cd00));
+    var top_left: usize = 0;
+    var rest: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (y >= height / 4 and y < height / 2 and x < width / 2) top_left += 1 else rest += 1;
+        }
+    }
+    try std.testing.expect(top_left > 0);
+    try std.testing.expectEqual(@as(usize, 0), rest);
+}
+
+test "generated special raster draws terminal octant aliases" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x1fbe6));
+    var left_lit: usize = 0;
+    var right_lit: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (x < width / 2) left_lit += 1 else right_lit += 1;
+        }
+    }
+    try std.testing.expect(left_lit > 0);
+    try std.testing.expectEqual(@as(usize, 0), right_lit);
 }
 
 test "raster plan creates one output per request" {
