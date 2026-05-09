@@ -225,12 +225,8 @@ fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool,
     while (y < height) : (y += 1) {
         var x: u16 = 0;
         while (x < width) : (x += 1) {
-            const yf = @as(f64, @floatFromInt(y)) + 0.5;
-            const xf = @as(f64, @floatFromInt(x)) + 0.5;
-            const upper = lineY(x1, 0, x2, y_mid, xf);
-            const lower = lineY(x1, @floatFromInt(height - 1), x2, y_mid, xf);
-            const inside = yf >= upper and yf <= lower;
-            if (inside != inverted) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+            const coverage = supersampledTriangleCoverage(x, y, .{ .x1 = x1, .x2 = x2, .y_mid = y_mid, .height = height, .inverted = inverted });
+            if (coverage != 0) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = coverage;
         }
     }
 }
@@ -277,15 +273,51 @@ fn rasterizePowerlineFilledD(pixels: []u8, width: u16, height: u16, left: bool) 
     while (y < height) : (y += 1) {
         var x: u16 = 0;
         while (x < width) : (x += 1) {
-            const sx: u16 = if (left) x else width - 1 - x;
-            const t = findBezierTForX(cb, @floatFromInt(sx));
-            if (bezierX(cb, t) > @as(f64, @floatFromInt(width - 1)) + 0.5) continue;
-            const upper = bezierY(cb, t);
-            const lower = bezierY(cb, 1.0 - t);
-            const yf = @as(f64, @floatFromInt(y)) + 0.5;
-            if (yf >= upper and yf <= lower) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+            const coverage = supersampledFilledDCoverage(x, y, .{ .cb = cb, .width = width, .left = left });
+            if (coverage != 0) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = coverage;
         }
     }
+}
+
+const TriangleCoverageCtx = struct { x1: f64, x2: f64, y_mid: f64, height: u16, inverted: bool };
+const FilledDCoverageCtx = struct { cb: CubicBezier, width: u16, left: bool };
+
+fn supersampledTriangleCoverage(x: u16, y: u16, ctx: TriangleCoverageCtx) u8 {
+    return supersampledCoverage(x, y, triangleContains, ctx);
+}
+
+fn supersampledFilledDCoverage(x: u16, y: u16, ctx: FilledDCoverageCtx) u8 {
+    return supersampledCoverage(x, y, filledDContains, ctx);
+}
+
+fn triangleContains(px: f64, py: f64, ctx: TriangleCoverageCtx) bool {
+    const upper = lineY(ctx.x1, 0, ctx.x2, ctx.y_mid, px);
+    const lower = lineY(ctx.x1, @floatFromInt(ctx.height - 1), ctx.x2, ctx.y_mid, px);
+    return (py >= upper and py <= lower) != ctx.inverted;
+}
+
+fn filledDContains(px_raw: f64, py: f64, ctx: FilledDCoverageCtx) bool {
+    const px = if (ctx.left) px_raw else @as(f64, @floatFromInt(ctx.width - 1)) - px_raw;
+    const t = findBezierTForX(ctx.cb, px);
+    if (bezierX(ctx.cb, t) > @as(f64, @floatFromInt(ctx.width - 1)) + 0.5) return false;
+    const upper = bezierY(ctx.cb, t);
+    const lower = bezierY(ctx.cb, 1.0 - t);
+    return py >= upper and py <= lower;
+}
+
+fn supersampledCoverage(x: u16, y: u16, comptime inside: anytype, ctx: anytype) u8 {
+    const factor = 4;
+    var hits: u16 = 0;
+    var sy: u8 = 0;
+    while (sy < factor) : (sy += 1) {
+        var sx: u8 = 0;
+        while (sx < factor) : (sx += 1) {
+            const px = @as(f64, @floatFromInt(x)) + (@as(f64, @floatFromInt(sx)) + 0.5) / factor;
+            const py = @as(f64, @floatFromInt(y)) + (@as(f64, @floatFromInt(sy)) + 0.5) / factor;
+            if (inside(px, py, ctx)) hits += 1;
+        }
+    }
+    return @intCast((hits * 255 + (factor * factor / 2)) / (factor * factor));
 }
 
 fn rasterizePowerlineRoundedD(pixels: []u8, width: u16, height: u16, left: bool) void {
@@ -584,7 +616,7 @@ test "generated special raster draws powerline triangle" {
     }
     try std.testing.expect(lit > 0);
     try std.testing.expect(lit > pixels.len / 4);
-    try std.testing.expectEqual(@as(u8, 0), pixels[0]);
+    try std.testing.expect(pixels[0] < 128);
 }
 
 test "generated special raster draws powerline separator" {
@@ -607,7 +639,12 @@ test "generated special raster draws cubic powerline D" {
     try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b4));
     try std.testing.expect(pixels[(height / 2) * width] != 0);
     try std.testing.expect(pixels[(height / 2) * width + width - 2] != 0);
-    try std.testing.expectEqual(@as(u8, 0), pixels[width - 1]);
+    try std.testing.expect(pixels[width - 1] < 255);
+    var partial_alpha = false;
+    for (pixels) |alpha| {
+        if (alpha > 0 and alpha < 255) partial_alpha = true;
+    }
+    try std.testing.expect(partial_alpha);
 }
 
 test "generated special raster draws stroked powerline D" {
