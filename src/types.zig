@@ -98,4 +98,5 @@ pub const CellInput = struct {
     underline: bool = false,
     strikethrough: bool = false,
     continuation: bool = false,
+    empty: bool = false,
 };

@@ -127,6 +127,7 @@ pub fn buildSparseCellsWithDamage(
     var count: usize = 0;
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
+        if (cell.empty) continue;
         if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
         count += 1;
     }
@@ -139,6 +140,7 @@ pub fn buildSparseCellsWithDamage(
 
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
+        if (cell.empty) continue;
         if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
         const entry = try unique_codepoints.getOrPut(cell.codepoint);
         if (!entry.found_existing) {
@@ -166,6 +168,7 @@ pub fn buildSparseCellsWithDamage(
     var out_idx: usize = 0;
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
+        if (cell.empty) continue;
         const first_cell: u32 = @intCast(idx);
         const span = inferredCellSpan(cells, idx);
         if (!includeSpan(damage, grid_metrics, first_cell, span)) continue;
@@ -607,6 +610,24 @@ test "sparse cells intern repeated codepoints" {
     try std.testing.expectEqual(@as(usize, 2), sparse.text_cache.texts.len);
     try std.testing.expectEqual(sparse.renderable.cells[0].text_id.value, sparse.renderable.cells[1].text_id.value);
     try std.testing.expect(sparse.renderable.cells[2].text_id.value != sparse.renderable.cells[0].text_id.value);
+}
+
+test "sparse cells skip Alacritty-empty cells" {
+    const allocator = std.testing.allocator;
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{
+        .{ .codepoint = ' ', .fg = white, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .empty = true },
+        .{ .codepoint = 'A', .fg = white, .bg = black },
+        .{ .codepoint = '\t', .fg = white, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .empty = true },
+    };
+
+    var sparse = try buildSparseCellsWithDamage(allocator, &cells, .{ .cols = 3, .rows = 1 }, .{ .full = true });
+    defer sparse.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), sparse.renderable.cells.len);
+    try std.testing.expectEqual(@as(u32, 1), sparse.renderable.cells[0].first_cell);
+    try std.testing.expectEqual(@as(u32, 'A'), sparse.text_cache.texts[0].first_cp);
 }
 
 test "rich cell text interning deduplicates codepoint sequences" {
