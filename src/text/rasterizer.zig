@@ -119,9 +119,17 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
         0xe0b5 => rasterizePowerlineD(pixels, width, height, true, false),
         0xe0b7 => rasterizePowerlineD(pixels, width, height, false, false),
         0xe0b8 => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_left),
+        0xe0b9, 0xe0bf => rasterizeCrossLine(pixels, width, height, true),
         0xe0ba => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_right),
+        0xe0bb, 0xe0bd => rasterizeCrossLine(pixels, width, height, false),
         0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
+        0x2571 => rasterizeCrossLine(pixels, width, height, false),
+        0x2572 => rasterizeCrossLine(pixels, width, height, true),
+        0x2573 => {
+            rasterizeCrossLine(pixels, width, height, false);
+            rasterizeCrossLine(pixels, width, height, true);
+        },
         0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
         0x1fb00...0x1fb13 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 1)),
@@ -133,6 +141,15 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
         else => return false,
     }
     return true;
+}
+
+fn rasterizeCrossLine(pixels: []u8, width: u16, height: u16, left: bool) void {
+    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
+    if (left) {
+        drawLineAlpha(pixels, width, height, 0, 0, @floatFromInt(width - 1), @floatFromInt(height - 1), line_w);
+    } else {
+        drawLineAlpha(pixels, width, height, @floatFromInt(width - 1), 0, 0, @floatFromInt(height - 1), line_w);
+    }
 }
 
 fn rasterizeOctantAlpha(pixels: []u8, width: u16, height: u16, which: u8) void {
@@ -964,6 +981,45 @@ test "generated special raster draws terminal octant aliases" {
     }
     try std.testing.expect(left_lit > 0);
     try std.testing.expectEqual(@as(usize, 0), right_lit);
+}
+
+test "generated special raster draws box diagonal lines" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2571));
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit < pixels.len / 2);
+}
+
+test "generated special raster draws box crossing diagonals" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2573));
+    try std.testing.expect(pixels[(height / 2) * width + width / 2] != 0);
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > width);
+}
+
+test "generated special raster draws powerline diagonal aliases" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b9));
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit < pixels.len / 2);
 }
 
 test "raster plan creates one output per request" {
