@@ -84,24 +84,141 @@ pub fn providerShapeRun(
         return cached;
     }
 
-    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    var shaped = if (builtin.target.abi == .android)
+        try fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end)
+    else if (try shapePlainAsciiRun(backend, allocator, run, text_cache_view, clusters, cell_metrics, start, end)) |ascii|
+        ascii
+    else
+        try shapeRunViaProviderOrFallback(backend, allocator, run, text_cache_view, clusters, cell_metrics, start, end);
+    errdefer shaped.deinit();
+    try backend.shape_run_cache.putRun(shape_key, shaped);
+    return shaped;
+}
+
+fn shapeRunViaProviderOrFallback(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    text_cache_view: render_core.LineTextCache,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+    start: usize,
+    end: usize,
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
+    var run_codepoints = std.ArrayList(u32).empty;
+    defer run_codepoints.deinit(allocator);
+    var cluster_map = std.ArrayList(u32).empty;
+    defer cluster_map.deinit(allocator);
+    for (clusters[start..end], 0..) |cluster, local_idx| {
+        const text = textForCluster(text_cache_view, cluster);
+        const cps = if (text.codepoints.len == 0) &[_]u32{text.first_cp} else text.codepoints;
+        try run_codepoints.appendSlice(allocator, cps);
+        for (cps) |_| try cluster_map.append(allocator, @intCast(start + local_idx));
+    }
+    if (run_codepoints.items.len == 0) {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    }
+
+    const buffer = c.hb_buffer_create() orelse {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    };
+    defer c.hb_buffer_destroy(buffer);
+    c.hb_buffer_set_cluster_level(buffer, c.HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
+    c.hb_buffer_add_utf32(buffer, run_codepoints.items.ptr, @intCast(run_codepoints.items.len), 0, @intCast(run_codepoints.items.len));
+    c.hb_buffer_guess_segment_properties(buffer);
+
+    if (!ensureFont(backend)) {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    }
+
+    const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    };
+    defer releaseShapingFace(shaped_face);
+    const hb_font = shaped_face.hb_font orelse {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    };
+    c.hb_shape(hb_font, buffer, null, 0);
+
+    var glyph_count: c_uint = 0;
+    const infos = c.hb_buffer_get_glyph_infos(buffer, &glyph_count);
+    const positions = c.hb_buffer_get_glyph_positions(buffer, &glyph_count);
+    if (infos == null or positions == null or glyph_count == 0) {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    }
+
+    const glyphs = try allocator.alloc(render_core.GlyphInstance, glyph_count);
     errdefer allocator.free(glyphs);
+
+    for (glyphs, 0..) |*glyph, idx| {
+        const info = infos[idx];
+        const pos = positions[idx];
+        const cluster_cp_idx = @min(@as(usize, info.cluster), cluster_map.items.len - 1);
+        const cluster_idx = cluster_map.items[cluster_cp_idx];
+        const shaped_advance = render_core.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
+        const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[cluster_idx].first_cp))
+            @max(shaped_advance, glyphVisualWidthPx(shaped_face.face, info.codepoint))
+        else
+            shaped_advance;
+        glyph.* = .{
+            .face_id = run.run.font.face_id,
+            .glyph_id = info.codepoint,
+            .cluster_index = cluster_idx,
+            .x_offset_px = @as(f32, @floatFromInt(@as(i32, @intCast(pos.x_offset)))) / 64.0,
+            .y_offset_px = @as(f32, @floatFromInt(@as(i32, @intCast(pos.y_offset)))) / 64.0,
+            .x_advance_px = advance_px,
+        };
+    }
+
+    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+}
+
+fn shapePlainAsciiRun(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    text_cache_view: render_core.LineTextCache,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+    start: usize,
+    end: usize,
+) anyerror!?render_core.Text.ShapeRun.OwnedShapedRun {
+    if (run.features_id != 0) return null;
+    if (run.run.font.presentation == .emoji) return null;
+
+    for (clusters[start..end]) |cluster| {
+        if (cluster.cell_span != 1) return null;
+        if (cluster.presentation == .emoji) return null;
+        const text = textForCluster(text_cache_view, cluster);
+        if (text.codepoints.len != 1) return null;
+        if (text.codepoints[0] != cluster.first_cp) return null;
+        if (!isPlainAsciiCodepoint(cluster.first_cp)) return null;
+    }
+
+    if (!ensureFont(backend)) return null;
+
+    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    var keep_glyphs = false;
+    defer if (!keep_glyphs) allocator.free(glyphs);
+
+    const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse return null;
+    const face = shaped_face.face;
+
     for (clusters[start..end], 0..) |cluster, idx| {
-        const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
-        const advance_px = providerGlyphAdvance(backend, run.run.font.face_id, glyph_id, cell_metrics);
+        const glyph_id = c.FT_Get_Char_Index(face, cluster.first_cp);
+        if (glyph_id == 0) return null;
         glyphs[idx] = .{
             .face_id = run.run.font.face_id,
             .glyph_id = glyph_id,
             .cluster_index = @intCast(start + idx),
             .x_offset_px = 0,
             .y_offset_px = 0,
-            .x_advance_px = advance_px,
+            .x_advance_px = glyphAdvanceFromFace(face, glyph_id, cell_metrics),
         };
     }
-    var shaped = render_core.Text.ShapeRun.OwnedShapedRun{ .allocator = allocator, .run = run, .glyphs = glyphs };
-    errdefer shaped.deinit();
-    try backend.shape_run_cache.putRun(shape_key, shaped);
-    return shaped;
+
+    keep_glyphs = true;
+    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
 }
 
 pub fn providerRasterizeSprite(
@@ -168,9 +285,89 @@ fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyph_id
     else
         ensureFallbackFace(self, if (face_id.value >= 2) face_id.value - 2 else return fallback);
     if (face == null) return fallback;
-    if (c.FT_Load_Glyph(face.?, glyph_id, c.FT_LOAD_DEFAULT) != 0) return fallback;
-    if (face.?.*.glyph == null) return fallback;
-    return @as(f32, @floatFromInt(@as(i32, @intCast(face.?.*.glyph.*.advance.x)))) / 64.0;
+    return glyphAdvanceFromFace(face.?, glyph_id, cell_metrics);
+}
+
+fn fallbackProviderShapeRun(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+    start: usize,
+    end: usize,
+) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
+    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    errdefer allocator.free(glyphs);
+    for (clusters[start..end], 0..) |cluster, idx| {
+        const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
+        const shaped_advance = providerGlyphAdvance(backend, run.run.font.face_id, glyph_id, cell_metrics);
+        const advance_px = if (isIconCodepoint(cluster.first_cp)) @max(shaped_advance, providerGlyphVisualWidth(backend, run.run.font.face_id, glyph_id)) else shaped_advance;
+        glyphs[idx] = .{
+            .face_id = run.run.font.face_id,
+            .glyph_id = glyph_id,
+            .cluster_index = @intCast(start + idx),
+            .x_offset_px = 0,
+            .y_offset_px = 0,
+            .x_advance_px = advance_px,
+        };
+    }
+    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+}
+
+fn providerGlyphVisualWidth(self: anytype, face_id: render_core.FontFaceId, glyph_id: u32) f32 {
+    if (glyph_id == 0) return 0;
+    if (!ensureFont(self)) return 0;
+    if (face_id.value == primary_face_id) {
+        const face = self.ft_face orelse return 0;
+        return glyphVisualWidthPx(face, glyph_id);
+    }
+
+    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
+    const face = ensureFallbackFace(self, fallback_index) orelse return 0;
+    return glyphVisualWidthPx(face, glyph_id);
+}
+
+const ShapingFace = struct {
+    face: FtFace,
+    hb_font: ?HbFont,
+    owns_face: bool,
+};
+
+fn acquireShapingFace(self: anytype, face_id: render_core.FontFaceId) ?ShapingFace {
+    if (!ensureFont(self)) return null;
+    if (face_id.value == primary_face_id) {
+        const face = self.ft_face orelse return null;
+        return .{ .face = face, .hb_font = self.hb_font, .owns_face = false };
+    }
+
+    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return null;
+    if (fallback_index >= self.fallback_font_paths_len) return null;
+    const face = self.fallback_faces[fallback_index] orelse return null;
+    return .{ .face = face, .hb_font = self.fallback_hb_fonts[fallback_index], .owns_face = false };
+}
+
+fn releaseShapingFace(shaped: ShapingFace) void {
+    if (shaped.owns_face) {
+        if (shaped.hb_font != null and builtin.target.abi != .android) {
+            c.hb_font_destroy(shaped.hb_font.?);
+        }
+        _ = c.FT_Done_Face(shaped.face);
+    }
+}
+
+fn textForCluster(text_cache_view: render_core.LineTextCache, cluster: render_core.CellCluster) render_core.CellText {
+    const idx = @as(usize, @intCast(cluster.text_id.value));
+    if (idx < text_cache_view.texts.len) return text_cache_view.texts[idx];
+    return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
+}
+
+fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
+    if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return 0;
+    if (face.*.glyph == null) return 0;
+    const metrics = face.*.glyph.*.metrics;
+    if (metrics.width <= 0) return 0;
+    return @as(f32, @floatFromInt(@as(i32, @intCast(metrics.width)))) / 64.0;
 }
 
 fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
@@ -360,7 +557,14 @@ fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top
     return .{ .x_px = x_px, .y_px = y_px };
 }
 
+fn glyphAdvanceFromFace(face: FtFace, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+    if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return @floatFromInt(cell_metrics.cell_w_px);
+    if (face.*.glyph == null) return @floatFromInt(cell_metrics.cell_w_px);
+    return render_core.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
+}
+
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
+    if (builtin.target.abi == .android) return c.FT_Get_Char_Index(face, codepoint);
     if (hb_font) |font| {
         const buffer = c.hb_buffer_create() orelse return c.FT_Get_Char_Index(face, codepoint);
         defer c.hb_buffer_destroy(buffer);
@@ -376,6 +580,18 @@ fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
         }
     }
     return c.FT_Get_Char_Index(face, codepoint);
+}
+
+fn isIconCodepoint(cp: u32) bool {
+    return (cp >= 0xe000 and cp <= 0xf8ff) or
+        (cp >= 0x2700 and cp <= 0x27bf) or
+        (cp >= 0x1f100 and cp <= 0x1f1ff) or
+        (cp >= 0xf0000 and cp <= 0xffffd) or
+        (cp >= 0x100000 and cp <= 0x10fffd);
+}
+
+fn isPlainAsciiCodepoint(cp: u32) bool {
+    return cp >= 0x20 and cp < 0x7f;
 }
 
 fn setFacePixelHeight(self: anytype, face: FtFace) bool {

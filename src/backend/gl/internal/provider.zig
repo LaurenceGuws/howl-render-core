@@ -98,6 +98,8 @@ pub fn providerShapeRun(
 
     var shaped = if (builtin.target.abi == .android)
         try fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end)
+    else if (try shapePlainAsciiRun(backend, allocator, run, text_cache_view, clusters, cell_metrics, start, end)) |ascii|
+        ascii
     else
         try shapeRunViaProviderOrFallback(backend, allocator, run, text_cache_view, clusters, cell_metrics, start, end);
     errdefer shaped.deinit();
@@ -186,6 +188,56 @@ fn shapeRunViaProviderOrFallback(
         };
     }
 
+    return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+}
+
+fn shapePlainAsciiRun(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render_core.ResolvedRun,
+    text_cache_view: render_core.LineTextCache,
+    clusters: []const render_core.CellCluster,
+    cell_metrics: render_core.CellMetrics,
+    start: usize,
+    end: usize,
+) anyerror!?render_core.Text.ShapeRun.OwnedShapedRun {
+    if (run.features_id != 0) return null;
+    if (run.run.font.presentation == .emoji) return null;
+
+    for (clusters[start..end]) |cluster| {
+        if (cluster.cell_span != 1) return null;
+        if (cluster.presentation == .emoji) return null;
+        const text = textForCluster(text_cache_view, cluster);
+        if (text.codepoints.len != 1) return null;
+        if (text.codepoints[0] != cluster.first_cp) return null;
+        if (!isPlainAsciiCodepoint(cluster.first_cp)) return null;
+    }
+
+    if (!ensureFont(backend)) return null;
+
+    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    var keep_glyphs = false;
+    defer if (!keep_glyphs) allocator.free(glyphs);
+
+    lockFt(backend);
+    defer unlockFt(backend);
+    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse return null;
+    const face = shaped_face.face;
+
+    for (clusters[start..end], 0..) |cluster, idx| {
+        const glyph_id = c.FT_Get_Char_Index(face, cluster.first_cp);
+        if (glyph_id == 0) return null;
+        glyphs[idx] = .{
+            .face_id = run.run.font.face_id,
+            .glyph_id = glyph_id,
+            .cluster_index = @intCast(start + idx),
+            .x_offset_px = 0,
+            .y_offset_px = 0,
+            .x_advance_px = glyphAdvanceFromFace(backend, face, glyph_id, cell_metrics),
+        };
+    }
+
+    keep_glyphs = true;
     return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
 }
 
@@ -554,6 +606,10 @@ fn isIconCodepoint(cp: u32) bool {
         (cp >= 0x1f100 and cp <= 0x1f1ff) or
         (cp >= 0xf0000 and cp <= 0xffffd) or
         (cp >= 0x100000 and cp <= 0x10fffd);
+}
+
+fn isPlainAsciiCodepoint(cp: u32) bool {
+    return cp >= 0x20 and cp < 0x7f;
 }
 
 fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
