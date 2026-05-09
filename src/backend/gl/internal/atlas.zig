@@ -128,7 +128,7 @@ pub fn ensureAtlasTexture(self: anytype) !void {
 
     c.glGenTextures(1, @ptrCast(&self.atlas_texture));
     c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
-    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    resetAtlasUnpackState();
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
@@ -136,11 +136,11 @@ pub fn ensureAtlasTexture(self: anytype) !void {
     c.glTexImage2D(
         c.GL_TEXTURE_2D,
         0,
-        c.GL_ALPHA,
+        c.GL_RGBA,
         @as(c_int, @intCast(need_w)),
         @as(c_int, @intCast(need_h)),
         0,
-        c.GL_ALPHA,
+        c.GL_RGBA,
         c.GL_UNSIGNED_BYTE,
         null,
     );
@@ -200,8 +200,18 @@ fn uploadAtlasSlot(self: anytype, slot: u32) void {
     const cell_h = @as(usize, self.atlas_cell_h);
     const x = (slot_idx % cols) * cell_w;
     const y = (slot_idx / cols) * cell_h;
+    const rgba = std.heap.c_allocator.alloc(u8, cell_w * cell_h * 4) catch return;
+    defer std.heap.c_allocator.free(rgba);
+    const alpha = self.atlas_pixels[slot_off .. slot_off + self.atlas_slot_stride];
+    for (alpha, 0..) |a, i| {
+        const dst = i * 4;
+        rgba[dst + 0] = 255;
+        rgba[dst + 1] = 255;
+        rgba[dst + 2] = 255;
+        rgba[dst + 3] = a;
+    }
     c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
-    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    resetAtlasUnpackState();
     c.glTexSubImage2D(
         c.GL_TEXTURE_2D,
         0,
@@ -209,11 +219,18 @@ fn uploadAtlasSlot(self: anytype, slot: u32) void {
         @as(c_int, @intCast(y)),
         @as(c_int, @intCast(cell_w)),
         @as(c_int, @intCast(cell_h)),
-        c.GL_ALPHA,
+        c.GL_RGBA,
         c.GL_UNSIGNED_BYTE,
-        self.atlas_pixels[slot_off..].ptr,
+        rgba.ptr,
     );
     c.glBindTexture(c.GL_TEXTURE_2D, 0);
+}
+
+fn resetAtlasUnpackState() void {
+    c.glPixelStorei(c.GL_UNPACK_ALIGNMENT, 1);
+    c.glPixelStorei(c.GL_UNPACK_ROW_LENGTH, 0);
+    c.glPixelStorei(c.GL_UNPACK_SKIP_PIXELS, 0);
+    c.glPixelStorei(c.GL_UNPACK_SKIP_ROWS, 0);
 }
 
 fn markSlotAlpha(self: anytype, slot: u32, pixels: []const u8, gw: u16, gh: u16) void {

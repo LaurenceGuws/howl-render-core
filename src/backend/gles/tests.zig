@@ -102,6 +102,71 @@ test "backend resize updates config dimensions" {
     try std.testing.expectEqual(@as(u16, 24), backend.config.cell_px.height);
 }
 
+test "gles backend prepares and submits text scene separately" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+    const cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var prepared = try backend.prepareFrameStateTextScene(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    defer prepared.deinit();
+    try std.testing.expectEqual(@as(usize, 1), prepared.scene.scene.sprite_draws.len);
+    const report = try backend.submitPreparedTextScene(&prepared);
+    try std.testing.expectEqual(@as(usize, 1), report.sprite_draws);
+}
+
+test "gles backend forces full redraw while target contents are invalid" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 16, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    const cells = [_]render_core.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_start = [_]u16{ 0, 0 };
+    const dirty_end = [_]u16{ 0, 0 };
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 2 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
+    };
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    try std.testing.expect(report.full_redraw);
+    try std.testing.expectEqual(@as(u16, 0), report.scroll_up_px);
+}
+
+test "gles backend preserves partial scroll damage when target contents are valid" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 16, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+    backend.target_content_valid = true;
+
+    const cells = [_]render_core.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_start = [_]u16{ 0, 0 };
+    const dirty_end = [_]u16{ 0, 0 };
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 1, .rows = 2 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
+    };
+    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    try std.testing.expect(!report.full_redraw);
+    try std.testing.expectEqual(@as(u16, 16), report.scroll_up_px);
+}
+
 test "gles backend reanalyzes after atlas storage grows" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },

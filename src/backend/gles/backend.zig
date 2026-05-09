@@ -75,12 +75,16 @@ pub const RenderReport = struct {
 pub const TextSceneRenderReport = struct {
     pass_index: u64,
     raster_uploads_committed: usize,
+    full_redraw: bool,
+    scroll_up_px: u16,
     clear_draws: usize,
     background_draws: usize,
     sprite_draws: usize,
     decoration_draws: usize,
     cursor_draws: usize,
 };
+
+pub const PreparedTextScene = render_core.Text.Engine.OwnedTextAnalysis;
 
 pub const FrameLayout = struct {
     cell_px: render_core.CellSize,
@@ -120,6 +124,7 @@ pub const Backend = struct {
     closed: bool = false,
     target_texture: ?u32 = null,
     owns_target_texture: bool = false,
+    target_content_valid: bool = false,
     target_fbo: u32 = 0,
     surface_epoch: u64 = 1,
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
@@ -207,6 +212,7 @@ pub const Backend = struct {
         }
         self.target_texture = null;
         self.owns_target_texture = false;
+        self.target_content_valid = false;
         self.closed = true;
     }
 
@@ -221,7 +227,10 @@ pub const Backend = struct {
         }
         self.target_texture = texture;
         self.owns_target_texture = false;
-        if (texture_changed) self.surface_epoch +%= 1;
+        if (texture_changed) {
+            self.surface_epoch +%= 1;
+            self.target_content_valid = false;
+        }
     }
 
     pub fn targetTexture(self: *const Backend) u32 {
@@ -359,12 +368,14 @@ pub const Backend = struct {
             if (self.target_texture == null and self.config.target_texture != 0) {
                 self.target_texture = self.config.target_texture;
                 self.surface_epoch +%= 1;
+                self.target_content_valid = false;
             }
             try self.ensureOwnedTargetTexture();
             if (self.target_texture == null) return error.TargetTextureUnset;
             try self.beginTargetPass();
             defer self.endTargetPass();
             drawTextScene(self, self.config.surface_px, scene);
+            self.target_content_valid = true;
         } else if (!builtin.is_test) {
             return error.NoContext;
         }
@@ -372,6 +383,8 @@ pub const Backend = struct {
         return .{
             .pass_index = self.pass_count,
             .raster_uploads_committed = committed_uploads,
+            .full_redraw = scene.full_redraw,
+            .scroll_up_px = scene.scroll_up_px,
             .clear_draws = scene.clear_draws.len,
             .background_draws = scene.background_draws.len,
             .sprite_draws = scene.sprite_draws.len,
@@ -398,6 +411,7 @@ pub const Backend = struct {
         self.config.cell_px = cell_px;
         if (cell_changed) self.clearAtlasCache();
         if (surface_changed) self.surface_epoch +%= 1;
+        if (surface_changed) self.target_content_valid = false;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
             self.resizeOwnedTargetTexture();
         }
@@ -424,10 +438,27 @@ pub const Backend = struct {
         cell_px: render_core.CellSize,
         faces: []render_core.Text.FontSession.FontFaceRecord,
     ) !TextSceneRenderReport {
+        var prepared = try self.prepareFrameStateTextScene(allocator, state, surface_px, cell_px, faces);
+        defer prepared.deinit();
+        return self.submitPreparedTextScene(&prepared);
+    }
+
+    pub fn prepareFrameStateTextScene(
+        self: *Backend,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+        faces: []render_core.Text.FontSession.FontFaceRecord,
+    ) !PreparedTextScene {
         try self.resize(surface_px, cell_px);
         const rc = render_core.init(self.config, self.capabilities());
         var input = try rc.vtStateToTextSceneInput(allocator, state);
         defer input.deinit();
+        if (!self.target_content_valid) {
+            input.options.scene.damage.full = true;
+            input.options.scene.damage.scroll_up_rows = 0;
+        }
         var retry_after_atlas_growth = true;
         while (true) {
             var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
@@ -442,9 +473,12 @@ pub const Backend = struct {
                 retry_after_atlas_growth = false;
                 continue;
             }
-            defer analysis.deinit();
-            return self.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
+            return analysis;
         }
+    }
+
+    pub fn submitPreparedTextScene(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {
+        return self.renderTextScene(prepared.scene.scene, prepared.raster_plan.outputs);
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
@@ -473,6 +507,7 @@ pub const Backend = struct {
         if (texture == 0) return error.TargetTextureUnset;
         self.target_texture = texture;
         self.owns_target_texture = true;
+        self.target_content_valid = false;
         self.surface_epoch +%= 1;
         self.resizeOwnedTargetTexture();
     }
@@ -496,6 +531,7 @@ pub const Backend = struct {
             null,
         );
         c.glBindTexture(c.GL_TEXTURE_2D, 0);
+        self.target_content_valid = false;
     }
 
     fn endTargetPass(_: *Backend) void {

@@ -13,6 +13,8 @@ pub const Core = core;
 pub const Backend = backend.Backend;
 pub const BackendError = backend.BackendError;
 pub const RenderReport = backend.RenderReport;
+pub const PreparedTextScene = backend.PreparedTextScene;
+pub const TextSceneRenderReport = backend.TextSceneRenderReport;
 
 pub fn init(config: Core.BackendConfig, capability: Core.BackendCapability) Core {
     return core.init(config, capability);
