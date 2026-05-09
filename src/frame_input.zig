@@ -165,7 +165,6 @@ pub fn vtStateToFrameTextInputWithTheme(
     } else null;
 
     const scroll_up_rows = damageScrollUpRows(state.damage);
-    const force_full_redraw = state.damage.full or scroll_up_rows > 0;
     return .{
         .allocator = allocator,
         .cells = cell_inputs,
@@ -173,8 +172,8 @@ pub fn vtStateToFrameTextInputWithTheme(
         .options = .{ .scene = .{
             .cursor = cursor,
             .damage = .{
-                .full = force_full_redraw,
-                .scroll_up_rows = if (force_full_redraw) 0 else scroll_up_rows,
+                .full = state.damage.full,
+                .scroll_up_rows = scroll_up_rows,
                 .dirty_rows = state.damage.dirty_rows,
                 .dirty_cols_start = state.damage.dirty_cols_start,
                 .dirty_cols_end = state.damage.dirty_cols_end,
@@ -223,8 +222,8 @@ test "frame_input threads partial damage into text scene input" {
     };
     var input = try vtStateToTextSceneInput(std.testing.allocator, state);
     defer input.deinit();
-    try std.testing.expect(input.options.scene.damage.full);
-    try std.testing.expectEqual(@as(u16, 0), input.options.scene.damage.scroll_up_rows);
+    try std.testing.expect(!input.options.scene.damage.full);
+    try std.testing.expectEqual(@as(u16, 1), input.options.scene.damage.scroll_up_rows);
     try std.testing.expectEqual(@as(usize, 2), input.options.scene.damage.dirty_rows.len);
     try std.testing.expectEqual(@as(u16, 2), input.options.scene.damage.dirty_cols_start[1]);
 }
