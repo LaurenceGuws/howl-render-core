@@ -67,7 +67,7 @@ pub fn buildScene(
     cell_metrics: contract.CellMetrics,
     grid_metrics: contract.GridMetrics,
 ) !OwnedTextScene {
-    var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len);
+    var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len + cells.len);
     defer cache.deinit();
     return buildSceneWithAtlasCacheOptions(allocator, cells, groups, missing, cell_metrics, grid_metrics, &cache, .{});
 }
@@ -81,7 +81,7 @@ pub fn buildSceneWithOptions(
     grid_metrics: contract.GridMetrics,
     options: BuildOptions,
 ) !OwnedTextScene {
-    var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len);
+    var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len + cells.len);
     defer cache.deinit();
     return buildSceneWithAtlasCacheOptions(allocator, cells, groups, missing, cell_metrics, grid_metrics, &cache, options);
 }
@@ -109,8 +109,8 @@ pub fn buildSceneWithAtlasCacheOptions(
     options: BuildOptions,
 ) !OwnedTextScene {
     const damage = normalizedDamage(options.damage, grid_metrics.rows, cell_metrics.cell_h_px);
-    const draws = try allocator.alloc(contract.TextSpriteDraw, groups.len);
-    errdefer allocator.free(draws);
+    var sprite_draws = std.ArrayList(contract.TextSpriteDraw).empty;
+    errdefer sprite_draws.deinit(allocator);
     var background_draws = std.ArrayList(contract.TextBackgroundDraw).empty;
     errdefer background_draws.deinit(allocator);
     var clear_draws = std.ArrayList(contract.TextClearDraw).empty;
@@ -121,7 +121,6 @@ pub fn buildSceneWithAtlasCacheOptions(
     errdefer raster_requests.deinit(allocator);
     const missing_owned = try allocator.dupe(contract.MissingGlyph, missing);
     errdefer allocator.free(missing_owned);
-    var out_idx: usize = 0;
 
     for (groups, 0..) |group, group_idx| {
         if (!includeSpan(damage, grid_metrics, group.first_cell, group.cell_span)) continue;
@@ -136,7 +135,7 @@ pub fn buildSceneWithAtlasCacheOptions(
         const width_cells = @max(scene_group.cell_span, 1);
         const residency = cache.ensureDetailed(scene_group.sprite_key, scene_group.kind == .emoji);
         if (residency.created) try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
-        draws[out_idx] = .{
+        try sprite_draws.append(allocator, .{
             .sprite = residency.position,
             .x_px = @as(i32, @intCast(col)) * cell_w,
             .y_px = @as(i32, @intCast(row)) * cell_h,
@@ -146,8 +145,7 @@ pub fn buildSceneWithAtlasCacheOptions(
             .color = foregroundForGroup(cells, group.first_cell),
             .first_cell = group.first_cell,
             .cell_span = scene_group.cell_span,
-        };
-        out_idx += 1;
+        });
     }
 
     const cursor_draws = if (options.cursor) |cursor|
@@ -159,11 +157,9 @@ pub fn buildSceneWithAtlasCacheOptions(
         try allocator.alloc(contract.TextCursorDraw, 0);
     errdefer allocator.free(cursor_draws);
 
-    const sprite_draws = try allocator.realloc(draws, out_idx);
-
     try appendClearDraws(allocator, &clear_draws, cells, cell_metrics, grid_metrics, damage);
     try appendBackgroundDraws(allocator, &background_draws, cells, cell_metrics, grid_metrics, damage);
-    try appendDecorationDraws(allocator, &decoration_draws, cells, cell_metrics, grid_metrics, damage);
+    try appendDecorationDraws(allocator, &decoration_draws, &sprite_draws, &raster_requests, cache, cells, cell_metrics, grid_metrics, damage);
 
     return .{ .allocator = allocator, .scene = .{
         .cells = cells,
@@ -171,7 +167,7 @@ pub fn buildSceneWithAtlasCacheOptions(
         .scroll_up_px = damage.scroll_up_px,
         .clear_draws = try clear_draws.toOwnedSlice(allocator),
         .background_draws = try background_draws.toOwnedSlice(allocator),
-        .sprite_draws = sprite_draws,
+        .sprite_draws = try sprite_draws.toOwnedSlice(allocator),
         .decoration_draws = try decoration_draws.toOwnedSlice(allocator),
         .cursor_draws = cursor_draws,
         .raster_requests = try raster_requests.toOwnedSlice(allocator),
@@ -355,6 +351,9 @@ fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
 fn appendDecorationDraws(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(contract.TextDecorationDraw),
+    sprite_out: *std.ArrayList(contract.TextSpriteDraw),
+    raster_requests: *std.ArrayList(contract.SpriteRasterRequest),
+    cache: *atlas_cache.OwnedAtlasCache,
     cells: []const contract.RenderableCell,
     cell_metrics: contract.CellMetrics,
     grid_metrics: contract.GridMetrics,
@@ -372,7 +371,7 @@ fn appendDecorationDraws(
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
-        if (cell.underline) try appendUnderlineDraws(allocator, out, cell, base_x, base_y, width_px, deco, cell_metrics);
+        if (cell.underline) try appendUnderlineDraws(allocator, out, sprite_out, raster_requests, cache, cell, base_x, base_y, width_px, deco, cell_metrics);
         if (cell.strikethrough) try appendMergedDecorationDraw(allocator, out, .{
             .kind = .strikethrough,
             .x_px = base_x,
@@ -413,7 +412,19 @@ fn appendMergedDecorationDraw(allocator: std.mem.Allocator, out: *std.ArrayList(
     try out.append(allocator, draw);
 }
 
-fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contract.TextDecorationDraw), cell: contract.RenderableCell, x: i32, row_y: i32, width: u16, deco: metrics.DecorationGeometry, cell_metrics: contract.CellMetrics) !void {
+fn appendUnderlineDraws(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(contract.TextDecorationDraw),
+    sprite_out: *std.ArrayList(contract.TextSpriteDraw),
+    raster_requests: *std.ArrayList(contract.SpriteRasterRequest),
+    cache: *atlas_cache.OwnedAtlasCache,
+    cell: contract.RenderableCell,
+    x: i32,
+    row_y: i32,
+    width: u16,
+    deco: metrics.DecorationGeometry,
+    cell_metrics: contract.CellMetrics,
+) !void {
     const color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
     const y = row_y + deco.underline_y_px;
     const height = deco.underline_h_px;
@@ -436,28 +447,41 @@ fn appendUnderlineDraws(allocator: std.mem.Allocator, out: *std.ArrayList(contra
             var off: u16 = 0;
             while (off < width) : (off += step) try appendDecorationDraw(allocator, out, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
-        .curly => {
-            const cell_h: i32 = @intCast(@max(cell_metrics.cell_h_px, 1));
-            const stroke_h: u16 = @intCast(std.math.clamp(@divTrunc(cell_h + 9, 10), 1, 4));
-            const amplitude: i32 = std.math.clamp(@divTrunc(cell_h + 5, 6), 2, @max(2, @divTrunc(cell_h, 3)));
-            const step: u16 = @intCast(@max(@as(i32, stroke_h) * 2, 2));
-            const period: u16 = @intCast(@max(amplitude * 4, 4));
-            const max_y = row_y + cell_h - @as(i32, @intCast(stroke_h));
-            const wave_top = std.math.clamp(row_y + cell_h - amplitude * 2 - @as(i32, @intCast(stroke_h)), row_y, max_y);
-            var off: u16 = 0;
-            while (off < width) : (off += step) {
-                const draw_width = @min(step, width - off);
-                const phase: i32 = @intCast(off % period);
-                const offset = if (phase < amplitude)
-                    phase
-                else if (phase < amplitude * 3)
-                    amplitude * 2 - phase
-                else
-                    phase - amplitude * 4;
-                try appendRawDecorationDraw(allocator, out, .undercurl, cell, x + @as(i32, @intCast(off)), std.math.clamp(wave_top + offset, row_y, max_y), draw_width, stroke_h, color);
-            }
-        },
+        .curly => try appendUndercurlSprite(allocator, sprite_out, raster_requests, cache, cell, x, row_y, width, cell_metrics, color),
     }
+}
+
+fn appendUndercurlSprite(
+    allocator: std.mem.Allocator,
+    sprite_out: *std.ArrayList(contract.TextSpriteDraw),
+    raster_requests: *std.ArrayList(contract.SpriteRasterRequest),
+    cache: *atlas_cache.OwnedAtlasCache,
+    cell: contract.RenderableCell,
+    x: i32,
+    row_y: i32,
+    width: u16,
+    cell_metrics: contract.CellMetrics,
+    color: contract.Rgba8,
+) !void {
+    const cell_h = @max(cell_metrics.cell_h_px, 1);
+    const stroke: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 9, 10), 1, 4));
+    const amplitude: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 5, 6), 2, @max(@as(u32, 2), @divTrunc(@as(u32, cell_h), 3))));
+    const period: u16 = @max(amplitude * 4, @max(cell_metrics.cell_w_px, 4));
+    const y_px: u16 = @intCast(std.math.clamp(@as(i32, @intCast(cell_h)) - @as(i32, @intCast(amplitude)) - @as(i32, @intCast(stroke)), 0, @as(i32, @intCast(cell_h - 1))));
+    const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
+    const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
+    const residency = cache.ensureDetailed(key, false);
+    if (residency.created) try raster_requests.append(allocator, rasterizer.requestForUndercurl(key, width, cell_h, decoration));
+    try sprite_out.append(allocator, .{
+        .sprite = residency.position,
+        .x_px = x,
+        .y_px = row_y,
+        .width_px = width,
+        .height_px = cell_h,
+        .color = color,
+        .first_cell = cell.first_cell,
+        .cell_span = cell.cell_span,
+    });
 }
 
 fn foregroundForGroup(cells: []const contract.RenderableCell, first_cell: u32) contract.Rgba8 {
@@ -722,7 +746,7 @@ test "scene merges contiguous straight underline spans" {
     try std.testing.expectEqual(@as(u8, 3), owned.scene.decoration_draws[0].cell_span);
 }
 
-test "scene emits stepped undercurl for curly underline" {
+test "scene emits undercurl sprite for curly underline" {
     const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
     const cells = [_]contract.RenderableCell{.{
         .text_id = .{ .value = 0 },
@@ -738,17 +762,12 @@ test "scene emits stepped undercurl for curly underline" {
     var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 });
     defer owned.deinit();
 
-    try std.testing.expect(owned.scene.decoration_draws.len > 4);
-    try std.testing.expectEqual(contract.DecorationKind.undercurl, owned.scene.decoration_draws[0].kind);
-    try std.testing.expect(owned.scene.decoration_draws[0].height_px > 1);
-    var saw_higher = false;
-    var saw_lower = false;
-    const first_y = owned.scene.decoration_draws[0].y_px;
-    for (owned.scene.decoration_draws[1..]) |draw| {
-        if (draw.y_px < first_y) saw_higher = true;
-        if (draw.y_px > first_y) saw_lower = true;
-    }
-    try std.testing.expect(saw_higher or saw_lower);
+    try std.testing.expectEqual(@as(usize, 0), owned.scene.decoration_draws.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(usize, 1), owned.scene.raster_requests.len);
+    try std.testing.expectEqual(contract.SpriteRasterKind.undercurl, owned.scene.raster_requests[0].kind);
+    try std.testing.expectEqual(@as(u16, 32), owned.scene.sprite_draws[0].width_px);
+    try std.testing.expect(owned.scene.raster_requests[0].decoration.amplitude_px > 1);
 }
 
 test "scene merges contiguous strikethrough spans" {

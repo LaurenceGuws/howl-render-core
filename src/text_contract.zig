@@ -227,9 +227,26 @@ pub const TextDecorationDraw = struct {
     cell_span: u8,
 };
 
+/// Identifies which shared raster path should produce a sprite mask.
+pub const SpriteRasterKind = enum(u2) {
+    glyph,
+    undercurl,
+};
+
+/// Metrics for a generated decoration sprite rasterized as an alpha mask.
+pub const DecorationSpriteRaster = struct {
+    stroke_px: u16 = 1,
+    amplitude_px: u16 = 2,
+    period_px: u16 = 8,
+    y_px: u16 = 0,
+};
+
+/// Request to rasterize either shaped glyphs or a generated text sprite.
 pub const SpriteRasterRequest = struct {
+    kind: SpriteRasterKind = .glyph,
     key: SpriteKey,
     group: GlyphGroup,
+    decoration: DecorationSpriteRaster = .{},
     placement: GlyphPlacement = .{},
     width_px: u16,
     height_px: u16,

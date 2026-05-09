@@ -16,8 +16,26 @@ pub fn hashGlyphSequence(face: contract.FontFaceId, glyphs: []const contract.Gly
     return .{ .value = h.final() };
 }
 
+/// Returns a cache key for a generated undercurl sprite with fixed metrics.
+pub fn hashUndercurl(width_px: u16, height_px: u16, stroke_px: u16, amplitude_px: u16, period_px: u16, y_px: u16) contract.SpriteKey {
+    var h = std.hash.Wyhash.init(0x756e646572637572);
+    h.update(std.mem.asBytes(&width_px));
+    h.update(std.mem.asBytes(&height_px));
+    h.update(std.mem.asBytes(&stroke_px));
+    h.update(std.mem.asBytes(&amplitude_px));
+    h.update(std.mem.asBytes(&period_px));
+    h.update(std.mem.asBytes(&y_px));
+    return .{ .value = h.final() };
+}
+
 test "sprite key changes by face" {
     const a = hashGlyphSequence(.{ .value = 1 }, &.{}, 1);
     const b = hashGlyphSequence(.{ .value = 2 }, &.{}, 1);
+    try std.testing.expect(a.value != b.value);
+}
+
+test "undercurl sprite key changes by metrics" {
+    const a = hashUndercurl(16, 20, 2, 3, 12, 14);
+    const b = hashUndercurl(16, 24, 2, 3, 12, 14);
     try std.testing.expect(a.value != b.value);
 }

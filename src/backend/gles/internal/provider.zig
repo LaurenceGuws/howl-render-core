@@ -113,6 +113,11 @@ pub fn providerRasterizeSprite(
     errdefer allocator.free(pixels);
     @memset(pixels, 0);
 
+    if (req.kind == .undercurl) {
+        render_core.Text.Rasterizer.rasterizeUndercurlAlpha(pixels, width, height, req.decoration);
+        return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
+    }
+
     if (req.group.kind == .box_fallback) {
         rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
         return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
