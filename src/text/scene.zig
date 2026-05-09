@@ -537,7 +537,7 @@ fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contrac
     var out = group;
     out.cell_span = cell_span;
     out.placement.advance_px = @max(out.placement.advance_px, @as(f32, @floatFromInt(@as(u32, cell_span) * @as(u32, cell_metrics.cell_w_px))));
-    if (out.glyphs.len > 0) out.sprite_key = sprite_key.hashGlyphSequence(out.glyphs[0].face_id, out.glyphs, cell_span);
+    if (out.glyphs.len > 0) out.sprite_key = sprite_key.hashGlyphSequence(out.glyphs[0].face_id, out.glyphs, cell_span, cell_metrics);
     return out;
 }
 

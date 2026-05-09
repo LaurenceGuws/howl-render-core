@@ -5,10 +5,13 @@
 const std = @import("std");
 const contract = @import("../text_contract.zig");
 
-pub fn hashGlyphSequence(face: contract.FontFaceId, glyphs: []const contract.GlyphInstance, cell_span: u8) contract.SpriteKey {
+pub fn hashGlyphSequence(face: contract.FontFaceId, glyphs: []const contract.GlyphInstance, cell_span: u8, cell_metrics: contract.CellMetrics) contract.SpriteKey {
     var h = std.hash.Wyhash.init(0);
     h.update(std.mem.asBytes(&face.value));
     h.update(std.mem.asBytes(&cell_span));
+    h.update(std.mem.asBytes(&cell_metrics.cell_w_px));
+    h.update(std.mem.asBytes(&cell_metrics.cell_h_px));
+    h.update(std.mem.asBytes(&cell_metrics.baseline_px));
     for (glyphs) |glyph| {
         h.update(std.mem.asBytes(&glyph.face_id.value));
         h.update(std.mem.asBytes(&glyph.glyph_id));
@@ -29,8 +32,15 @@ pub fn hashUndercurl(width_px: u16, height_px: u16, stroke_px: u16, amplitude_px
 }
 
 test "sprite key changes by face" {
-    const a = hashGlyphSequence(.{ .value = 1 }, &.{}, 1);
-    const b = hashGlyphSequence(.{ .value = 2 }, &.{}, 1);
+    const metrics = contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 };
+    const a = hashGlyphSequence(.{ .value = 1 }, &.{}, 1, metrics);
+    const b = hashGlyphSequence(.{ .value = 2 }, &.{}, 1, metrics);
+    try std.testing.expect(a.value != b.value);
+}
+
+test "sprite key changes by cell metrics" {
+    const a = hashGlyphSequence(.{ .value = 1 }, &.{}, 1, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    const b = hashGlyphSequence(.{ .value = 1 }, &.{}, 1, .{ .cell_w_px = 12, .cell_h_px = 24, .baseline_px = 18 });
     try std.testing.expect(a.value != b.value);
 }
 

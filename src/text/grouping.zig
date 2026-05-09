@@ -87,7 +87,7 @@ pub fn groupShapedRunsWithPolicy(
                 .cell_span = inferred_cell_span,
                 .glyphs = glyph_slice,
                 .placement = metrics.groupPlacement(glyph_slice, cell_metrics, inferred_cell_span),
-                .sprite_key = sprite_key.hashGlyphSequence(run.run.run.font.face_id, glyph_slice, inferred_cell_span),
+                .sprite_key = sprite_key.hashGlyphSequence(run.run.run.font.face_id, glyph_slice, inferred_cell_span, cell_metrics),
                 .kind = classifyFontGroup(cluster, glyph_slice, inferred_cell_span),
             };
             out_idx += 1;
@@ -126,7 +126,7 @@ pub fn groupSpriteRoutes(
             .cell_span = cell_span,
             .glyphs = &.{},
             .placement = metrics.groupPlacement(&.{}, cell_metrics, cell_span),
-            .sprite_key = routeSpriteKey(route.route, cluster, cell_span),
+            .sprite_key = routeSpriteKey(route.route, cluster, cell_span, cell_metrics),
             .kind = classifySpriteRoute(route.route),
         };
     }
@@ -179,12 +179,15 @@ fn classifySpriteRoute(route: contract.SpecialSpriteRoute) contract.GlyphGroupKi
     };
 }
 
-fn routeSpriteKey(route: contract.SpecialSpriteRoute, cluster: contract.CellCluster, cell_span: u8) contract.SpriteKey {
+fn routeSpriteKey(route: contract.SpecialSpriteRoute, cluster: contract.CellCluster, cell_span: u8, cell_metrics: contract.CellMetrics) contract.SpriteKey {
     var h = std.hash.Wyhash.init(0x484f574c);
     const route_int: u8 = @intFromEnum(route);
     h.update(std.mem.asBytes(&route_int));
     h.update(std.mem.asBytes(&cluster.first_cp));
     h.update(std.mem.asBytes(&cell_span));
+    h.update(std.mem.asBytes(&cell_metrics.cell_w_px));
+    h.update(std.mem.asBytes(&cell_metrics.cell_h_px));
+    h.update(std.mem.asBytes(&cell_metrics.baseline_px));
     return .{ .value = h.final() };
 }
 
