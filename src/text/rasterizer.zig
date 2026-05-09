@@ -122,10 +122,99 @@ pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u1
         0xe0ba => rasterizePowerlineCornerTriangle(pixels, width, height, .bottom_right),
         0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
+        0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
         else => return false,
     }
     return true;
+}
+
+fn rasterizeBlockElementAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) void {
+    switch (codepoint) {
+        0x2580 => fillRows(pixels, width, height, 0, 4),
+        0x2581 => fillRows(pixels, width, height, 7, 8),
+        0x2582 => fillRows(pixels, width, height, 6, 8),
+        0x2583 => fillRows(pixels, width, height, 5, 8),
+        0x2584 => fillRows(pixels, width, height, 4, 8),
+        0x2585 => fillRows(pixels, width, height, 3, 8),
+        0x2586 => fillRows(pixels, width, height, 2, 8),
+        0x2587 => fillRows(pixels, width, height, 1, 8),
+        0x2588 => fillRectAlpha(pixels, width, 0, 0, width, height, 255),
+        0x2589 => fillCols(pixels, width, height, 0, 7),
+        0x258a => fillCols(pixels, width, height, 0, 6),
+        0x258b => fillCols(pixels, width, height, 0, 5),
+        0x258c => fillCols(pixels, width, height, 0, 4),
+        0x258d => fillCols(pixels, width, height, 0, 3),
+        0x258e => fillCols(pixels, width, height, 0, 2),
+        0x258f => fillCols(pixels, width, height, 0, 1),
+        0x2590 => fillCols(pixels, width, height, 4, 8),
+        0x2591 => fillShade(pixels, width, height, .light),
+        0x2592 => fillShade(pixels, width, height, .medium),
+        0x2593 => fillShade(pixels, width, height, .dark),
+        0x2594 => fillRows(pixels, width, height, 0, 1),
+        0x2595 => fillCols(pixels, width, height, 7, 8),
+        0x2596 => fillQuadrant(pixels, width, height, .bottom_left),
+        0x2597 => fillQuadrant(pixels, width, height, .bottom_right),
+        0x2598 => fillQuadrant(pixels, width, height, .top_left),
+        0x2599 => fillQuadrants(pixels, width, height, &.{ .top_left, .bottom_left, .bottom_right }),
+        0x259a => fillQuadrants(pixels, width, height, &.{ .top_left, .bottom_right }),
+        0x259b => fillQuadrants(pixels, width, height, &.{ .top_left, .top_right, .bottom_left }),
+        0x259c => fillQuadrants(pixels, width, height, &.{ .top_left, .top_right, .bottom_right }),
+        0x259d => fillQuadrant(pixels, width, height, .top_right),
+        0x259e => fillQuadrants(pixels, width, height, &.{ .top_right, .bottom_left }),
+        0x259f => fillQuadrants(pixels, width, height, &.{ .top_right, .bottom_left, .bottom_right }),
+        else => {},
+    }
+}
+
+fn fillRows(pixels: []u8, width: u16, height: u16, start_eighth: u16, end_eighth: u16) void {
+    const y0: u16 = @intCast(@as(u32, height) * @as(u32, start_eighth) / 8);
+    const y1: u16 = @intCast(@as(u32, height) * @as(u32, end_eighth) / 8);
+    if (y1 > y0) fillRectAlpha(pixels, width, 0, y0, width, y1 - y0, 255);
+}
+
+fn fillCols(pixels: []u8, width: u16, height: u16, start_eighth: u16, end_eighth: u16) void {
+    const x0: u16 = @intCast(@as(u32, width) * @as(u32, start_eighth) / 8);
+    const x1: u16 = @intCast(@as(u32, width) * @as(u32, end_eighth) / 8);
+    if (x1 > x0) fillRectAlpha(pixels, width, x0, 0, x1 - x0, height, 255);
+}
+
+const BlockQuadrant = enum { top_left, top_right, bottom_left, bottom_right };
+
+fn fillQuadrants(pixels: []u8, width: u16, height: u16, quadrants: []const BlockQuadrant) void {
+    for (quadrants) |quadrant| fillQuadrant(pixels, width, height, quadrant);
+}
+
+fn fillQuadrant(pixels: []u8, width: u16, height: u16, quadrant: BlockQuadrant) void {
+    const half_w = width / 2;
+    const half_h = height / 2;
+    const x = switch (quadrant) {
+        .top_left, .bottom_left => 0,
+        .top_right, .bottom_right => half_w,
+    };
+    const y = switch (quadrant) {
+        .top_left, .top_right => 0,
+        .bottom_left, .bottom_right => half_h,
+    };
+    fillRectAlpha(pixels, width, x, y, width - x - if (x == 0) width - half_w else 0, height - y - if (y == 0) height - half_h else 0, 255);
+}
+
+const ShadeDensity = enum { light, medium, dark };
+
+fn fillShade(pixels: []u8, width: u16, height: u16, density: ShadeDensity) void {
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const pattern = (x + y * 3) % 4;
+            const draw = switch (density) {
+                .light => pattern == 0,
+                .medium => pattern == 0 or pattern == 2,
+                .dark => pattern != 1,
+            };
+            if (draw) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+        }
+    }
 }
 
 fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool, inverted: bool) void {
@@ -416,6 +505,33 @@ test "generated special raster draws powerline separator" {
     }
     try std.testing.expect(lit > 0);
     try std.testing.expect(lit < pixels.len / 2);
+}
+
+test "generated special raster draws eighth block" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2581));
+    var top_lit: usize = 0;
+    var bottom_lit: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (y < height / 2) top_lit += 1 else bottom_lit += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), top_lit);
+    try std.testing.expect(bottom_lit > 0);
+}
+
+test "generated special raster draws quadrant block" {
+    const width = 8;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2598));
+    try std.testing.expect(pixels[0] != 0);
+    try std.testing.expectEqual(@as(u8, 0), pixels[width - 1]);
+    try std.testing.expectEqual(@as(u8, 0), pixels[(height - 1) * width]);
 }
 
 test "raster plan creates one output per request" {
