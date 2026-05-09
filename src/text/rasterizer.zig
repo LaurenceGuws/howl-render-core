@@ -248,32 +248,125 @@ fn rasterizePowerlineHalfDiagonal(pixels: []u8, width: u16, height: u16, left: b
 }
 
 fn rasterizePowerlineD(pixels: []u8, width: u16, height: u16, left: bool, filled: bool) void {
-    const line_w = @as(f64, @floatFromInt(@max(height / 12, 1)));
-    const radius_x = @as(f64, @floatFromInt(@max(width, 1)));
-    const radius_y = @as(f64, @floatFromInt(@max(height - 1, 1))) / 2.0;
-    const center_x: f64 = if (left) 0 else @floatFromInt(width - 1);
-    const center_y = @as(f64, @floatFromInt(height - 1)) / 2.0;
+    if (filled) {
+        rasterizePowerlineFilledD(pixels, width, height, left);
+    } else {
+        rasterizePowerlineRoundedD(pixels, width, height, left);
+    }
+}
+
+const PointF = struct { x: f64, y: f64 };
+
+const CubicBezier = struct {
+    start: PointF,
+    c1: PointF,
+    c2: PointF,
+    end: PointF,
+};
+
+fn rasterizePowerlineFilledD(pixels: []u8, width: u16, height: u16, left: bool) void {
+    const max_x = findBezierControlX(width, height);
+    const cb = CubicBezier{
+        .start = .{ .x = 0, .y = 0 },
+        .c1 = .{ .x = @floatFromInt(max_x), .y = 0 },
+        .c2 = .{ .x = @floatFromInt(max_x), .y = @floatFromInt(height - 1) },
+        .end = .{ .x = 0, .y = @floatFromInt(height - 1) },
+    };
+
     var y: u16 = 0;
     while (y < height) : (y += 1) {
         var x: u16 = 0;
         while (x < width) : (x += 1) {
-            const xf = @as(f64, @floatFromInt(x)) + 0.5;
+            const sx: u16 = if (left) x else width - 1 - x;
+            const t = findBezierTForX(cb, @floatFromInt(sx));
+            if (bezierX(cb, t) > @as(f64, @floatFromInt(width - 1)) + 0.5) continue;
+            const upper = bezierY(cb, t);
+            const lower = bezierY(cb, 1.0 - t);
             const yf = @as(f64, @floatFromInt(y)) + 0.5;
-            const nx = (xf - center_x) / radius_x;
-            const ny = (yf - center_y) / radius_y;
-            const d = nx * nx + ny * ny;
-            const correct_side = if (left) xf >= center_x else xf <= center_x;
-            if (!correct_side) continue;
-            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
-            if (filled) {
-                if (d <= 1.0) pixels[idx] = 255;
-            } else {
-                const edge = @abs(@sqrt(d) - 1.0) * @min(radius_x, radius_y);
-                const coverage = std.math.clamp(line_w - edge + 0.5, 0.0, 1.0);
-                if (coverage > 0) pixels[idx] = @intFromFloat(@round(coverage * 255.0));
-            }
+            if (yf >= upper and yf <= lower) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
         }
     }
+}
+
+fn rasterizePowerlineRoundedD(pixels: []u8, width: u16, height: u16, left: bool) void {
+    const gap = @max(height / 12, 1);
+    const half_gap = @as(f64, @floatFromInt(gap)) / 2.0;
+    const curve_w = if (width > gap) width - gap else width;
+    const curve_h = if (height > gap) height - gap else height;
+    const max_x = findBezierControlX(curve_w, curve_h);
+    const cb = CubicBezier{
+        .start = .{ .x = 0, .y = 0 },
+        .c1 = .{ .x = @floatFromInt(max_x), .y = 0 },
+        .c2 = .{ .x = @floatFromInt(max_x), .y = @floatFromInt(curve_h - 1) },
+        .end = .{ .x = 0, .y = @floatFromInt(curve_h - 1) },
+    };
+    drawCubicStrokeAlpha(pixels, width, height, cb, @floatFromInt(@max(gap, 1)), half_gap, left);
+}
+
+fn findBezierControlX(width: u16, height: u16) u16 {
+    var cx: u16 = width - 1;
+    var last = cx;
+    while (cx < width * 4) : (cx += 1) {
+        const cb = CubicBezier{
+            .start = .{ .x = 0, .y = 0 },
+            .c1 = .{ .x = @floatFromInt(cx), .y = 0 },
+            .c2 = .{ .x = @floatFromInt(cx), .y = @floatFromInt(height - 1) },
+            .end = .{ .x = 0, .y = @floatFromInt(height - 1) },
+        };
+        if (bezierX(cb, 0.5) > @as(f64, @floatFromInt(width - 1))) return last;
+        last = cx;
+    }
+    return last;
+}
+
+fn findBezierTForX(cb: CubicBezier, x: f64) f64 {
+    var lo: f64 = 0;
+    var hi: f64 = 0.5;
+    var i: u8 = 0;
+    while (i < 24) : (i += 1) {
+        const mid = (lo + hi) / 2.0;
+        if (bezierX(cb, mid) < x) lo = mid else hi = mid;
+    }
+    return (lo + hi) / 2.0;
+}
+
+fn drawCubicStrokeAlpha(pixels: []u8, width: u16, height: u16, cb: CubicBezier, line_width: f64, y_offset: f64, left: bool) void {
+    const samples = 96;
+    const half = @max(line_width, 1.0) / 2.0;
+    var y: u16 = 0;
+    while (y < height) : (y += 1) {
+        var x: u16 = 0;
+        while (x < width) : (x += 1) {
+            const px = @as(f64, @floatFromInt(if (left) x else width - 1 - x)) + 0.5;
+            const py = @as(f64, @floatFromInt(y)) + 0.5 - y_offset;
+            var min_d2 = std.math.floatMax(f64);
+            var i: usize = 0;
+            while (i <= samples) : (i += 1) {
+                const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(samples));
+                const sx = bezierX(cb, t);
+                const sy = bezierY(cb, t);
+                const dx = px - sx;
+                const dy = py - sy;
+                min_d2 = @min(min_d2, dx * dx + dy * dy);
+            }
+            const coverage = std.math.clamp(half - @sqrt(min_d2) + 0.5, 0.0, 1.0);
+            if (coverage <= 0) continue;
+            pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = @intFromFloat(@round(coverage * 255.0));
+        }
+    }
+}
+
+fn bezierX(cb: CubicBezier, t: f64) f64 {
+    return bezierValue(cb.start.x, cb.c1.x, cb.c2.x, cb.end.x, t);
+}
+
+fn bezierY(cb: CubicBezier, t: f64) f64 {
+    return bezierValue(cb.start.y, cb.c1.y, cb.c2.y, cb.end.y, t);
+}
+
+fn bezierValue(start: f64, c1: f64, c2: f64, end: f64, t: f64) f64 {
+    const u = 1.0 - t;
+    return u * u * u * start + 3.0 * t * u * (u * c1 + t * c2) + t * t * t * end;
 }
 
 const PowerlineCorner = enum { top_left, top_right, bottom_left, bottom_right };
@@ -505,6 +598,29 @@ test "generated special raster draws powerline separator" {
     }
     try std.testing.expect(lit > 0);
     try std.testing.expect(lit < pixels.len / 2);
+}
+
+test "generated special raster draws cubic powerline D" {
+    const width = 16;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b4));
+    try std.testing.expect(pixels[(height / 2) * width] != 0);
+    try std.testing.expect(pixels[(height / 2) * width + width - 2] != 0);
+    try std.testing.expectEqual(@as(u8, 0), pixels[width - 1]);
+}
+
+test "generated special raster draws stroked powerline D" {
+    const width = 16;
+    const height = 16;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b5));
+    var lit: usize = 0;
+    for (pixels) |alpha| {
+        if (alpha != 0) lit += 1;
+    }
+    try std.testing.expect(lit > 0);
+    try std.testing.expect(lit < pixels.len / 3);
 }
 
 test "generated special raster draws eighth block" {
