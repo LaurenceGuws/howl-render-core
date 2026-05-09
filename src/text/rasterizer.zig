@@ -5,6 +5,7 @@
 const std = @import("std");
 const contract = @import("../text_contract.zig");
 const metrics = @import("metrics.zig");
+const special_glyphs = @import("special_glyphs.zig");
 
 pub const RasterSpriteRequest = struct {
     key: contract.SpriteKey,
@@ -75,7 +76,7 @@ pub fn requestForUndercurl(key: contract.SpriteKey, width_px: u16, height_px: u1
     };
 }
 
-/// Rasterizes a Kitty-style cosine undercurl into an alpha mask.
+/// Rasterizes a cosine undercurl into an alpha mask.
 pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, decoration: contract.DecorationSpriteRaster) void {
     @memset(pixels, 0);
     const width = @max(width_px, 1);
@@ -308,8 +309,7 @@ fn rasterizeBoxLines(pixels: []u8, width: u16, height: u16, lines: BoxLines, box
     const v_double_left = saturatingSubU16(v_light.start, light);
     const v_double_right = @min(v_light.end + light, width);
 
-    // These bounds mirror Ghostty/Kitty box connector rules: each arm stops at
-    // the correct neighboring stroke edge instead of naively overpainting center.
+    // Each arm stops at the neighboring stroke edge instead of overpainting center.
     const up_bottom = if (lines.left == .heavy or lines.right == .heavy)
         h_heavy.end
     else if (lines.left != lines.right or lines.down == lines.up)
@@ -414,7 +414,7 @@ fn rasterizeDashedBoxLine(pixels: []u8, width: u16, height: u16, axis: BoxLineAx
 }
 
 fn rasterizeRoundedCorner(pixels: []u8, width: u16, height: u16, corner: RoundedCorner, box_drawing: contract.BoxDrawingRasterMetrics) void {
-    // Match Kitty's rounded box corner SDF so the arc aligns with centered box strokes.
+    // Use a signed-distance arc so corners align with centered box strokes.
     const stroke_u = @max(box_drawing.light_stroke_px, 1);
     const stroke = @as(f64, @floatFromInt(stroke_u));
     const hori = centeredRange(height, height / 2, stroke_u);
@@ -505,7 +505,7 @@ fn rasterizeCrossLine(pixels: []u8, width: u16, height: u16, left: bool, box_dra
 }
 
 fn rasterizeOctantAlpha(pixels: []u8, width: u16, height: u16, which: u8) void {
-    const mask = kittyOctantMask(which);
+    const mask = octantMask(which);
     if ((mask & 0x01) != 0) fillOctantSegment(pixels, width, height, 0, true);
     if ((mask & 0x02) != 0) fillOctantSegment(pixels, width, height, 1, true);
     if ((mask & 0x04) != 0) fillOctantSegment(pixels, width, height, 2, true);
@@ -546,7 +546,7 @@ fn fourthRange(size: u16, which: u8) Range {
     return .{ .start = pos, .end = pos + thicknesses[which] };
 }
 
-fn kittyOctantMask(which: u8) u8 {
+fn octantMask(which: u8) u8 {
     const a: u8 = 1;
     const b: u8 = 2;
     const c: u8 = 4;
@@ -1157,6 +1157,34 @@ test "undercurl raster request generates alpha mask" {
     try std.testing.expect(lit < out.pixels.len);
 }
 
+test "generated special support table matches rasterizer dispatch" {
+    const RangeCase = struct { start: u32, end: u32 };
+    const cases = [_]RangeCase{
+        .{ .start = 0x2500, .end = 0x257f },
+        .{ .start = 0x2580, .end = 0x259f },
+        .{ .start = 0x2800, .end = 0x28ff },
+        .{ .start = 0xe0b0, .end = 0xe0bf },
+        .{ .start = 0x1fb00, .end = 0x1fb13 },
+        .{ .start = 0x1fb14, .end = 0x1fb27 },
+        .{ .start = 0x1fb28, .end = 0x1fb3b },
+        .{ .start = 0x1cd00, .end = 0x1cde5 },
+        .{ .start = 0x1fbe6, .end = 0x1fbe7 },
+    };
+
+    for (cases) |case| {
+        var cp = case.start;
+        while (cp <= case.end) : (cp += 1) {
+            try std.testing.expect(special_glyphs.isGeneratedSpecialSupported(cp));
+            var pixels = [_]u8{0} ** (12 * 18);
+            try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, 12, 18, cp));
+        }
+    }
+
+    try std.testing.expect(!special_glyphs.isGeneratedSpecialSupported(0x1fb70));
+    var pixels = [_]u8{0} ** (12 * 18);
+    try std.testing.expect(!rasterizeGeneratedSpecialAlpha(&pixels, 12, 18, 0x1fb70));
+}
+
 test "generated special raster draws braille dots" {
     const width = 8;
     const height = 16;
@@ -1297,7 +1325,7 @@ test "generated special raster draws quadrant block" {
     try std.testing.expectEqual(@as(u8, 0), pixels[(height - 1) * width]);
 }
 
-test "generated special raster uses Kitty eighth distribution" {
+test "generated special raster distributes eighth blocks" {
     const width = 10;
     const height = 8;
     var pixels = [_]u8{0} ** (width * height);
@@ -1324,7 +1352,7 @@ test "generated special raster uses uniform shade intensity" {
     }
 }
 
-test "generated special raster draws Kitty sextants" {
+test "generated special raster draws sextants" {
     const width = 8;
     const height = 15;
     var pixels = [_]u8{0} ** (width * height);
@@ -1369,7 +1397,7 @@ test "generated special raster draws upper-range sextant mapping" {
     try std.testing.expectEqual(@as(usize, 0), bottom_right);
 }
 
-test "generated special raster draws Kitty octants" {
+test "generated special raster draws octants" {
     const width = 8;
     const height = 16;
     var pixels = [_]u8{0} ** (width * height);

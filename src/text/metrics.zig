@@ -59,7 +59,7 @@ pub fn defaultFontMetrics(cell: contract.CellMetrics) contract.FontMetrics {
 
 pub fn defaultBoxThickness(cell_h_px: u16) u16 {
     _ = cell_h_px;
-    // Kitty default: ceil(scale(1) * box_drawing_scale[1](1pt) * dpi(96) / 72).
+    // Default terminal stroke at scale 1, 96 dpi, and a 1 pt base width.
     return 2;
 }
 
