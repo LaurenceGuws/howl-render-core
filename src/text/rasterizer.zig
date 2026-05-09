@@ -262,11 +262,12 @@ const CubicBezier = struct {
 
 fn rasterizePowerlineFilledD(pixels: []u8, width: u16, height: u16, left: bool) void {
     const max_x = findBezierControlX(width, height);
+    const bottom: f64 = @floatFromInt(height);
     const cb = CubicBezier{
         .start = .{ .x = 0, .y = 0 },
         .c1 = .{ .x = @floatFromInt(max_x), .y = 0 },
-        .c2 = .{ .x = @floatFromInt(max_x), .y = @floatFromInt(height - 1) },
-        .end = .{ .x = 0, .y = @floatFromInt(height - 1) },
+        .c2 = .{ .x = @floatFromInt(max_x), .y = bottom },
+        .end = .{ .x = 0, .y = bottom },
     };
 
     var y: u16 = 0;
@@ -639,6 +640,7 @@ test "generated special raster draws cubic powerline D" {
     try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0xe0b4));
     try std.testing.expect(pixels[(height / 2) * width] != 0);
     try std.testing.expect(pixels[(height / 2) * width + width - 2] != 0);
+    try std.testing.expect(pixels[(height - 1) * width] != 0);
     try std.testing.expect(pixels[width - 1] < 255);
     var partial_alpha = false;
     for (pixels) |alpha| {
