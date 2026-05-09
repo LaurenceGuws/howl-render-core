@@ -168,15 +168,44 @@ fn rasterizeBlockElementAlpha(pixels: []u8, width: u16, height: u16, codepoint: 
 }
 
 fn fillRows(pixels: []u8, width: u16, height: u16, start_eighth: u16, end_eighth: u16) void {
-    const y0: u16 = @intCast(@as(u32, height) * @as(u32, start_eighth) / 8);
-    const y1: u16 = @intCast(@as(u32, height) * @as(u32, end_eighth) / 8);
-    if (y1 > y0) fillRectAlpha(pixels, width, 0, y0, width, y1 - y0, 255);
+    var eighth = start_eighth;
+    while (eighth < end_eighth) : (eighth += 1) {
+        const range = eighthRange(height, eighth);
+        if (range.end > range.start) fillRectAlpha(pixels, width, 0, range.start, width, range.end - range.start, 255);
+    }
 }
 
 fn fillCols(pixels: []u8, width: u16, height: u16, start_eighth: u16, end_eighth: u16) void {
-    const x0: u16 = @intCast(@as(u32, width) * @as(u32, start_eighth) / 8);
-    const x1: u16 = @intCast(@as(u32, width) * @as(u32, end_eighth) / 8);
-    if (x1 > x0) fillRectAlpha(pixels, width, x0, 0, x1 - x0, height, 255);
+    var eighth = start_eighth;
+    while (eighth < end_eighth) : (eighth += 1) {
+        const range = eighthRange(width, eighth);
+        if (range.end > range.start) fillRectAlpha(pixels, width, range.start, 0, range.end - range.start, height, 255);
+    }
+}
+
+const Range = struct { start: u16, end: u16 };
+
+fn eighthRange(size: u16, which: u16) Range {
+    const thickness = @max(@as(u16, 1), size / 8);
+    const block = thickness * 8;
+    if (block == size) return .{ .start = thickness * which, .end = thickness * (which + 1) };
+    if (block > size) {
+        const start = @min(which * thickness, saturatingSubU16(size, thickness));
+        return .{ .start = start, .end = start + thickness };
+    }
+
+    var thicknesses = [_]u16{thickness} ** 8;
+    var extra = size - block;
+    const order = [_]usize{ 3, 4, 2, 5, 6, 1, 7, 0 };
+    for (order) |idx| {
+        if (extra == 0) break;
+        thicknesses[idx] += 1;
+        extra -= 1;
+    }
+    var pos: u16 = 0;
+    var idx: usize = 0;
+    while (idx < which) : (idx += 1) pos += thicknesses[idx];
+    return .{ .start = pos, .end = pos + thicknesses[which] };
 }
 
 const BlockQuadrant = enum { top_left, top_right, bottom_left, bottom_right };
@@ -202,19 +231,56 @@ fn fillQuadrant(pixels: []u8, width: u16, height: u16, quadrant: BlockQuadrant) 
 const ShadeDensity = enum { light, medium, dark };
 
 fn fillShade(pixels: []u8, width: u16, height: u16, density: ShadeDensity) void {
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const pattern = (x + y * 3) % 4;
-            const draw = switch (density) {
-                .light => pattern == 0,
-                .medium => pattern == 0 or pattern == 2,
-                .dark => pattern != 1,
-            };
-            if (draw) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+    const light = density == .light or density == .dark;
+    const invert = density == .dark;
+    const xnum: u16 = 12;
+    const square_w = @max(@as(u16, 1), width / xnum);
+    const square_h = square_w;
+    var cols = @max(@as(u16, 1), width / square_w);
+    var rows = @max(@as(u16, 1), height / square_h);
+    if (cols > 1 and ((cols & 1) != (xnum & 1))) cols -= 1;
+    if (rows > 1 and ((rows & 1) != 0)) rows -= 1;
+
+    const excess_cols = saturatingSubU16(width, square_w * cols);
+    const excess_rows = saturatingSubU16(height, square_h * rows);
+    const col_ext = @as(f64, @floatFromInt(excess_cols)) / @as(f64, @floatFromInt(cols));
+    const row_ext = @as(f64, @floatFromInt(excess_rows)) / @as(f64, @floatFromInt(rows));
+
+    var old_ey: u16 = 0;
+    var r: u16 = 0;
+    while (r < rows) : (r += 1) {
+        const ey: u16 = @intFromFloat(std.math.ceil(@as(f64, @floatFromInt(r)) * row_ext));
+        const extra_row = ey != old_ey;
+        var old_ex: u16 = 0;
+        var c: u16 = 0;
+        while (c < cols) : (c += 1) {
+            const ex: u16 = @intFromFloat(std.math.ceil(@as(f64, @floatFromInt(c)) * col_ext));
+            const extra_col = ex != old_ex;
+            const x0 = c * square_w + ex;
+            const y0 = r * square_h + ey;
+            if (extra_row and y0 < height) {
+                var xc: u16 = 0;
+                while (xc < square_w and x0 + xc < width) : (xc += 1) pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0 + xc)] = shadeExtraAlpha(light, invert, c);
+            }
+            if (extra_col and x0 < width) {
+                var yr: u16 = 0;
+                while (yr < square_h and y0 + yr < height) : (yr += 1) pixels[@as(usize, y0 + yr) * @as(usize, width) + @as(usize, x0)] = shadeExtraAlpha(light, invert, r);
+            }
+            if (extra_row and extra_col and x0 < width and y0 < height) pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0)] = 50;
+            const is_blank = invert != (((r & 1) != (c & 1)) or (light and (r & 1) == 1));
+            if (!is_blank) fillRectAlpha(pixels, width, x0, y0, @min(square_w, width - x0), @min(square_h, height - y0), 255);
+            old_ex = ex;
         }
+        old_ey = ey;
     }
+}
+
+fn shadeExtraAlpha(light: bool, invert: bool, index: u16) u8 {
+    if (light) {
+        if (invert) return if ((index & 1) == 1) 255 else 70;
+        return if ((index & 1) == 1) 0 else 70;
+    }
+    return if (((index & 1) == 1) == invert) 120 else 30;
 }
 
 fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool, inverted: bool) void {
@@ -510,6 +576,10 @@ fn fillRectAlpha(pixels: []u8, stride: u16, x: u16, y: u16, width: u16, height: 
     }
 }
 
+fn saturatingSubU16(a: u16, b: u16) u16 {
+    return if (a > b) a - b else 0;
+}
+
 fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, position: u16, y_offset: i32, alpha: u8) void {
     if (alpha == 0) return;
     const raw_y = @as(i32, @intCast(position)) + y_offset;
@@ -687,6 +757,38 @@ test "generated special raster draws quadrant block" {
     try std.testing.expect(pixels[0] != 0);
     try std.testing.expectEqual(@as(u8, 0), pixels[width - 1]);
     try std.testing.expectEqual(@as(u8, 0), pixels[(height - 1) * width]);
+}
+
+test "generated special raster uses Kitty eighth distribution" {
+    const width = 10;
+    const height = 8;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2595));
+    var left_lit: usize = 0;
+    var right_lit: usize = 0;
+    for (0..height) |y| {
+        for (0..width) |x| {
+            if (pixels[y * width + x] == 0) continue;
+            if (x < width - 1) left_lit += 1 else right_lit += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 0), left_lit);
+    try std.testing.expectEqual(@as(usize, height), right_lit);
+}
+
+test "generated special raster uses Kitty shade intensity" {
+    const width = 13;
+    const height = 13;
+    var pixels = [_]u8{0} ** (width * height);
+    try std.testing.expect(rasterizeGeneratedSpecialAlpha(&pixels, width, height, 0x2592));
+    var saw_dim = false;
+    var saw_full = false;
+    for (pixels) |alpha| {
+        if (alpha > 0 and alpha < 255) saw_dim = true;
+        if (alpha == 255) saw_full = true;
+    }
+    try std.testing.expect(saw_dim);
+    try std.testing.expect(saw_full);
 }
 
 test "raster plan creates one output per request" {
