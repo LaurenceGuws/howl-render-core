@@ -19,13 +19,55 @@ pub const RasterSpriteOutput = struct {
     width_px: u16,
     height_px: u16,
     color_mode: contract.SpriteColorMode = .alpha,
+    visual_bounds: SpriteBounds = .{},
     pixels: []u8,
 
     pub fn deinit(self: *RasterSpriteOutput) void {
         self.allocator.free(self.pixels);
         self.* = undefined;
     }
+
+    pub fn visualBounds(self: RasterSpriteOutput) SpriteBounds {
+        if (self.visual_bounds.width_px != 0 and self.visual_bounds.height_px != 0) return self.visual_bounds;
+        return alphaBounds(self.pixels, self.width_px, self.height_px);
+    }
 };
+
+pub const SpriteBounds = struct {
+    x_px: u16 = 0,
+    y_px: u16 = 0,
+    width_px: u16 = 0,
+    height_px: u16 = 0,
+};
+
+pub fn alphaBounds(pixels: []const u8, width_px: u16, height_px: u16) SpriteBounds {
+    if (width_px == 0 or height_px == 0) return .{};
+    var min_x: u16 = width_px;
+    var min_y: u16 = height_px;
+    var max_x: u16 = 0;
+    var max_y: u16 = 0;
+    var seen = false;
+    for (0..height_px) |yy| {
+        const row = yy * @as(usize, width_px);
+        for (0..width_px) |xx| {
+            if (row + xx >= pixels.len or pixels[row + xx] == 0) continue;
+            const x: u16 = @intCast(xx);
+            const y: u16 = @intCast(yy);
+            min_x = @min(min_x, x);
+            min_y = @min(min_y, y);
+            max_x = @max(max_x, x);
+            max_y = @max(max_y, y);
+            seen = true;
+        }
+    }
+    if (!seen) return .{};
+    return .{
+        .x_px = min_x,
+        .y_px = min_y,
+        .width_px = max_x - min_x + 1,
+        .height_px = max_y - min_y + 1,
+    };
+}
 
 pub const OwnedRasterPlan = struct {
     allocator: std.mem.Allocator,
@@ -61,6 +103,19 @@ pub fn requestForGroup(group: contract.GlyphGroup, cell_metrics: contract.CellMe
         .box_drawing = metrics.boxDrawingRasterMetrics(cell_metrics),
         .color_mode = if (group.kind == .emoji) .color else .alpha,
     };
+}
+
+test "raster output reports non-empty alpha bounds" {
+    const pixels = [_]u8{
+        0, 0, 0, 0,
+        0, 7, 8, 0,
+        0, 0, 9, 0,
+    };
+    const bounds = alphaBounds(&pixels, 4, 3);
+    try std.testing.expectEqual(@as(u16, 1), bounds.x_px);
+    try std.testing.expectEqual(@as(u16, 1), bounds.y_px);
+    try std.testing.expectEqual(@as(u16, 2), bounds.width_px);
+    try std.testing.expectEqual(@as(u16, 2), bounds.height_px);
 }
 
 /// Builds a raster request for a generated undercurl alpha sprite.

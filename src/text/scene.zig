@@ -134,7 +134,9 @@ pub fn buildSceneWithAtlasCacheOptions(
         const row = first_cell / cols;
         const width_cells = @max(scene_group.cell_span, 1);
         const residency = cache.ensureDetailed(scene_group.sprite_key, scene_group.kind == .emoji);
-        if (residency.created) try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
+        if (residency.created and !hasRasterRequest(raster_requests.items, scene_group.sprite_key)) {
+            try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
+        }
         try sprite_draws.append(allocator, .{
             .sprite = residency.position,
             .x_px = @as(i32, @intCast(col)) * cell_w,
@@ -480,7 +482,9 @@ fn appendUndercurlSprite(
     const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
     const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
     const residency = cache.ensureDetailed(key, false);
-    if (residency.created) try raster_requests.append(allocator, rasterizer.requestForUndercurl(key, width, cell_h, decoration));
+    if (residency.created and !hasRasterRequest(raster_requests.items, key)) {
+        try raster_requests.append(allocator, rasterizer.requestForUndercurl(key, width, cell_h, decoration));
+    }
     try sprite_out.append(allocator, .{
         .sprite = residency.position,
         .x_px = x,
@@ -517,6 +521,13 @@ fn findCellByFirstCell(cells: []const contract.RenderableCell, first_cell: u32) 
         }
     }
     return null;
+}
+
+fn hasRasterRequest(requests: []const contract.SpriteRasterRequest, key: contract.SpriteKey) bool {
+    for (requests) |request| {
+        if (request.key.value == key.value) return true;
+    }
+    return false;
 }
 
 fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics, grid_metrics: contract.GridMetrics, next_group_cell: ?u32) contract.GlyphGroup {
@@ -869,6 +880,7 @@ test "scene does not request raster for cache hit" {
     var cache = try atlas_cache.OwnedAtlasCache.init(std.testing.allocator, 8);
     defer cache.deinit();
     _ = cache.ensure(group.sprite_key, false);
+    try std.testing.expect(cache.markRendered(group.sprite_key));
     var owned = try buildSceneWithAtlasCache(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache);
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 0), owned.scene.raster_requests.len);

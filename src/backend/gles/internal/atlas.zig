@@ -10,8 +10,12 @@ pub fn uploadTextSceneRaster(
     var committed: usize = 0;
     for (outputs) |output| {
         const slot = findSceneSpriteSlot(scene, output.key) orelse continue;
-        if (textSceneSlotCached(self, slot, output)) continue;
+        if (textSceneSlotCached(self, slot, output)) {
+            markOutputRendered(self, output);
+            continue;
+        }
         copyRasterOutputToAtlas(self, slot, output);
+        markOutputRendered(self, output);
         committed += 1;
     }
     return committed;
@@ -25,6 +29,10 @@ pub fn clearAtlasCache(self: anytype) void {
     if (self.atlas_slot_sprite_key.len > 0) @memset(self.atlas_slot_sprite_key, 0);
     if (self.atlas_slot_width.len > 0) @memset(self.atlas_slot_width, 0);
     if (self.atlas_slot_height.len > 0) @memset(self.atlas_slot_height, 0);
+    if (self.atlas_slot_draw_x.len > 0) @memset(self.atlas_slot_draw_x, 0);
+    if (self.atlas_slot_draw_y.len > 0) @memset(self.atlas_slot_draw_y, 0);
+    if (self.atlas_slot_draw_w.len > 0) @memset(self.atlas_slot_draw_w, 0);
+    if (self.atlas_slot_draw_h.len > 0) @memset(self.atlas_slot_draw_h, 0);
     if (self.atlas_slot_has_alpha.len > 0) @memset(self.atlas_slot_has_alpha, false);
     self.atlas_next_slot = 0;
 }
@@ -74,6 +82,22 @@ fn ensureAtlasStorageSized(self: anytype, need_w: u16, need_h: u16) !void {
         std.heap.c_allocator.free(self.atlas_slot_height);
         self.atlas_slot_height = &.{};
     }
+    if (self.atlas_slot_draw_x.len > 0) {
+        std.heap.c_allocator.free(self.atlas_slot_draw_x);
+        self.atlas_slot_draw_x = &.{};
+    }
+    if (self.atlas_slot_draw_y.len > 0) {
+        std.heap.c_allocator.free(self.atlas_slot_draw_y);
+        self.atlas_slot_draw_y = &.{};
+    }
+    if (self.atlas_slot_draw_w.len > 0) {
+        std.heap.c_allocator.free(self.atlas_slot_draw_w);
+        self.atlas_slot_draw_w = &.{};
+    }
+    if (self.atlas_slot_draw_h.len > 0) {
+        std.heap.c_allocator.free(self.atlas_slot_draw_h);
+        self.atlas_slot_draw_h = &.{};
+    }
     if (self.atlas_slot_has_alpha.len > 0) {
         std.heap.c_allocator.free(self.atlas_slot_has_alpha);
         self.atlas_slot_has_alpha = &.{};
@@ -94,6 +118,14 @@ fn ensureAtlasStorageSized(self: anytype, need_w: u16, need_h: u16) !void {
     @memset(self.atlas_slot_width, 0);
     self.atlas_slot_height = try std.heap.c_allocator.alloc(u16, max_slots);
     @memset(self.atlas_slot_height, 0);
+    self.atlas_slot_draw_x = try std.heap.c_allocator.alloc(u16, max_slots);
+    @memset(self.atlas_slot_draw_x, 0);
+    self.atlas_slot_draw_y = try std.heap.c_allocator.alloc(u16, max_slots);
+    @memset(self.atlas_slot_draw_y, 0);
+    self.atlas_slot_draw_w = try std.heap.c_allocator.alloc(u16, max_slots);
+    @memset(self.atlas_slot_draw_w, 0);
+    self.atlas_slot_draw_h = try std.heap.c_allocator.alloc(u16, max_slots);
+    @memset(self.atlas_slot_draw_h, 0);
     self.atlas_slot_has_alpha = try std.heap.c_allocator.alloc(bool, max_slots);
     @memset(self.atlas_slot_has_alpha, false);
     self.atlas_cell_w = need_w;
@@ -139,7 +171,23 @@ fn copyRasterOutputToAtlas(
     if (slot_idx < self.atlas_slot_sprite_key.len) self.atlas_slot_sprite_key[slot_idx] = output.key.value;
     if (slot_idx < self.atlas_slot_width.len) self.atlas_slot_width[slot_idx] = output.width_px;
     if (slot_idx < self.atlas_slot_height.len) self.atlas_slot_height[slot_idx] = output.height_px;
+    const bounds = clippedBounds(output.visualBounds(), self.atlas_cell_w, self.atlas_cell_h);
+    if (slot_idx < self.atlas_slot_draw_x.len) self.atlas_slot_draw_x[slot_idx] = bounds.x_px;
+    if (slot_idx < self.atlas_slot_draw_y.len) self.atlas_slot_draw_y[slot_idx] = bounds.y_px;
+    if (slot_idx < self.atlas_slot_draw_w.len) self.atlas_slot_draw_w[slot_idx] = bounds.width_px;
+    if (slot_idx < self.atlas_slot_draw_h.len) self.atlas_slot_draw_h[slot_idx] = bounds.height_px;
     markSlotAlpha(self, slot, dst, copy_w, copy_h);
+}
+
+fn clippedBounds(bounds: render_core.Text.Rasterizer.SpriteBounds, max_w: u16, max_h: u16) render_core.Text.Rasterizer.SpriteBounds {
+    if (bounds.width_px == 0 or bounds.height_px == 0) return .{};
+    if (bounds.x_px >= max_w or bounds.y_px >= max_h) return .{};
+    return .{
+        .x_px = bounds.x_px,
+        .y_px = bounds.y_px,
+        .width_px = @min(bounds.width_px, max_w - bounds.x_px),
+        .height_px = @min(bounds.height_px, max_h - bounds.y_px),
+    };
 }
 
 fn markSlotAlpha(self: anytype, slot: u32, pixels: []const u8, gw: u16, gh: u16) void {
@@ -154,6 +202,10 @@ fn markSlotAlpha(self: anytype, slot: u32, pixels: []const u8, gw: u16, gh: u16)
         }
     }
     self.atlas_slot_has_alpha[slot_idx] = false;
+}
+
+fn markOutputRendered(self: anytype, output: render_core.Text.Rasterizer.RasterSpriteOutput) void {
+    if (self.text_engine) |*engine| _ = engine.atlas.markRendered(output.key);
 }
 
 fn findSceneSpriteSlot(scene: render_core.TextScene, key: render_core.SpriteKey) ?u32 {

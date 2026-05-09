@@ -12,6 +12,15 @@ This document is intentionally grounded in the current Howl implementation and i
 - `/home/home/personal/zide/dev_references/terminals/kitty/kitty/text-cache.c`
 - `/home/home/personal/zide/dev_references/terminals/kitty/kitty_tests/fonts.py`
 
+Reference hierarchy is strict:
+- Kitty is the shaping, glyph grouping, sprite identity, raster quality, and special glyph math source of truth.
+- Ghostty is guidance for embedding boundaries, platform-native renderer ownership, and strict library/host separation.
+- Alacritty is guidance for runtime throughput: PTY/render thread separation, dirty/frame scheduling, damage tracking, and avoiding unnecessary redraw work.
+
+Do not use Ghostty or Alacritty to weaken Kitty's text quality rules. They are supporting references for architecture and runtime behavior, not substitutes for Kitty's font pipeline semantics.
+
+Recent bug class to avoid: do not "fix" oversized Nerd Font/icon output by narrowing glyph groups back to old cell assumptions. Icons and wide glyphs must remain first-class variable-extent render results. The renderer, atlas, damage, and presentation pipeline must be made capable of representing them correctly.
+
 ## Current Howl State
 Howl currently has the beginning of a text contract, but the real implementation is still fundamentally cell/codepoint based.
 
@@ -60,6 +69,14 @@ Adopt these principles strictly:
 - Cell metrics, baseline, underline position, and strikethrough position are central policy derived from the selected primary face.
 - Fallback font choices are validated by glyph coverage for the whole cell text, not by trusting OS discovery blindly.
 - Missing glyphs are explicit, countable, and testable.
+
+Kitty-specific invariants that Howl must preserve:
+- `font_for_cell()`-style resolver order is authoritative: blank, procedural/symbol route, exact style face, symbol-map face, validated primary face, validated fallback, explicit missing.
+- `has_cell_text()`-style validation must prove the chosen face can render the full cell text, ignoring non-rendering codepoints and accounting for composed combining cases.
+- HarfBuzz must shape full compatible runs, not individual codepoints.
+- Grouping must be driven by HarfBuzz clusters and special/empty glyph handling, including ligatures, combining marks, wide glyphs, spacer glyphs, and PUA+space prompt segments.
+- Sprite cache identity must be rendered-result identity: glyph sequence, ligature index, cell count, scale, subscale, multicell row, alignment, face/style/presentation, and procedural route where applicable.
+- Rendered groups may span multiple terminal cells. That span is not a bug; the pipeline must carry it through rasterization, atlas upload, damage expansion, and final draw.
 
 For Howl, copy that shape: keep font quality inside render backends/render-core contracts, but let that engine understand terminal cells deeply enough to render actual glyphs correctly.
 
@@ -129,6 +146,19 @@ Keep Howl boundaries, but move text semantics into a real text engine layer insi
 Linux-host owns:
 - user config input only: font family/path lists, size, features, fallback policy knobs
 - no shaping, no fallback decisions, no Unicode text policy
+
+Ghostty boundary guidance applied to Howl:
+- `howl-term` and hosts consume render-core/renderer APIs as embeddable clients; they do not own renderer internals.
+- Renderer state and runtime wake/scheduling may be platform-specific, but text correctness must not leak into host UX/runtime code.
+- Native host freedom is allowed only below the outcome boundary. SDL and Android may differ internally, but must prove equivalent font/render behavior.
+- Library-style APIs must expose explicit failure states and counters instead of silent fallback rendering.
+
+Alacritty throughput guidance applied to Howl:
+- PTY/session work and rendering work stay separated by explicit queues/wakeups.
+- Frame scheduling must be dirty/damage-driven, not busy-redraw-driven.
+- Input latency can bypass batching when needed, but text shaping/raster work must remain coalescible.
+- Damage tracking must include visual glyph extents, not only VT cell rectangles.
+- Performance optimization starts after the mature text pipeline exists; do not optimize legacy shortcuts into permanence.
 
 ## Required Data Model Upgrade
 Current `SurfaceCell.codepoint` is not enough. Move toward a kitty-like cell text model.
@@ -290,6 +320,9 @@ Required changes:
 - Support alpha sprites and colored sprites distinctly.
 - Track fallback hits/misses, missing glyphs, shaped runs, shaped groups, raster uploads, cache hits, and cache evictions.
 - Make eviction explicit. Ring overwrite is acceptable only as an initial policy if stale references cannot survive into a frame.
+- Atlas storage must support variable sprite dimensions and rendered extents larger than one nominal cell.
+- Damage and retained-surface validation must expand from logical cell coverage to visual sprite coverage.
+- Final draw commands must carry source atlas rect, destination pixel rect, baseline/bearing placement, cell span, and clipping explicitly.
 
 Preferred key philosophy:
 - identity should describe the rendered result, not the source codepoint
@@ -345,6 +378,17 @@ Unit/golden test groups:
 - PUA+space powerline multicell behavior
 - procedural box/block/braille/powerline pixel masks
 - GL/GLES contract parity tests using the same render-core fixtures
+- pixel/readback proof for wide icon/Nerd Font cases that previously rendered as full-cell blocks
+
+Invalid proof:
+- `renderedTextContains` and similar snapshot/text-state checks do not prove renderer correctness.
+- Replay frame counts, submit rejection counts, and wake metrics do not prove glyph quality.
+
+Valid proof:
+- render-core pixel masks for procedural sprites
+- atlas alpha/color content for rasterized glyph groups
+- GL/GLES framebuffer or target-texture readback for visual regressions
+- screenshot/manual proof only as a temporary diagnostic, not as the final automated gate
 
 Manual validation corpus:
 - shell prompt with Nerd Font/powerline symbols

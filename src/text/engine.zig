@@ -129,10 +129,6 @@ pub const Engine = struct {
         errdefer scene.deinit();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
         errdefer raster_plan.deinit();
-        for (raster_plan.outputs) |output| {
-            _ = self.atlas.markRendered(output.key);
-        }
-
         var counters = pipeline.TextEngineCounters{
             .cell_texts = owned_text_cache.texts.len,
             .clusters = clusters.clusters.len,
@@ -302,7 +298,7 @@ test "text engine scene is grid positioned" {
     try std.testing.expectEqual(@as(i32, 1), analysis.scene.scene.sprite_draws[2].y_px);
 }
 
-test "text engine reuses atlas slots across analyses" {
+test "text engine rerasterizes pending atlas entries across analyses" {
     var engine = try Engine.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
@@ -314,10 +310,10 @@ test "text engine reuses atlas slots across analyses" {
     var second = try engine.analyzeCells(&cells, .{ .value = 1 });
     defer second.deinit();
     try std.testing.expectEqual(first_slot, second.scene.scene.sprite_draws[0].sprite.slot);
-    try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
+    try std.testing.expectEqual(@as(usize, 1), second.raster_plan.outputs.len);
     try std.testing.expectEqual(@as(usize, 1), engine.atlas.len);
-    try std.testing.expectEqual(@as(u64, 1), engine.counters.sprite_cache_hits);
-    try std.testing.expect(engine.atlas.get(.{ .value = second.scene.scene.sprite_draws[0].sprite.key.value }).?.rendered);
+    try std.testing.expectEqual(@as(u64, 0), engine.counters.sprite_cache_hits);
+    try std.testing.expect(!engine.atlas.get(.{ .value = second.scene.scene.sprite_draws[0].sprite.key.value }).?.rendered);
 }
 
 test "text engine rerasterizes sprites after cell metrics change" {

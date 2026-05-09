@@ -526,24 +526,88 @@ fn rasterizeProviderGlyphFromFace(dst: []u8, width: u16, height: u16, baseline_p
     if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return false;
     const bw: usize = @intCast(bitmap.width);
     const bh: usize = @intCast(bitmap.rows);
+    const visual_w = bitmapVisualWidth(bitmap.pixel_mode, bw);
+    const visual_h = bitmapVisualHeight(bitmap.pixel_mode, bh);
     const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
     const pitch_is_negative = bitmap.pitch < 0;
     const baseline: i32 = if (baseline_px > 0) baseline_px else computeBaselineFromFace(face, height);
-    const origin = cellBitmapOrigin(width, baseline, glyph.*.bitmap_left, glyph.*.bitmap_top, @intCast(bitmap.width), x_origin_px, y_origin_px, glyph_index);
+    const origin = cellBitmapOrigin(width, baseline, glyph.*.bitmap_left, glyph.*.bitmap_top, @intCast(visual_w), x_origin_px, y_origin_px, glyph_index);
 
-    for (0..bh) |yy| {
-        for (0..bw) |xx| {
+    for (0..visual_h) |yy| {
+        for (0..visual_w) |xx| {
             const dx_i = origin.x_px + @as(i32, @intCast(xx));
             const dy_i = origin.y_px + @as(i32, @intCast(yy));
             if (dx_i < 0 or dy_i < 0) continue;
             const dx: usize = @intCast(dx_i);
             const dy: usize = @intCast(dy_i);
             if (dx >= width or dy >= height) continue;
-            const src_y = if (pitch_is_negative) (bh - 1 - yy) else yy;
-            dst[dy * @as(usize, width) + dx] = bitmap.buffer[src_y * pitch_abs + xx];
+            dst[dy * @as(usize, width) + dx] = bitmapAlpha(bitmap.buffer[0 .. pitch_abs * bh], bitmap.pixel_mode, pitch_abs, pitch_is_negative, bw, bh, xx, yy);
         }
     }
     return true;
+}
+
+fn bitmapVisualWidth(pixel_mode: anytype, bitmap_width: usize) usize {
+    return switch (pixelModeValue(pixel_mode)) {
+        5 => @max(bitmap_width / 3, 1),
+        else => bitmap_width,
+    };
+}
+
+fn bitmapVisualHeight(pixel_mode: anytype, bitmap_height: usize) usize {
+    return switch (pixelModeValue(pixel_mode)) {
+        6 => @max(bitmap_height / 3, 1),
+        else => bitmap_height,
+    };
+}
+
+fn bitmapAlpha(buffer: []const u8, pixel_mode: anytype, pitch_abs: usize, pitch_is_negative: bool, bitmap_width: usize, bitmap_height: usize, x: usize, y: usize) u8 {
+    _ = bitmap_width;
+    const src_y = switch (pixelModeValue(pixel_mode)) {
+        6 => @min(y * 3, bitmap_height - 1),
+        else => y,
+    };
+    const row_y = if (pitch_is_negative) bitmap_height - 1 - src_y else src_y;
+    const row = buffer[row_y * pitch_abs ..][0..pitch_abs];
+    return switch (pixelModeValue(pixel_mode)) {
+        1 => if ((row[x / 8] & (@as(u8, 0x80) >> @intCast(x & 7))) != 0) 255 else 0,
+        2 => row[x],
+        3 => unpackPackedGray(row, x, 2),
+        4 => unpackPackedGray(row, x, 4),
+        5 => average3(row, x * 3),
+        6 => average3(row, x),
+        7 => row[x * 4 + 3],
+        else => row[x],
+    };
+}
+
+fn unpackPackedGray(row: []const u8, x: usize, bits: u3) u8 {
+    const per_byte = 8 / @as(usize, bits);
+    const shift: u3 = @intCast(8 - @as(usize, bits) - (x % per_byte) * @as(usize, bits));
+    const mask: u8 = (@as(u8, 1) << bits) - 1;
+    const value = (row[x / per_byte] >> shift) & mask;
+    return @intCast((@as(u16, value) * 255) / @as(u16, mask));
+}
+
+fn average3(row: []const u8, off: usize) u8 {
+    if (off + 2 >= row.len) return 0;
+    return @intCast((@as(u16, row[off]) + @as(u16, row[off + 1]) + @as(u16, row[off + 2])) / 3);
+}
+
+fn pixelModeValue(pixel_mode: anytype) u32 {
+    const T = @TypeOf(pixel_mode);
+    return switch (@typeInfo(T)) {
+        .@"enum" => @intFromEnum(pixel_mode),
+        else => @intCast(pixel_mode),
+    };
+}
+
+test "provider decodes packed monochrome bitmap alpha" {
+    const row = [_]u8{0b1010_0000};
+    try std.testing.expectEqual(@as(u8, 255), bitmapAlpha(&row, @as(u8, 1), 1, false, 4, 1, 0, 0));
+    try std.testing.expectEqual(@as(u8, 0), bitmapAlpha(&row, @as(u8, 1), 1, false, 4, 1, 1, 0));
+    try std.testing.expectEqual(@as(u8, 255), bitmapAlpha(&row, @as(u8, 1), 1, false, 4, 1, 2, 0));
+    try std.testing.expectEqual(@as(u8, 0), bitmapAlpha(&row, @as(u8, 1), 1, false, 4, 1, 3, 0));
 }
 
 fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top: i32, bitmap_width: u16, x_offset: i32, y_offset: i32, glyph_index: u32) struct { x_px: i32, y_px: i32 } {

@@ -51,7 +51,7 @@ pub const OwnedAtlasCache = struct {
     }
 
     pub fn ensureDetailed(self: *OwnedAtlasCache, key: contract.SpriteKey, colored: bool) EnsureResult {
-        if (self.get(key)) |pos| return .{ .position = pos, .created = false };
+        if (self.get(key)) |pos| return .{ .position = pos, .created = !pos.rendered };
         if (self.entries.len == 0) return .{ .position = .{ .slot = 0, .key = key, .rendered = false, .colored = colored }, .created = true };
         const idx = if (self.len < self.entries.len) self.len else @as(usize, @intCast(self.next_slot % @as(u32, @intCast(self.entries.len))));
         const slot: u32 = @intCast(idx);
@@ -90,4 +90,17 @@ test "atlas cache marks entries rendered after raster" {
     try std.testing.expect(!pos.rendered);
     try std.testing.expect(cache.markRendered(.{ .value = 99 }));
     try std.testing.expect(cache.get(.{ .value = 99 }).?.rendered);
+}
+
+test "atlas cache requests pending sprites until marked rendered" {
+    var cache = try OwnedAtlasCache.init(std.testing.allocator, 4);
+    defer cache.deinit();
+    const first = cache.ensureDetailed(.{ .value = 99 }, false);
+    const pending = cache.ensureDetailed(.{ .value = 99 }, false);
+    try std.testing.expect(first.created);
+    try std.testing.expect(pending.created);
+    try std.testing.expectEqual(first.position.slot, pending.position.slot);
+    try std.testing.expect(cache.markRendered(.{ .value = 99 }));
+    const committed = cache.ensureDetailed(.{ .value = 99 }, false);
+    try std.testing.expect(!committed.created);
 }

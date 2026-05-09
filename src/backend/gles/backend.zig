@@ -139,6 +139,10 @@ pub const Backend = struct {
     atlas_slot_sprite_key: []u64 = &.{},
     atlas_slot_width: []u16 = &.{},
     atlas_slot_height: []u16 = &.{},
+    atlas_slot_draw_x: []u16 = &.{},
+    atlas_slot_draw_y: []u16 = &.{},
+    atlas_slot_draw_w: []u16 = &.{},
+    atlas_slot_draw_h: []u16 = &.{},
     atlas_slot_has_alpha: []bool = &.{},
     atlas_next_slot: u32 = 0,
     ft_lib: ?FtLibrary = null,
@@ -194,6 +198,22 @@ pub const Backend = struct {
         if (self.atlas_slot_height.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_height);
             self.atlas_slot_height = &.{};
+        }
+        if (self.atlas_slot_draw_x.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_draw_x);
+            self.atlas_slot_draw_x = &.{};
+        }
+        if (self.atlas_slot_draw_y.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_draw_y);
+            self.atlas_slot_draw_y = &.{};
+        }
+        if (self.atlas_slot_draw_w.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_draw_w);
+            self.atlas_slot_draw_w = &.{};
+        }
+        if (self.atlas_slot_draw_h.len > 0) {
+            std.heap.c_allocator.free(self.atlas_slot_draw_h);
+            self.atlas_slot_draw_h = &.{};
         }
         if (self.atlas_slot_has_alpha.len > 0) {
             std.heap.c_allocator.free(self.atlas_slot_has_alpha);
@@ -363,7 +383,7 @@ pub const Backend = struct {
         outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
     ) !TextSceneRenderReport {
         if (self.closed) return error.BackendClosed;
-        const committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
+        var committed_uploads: usize = 0;
         if (hasCurrentContext()) {
             if (self.target_texture == null and self.config.target_texture != 0) {
                 self.target_texture = self.config.target_texture;
@@ -374,10 +394,13 @@ pub const Backend = struct {
             if (self.target_texture == null) return error.TargetTextureUnset;
             try self.beginTargetPass();
             defer self.endTargetPass();
+            committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
             drawTextScene(self, self.config.surface_px, scene);
             self.target_content_valid = true;
         } else if (!builtin.is_test) {
             return error.NoContext;
+        } else {
+            committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
         }
         self.pass_count += 1;
         return .{
@@ -456,6 +479,8 @@ pub const Backend = struct {
         var input = try rc.vtStateToTextSceneInput(allocator, state);
         defer input.deinit();
         if (!self.target_content_valid) {
+            if (self.text_engine) |*engine| engine.clearAtlas();
+            self.clearAtlasCache();
             input.options.scene.damage.full = true;
             input.options.scene.damage.scroll_up_rows = 0;
         }
@@ -968,31 +993,29 @@ fn applyScrollReusePx(backend: *const Backend, surface_px: render_core.PixelSize
 }
 
 fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) void {
-    if (backend.atlas_pixels.len == 0) {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
-    }
+    if (backend.atlas_pixels.len == 0) return;
     const slot = @as(usize, draw.sprite.slot);
     if (slot >= backend.atlas_slot_width.len or slot >= backend.atlas_slot_height.len) return;
+    if (slot >= backend.atlas_slot_draw_x.len or slot >= backend.atlas_slot_draw_y.len or slot >= backend.atlas_slot_draw_w.len or slot >= backend.atlas_slot_draw_h.len) return;
     const slot_index = slot * backend.atlas_slot_stride;
     if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) return;
     const src = backend.atlas_pixels[slot_index .. slot_index + backend.atlas_slot_stride];
-    const gw = @min(draw.width_px, backend.atlas_cell_w);
-    const gh = @min(draw.height_px, backend.atlas_cell_h);
-    var drew_any = false;
+    const draw_x = backend.atlas_slot_draw_x[slot];
+    const draw_y = backend.atlas_slot_draw_y[slot];
+    const gw = @min(backend.atlas_slot_draw_w[slot], backend.atlas_cell_w -| draw_x);
+    const gh = @min(backend.atlas_slot_draw_h[slot], backend.atlas_cell_h -| draw_y);
+    if (gw == 0 or gh == 0) return;
     for (0..gh) |yy| {
         for (0..gw) |xx| {
-            const idx = yy * @as(usize, backend.atlas_cell_w) + xx;
+            const src_x = @as(usize, draw_x) + xx;
+            const src_y = @as(usize, draw_y) + yy;
+            const idx = src_y * @as(usize, backend.atlas_cell_w) + src_x;
             const alpha = src[idx];
             if (alpha == 0) continue;
-            drew_any = true;
             var color = draw.color;
             color.a = @intCast((@as(u16, color.a) * @as(u16, alpha)) / 255);
-            drawRect(surface, draw.x_px + @as(i32, @intCast(xx)), draw.y_px + @as(i32, @intCast(yy)), 1, 1, color);
+            drawRect(surface, draw.x_px + @as(i32, @intCast(src_x)), draw.y_px + @as(i32, @intCast(src_y)), 1, 1, color);
         }
-    }
-    if (!drew_any) {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
 }
 

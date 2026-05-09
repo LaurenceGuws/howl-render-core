@@ -227,6 +227,7 @@ test "backend text analysis reuses retained scene atlas for unchanged glyphs" {
     var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
+    _ = try backend.uploadTextAnalysisRaster(first);
 
     var second = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer second.deinit();
@@ -272,6 +273,45 @@ test "backend text scene cache treats transparent raster output as cached" {
     try std.testing.expectEqual(@as(usize, 1), first);
     try std.testing.expectEqual(@as(usize, 0), second);
     try std.testing.expect(!backend.atlas_slot_has_alpha[0]);
+}
+
+test "backend stores raster visual bounds separately from logical sprite span" {
+    var backend = Backend.init(.{
+        .surface_px = .{ .width = 640, .height = 480 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    defer backend.deinit();
+
+    var outputs = [_]render_core.Text.Rasterizer.RasterSpriteOutput{.{
+        .allocator = std.testing.allocator,
+        .key = .{ .value = 88 },
+        .width_px = 16,
+        .height_px = 16,
+        .pixels = try std.testing.allocator.alloc(u8, 16 * 16),
+    }};
+    defer outputs[0].deinit();
+    @memset(outputs[0].pixels, 0);
+    outputs[0].pixels[4 * 16 + 3] = 255;
+    outputs[0].pixels[5 * 16 + 6] = 255;
+
+    const draw = render_core.TextSpriteDraw{
+        .sprite = .{ .slot = 0, .key = outputs[0].key },
+        .x_px = 0,
+        .y_px = 0,
+        .width_px = 16,
+        .height_px = 16,
+        .color = .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+        .first_cell = 0,
+        .cell_span = 2,
+    };
+    const scene = render_core.TextScene{ .cells = &.{}, .sprite_draws = &.{draw}, .missing = &.{} };
+
+    _ = try backend.uploadTextSceneRaster(scene, &outputs);
+    try std.testing.expectEqual(@as(u16, 16), backend.atlas_slot_width[0]);
+    try std.testing.expectEqual(@as(u16, 3), backend.atlas_slot_draw_x[0]);
+    try std.testing.expectEqual(@as(u16, 4), backend.atlas_slot_draw_y[0]);
+    try std.testing.expectEqual(@as(u16, 4), backend.atlas_slot_draw_w[0]);
+    try std.testing.expectEqual(@as(u16, 2), backend.atlas_slot_draw_h[0]);
 }
 
 test "backend renders text scene handoff without legacy glyph batch" {
