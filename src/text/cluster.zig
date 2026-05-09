@@ -100,6 +100,23 @@ pub fn clusterForCell(text: contract.CellText, first_cell: u32, span: u8, style:
     };
 }
 
+fn canSkipCleanRows(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics) bool {
+    const row_count = @as(usize, grid_metrics.rows);
+    return !damage.full and
+        damage.dirty_rows.len == row_count and
+        damage.dirty_cols_start.len == row_count and
+        damage.dirty_cols_end.len == row_count;
+}
+
+fn cleanRowSkip(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics, enabled: bool, idx: usize, cells_len: usize) ?usize {
+    if (!enabled) return null;
+    const cols = @max(@as(usize, grid_metrics.cols), 1);
+    const row = idx / cols;
+    if (row >= damage.dirty_rows.len) return cells_len;
+    if (damage.dirty_rows[row]) return null;
+    return @min((row + 1) * cols, cells_len);
+}
+
 pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const types.CellInput) !OwnedLineTextCache {
     const texts = try allocator.alloc(contract.CellText, cells.len);
     errdefer allocator.free(texts);
@@ -124,8 +141,17 @@ pub fn buildSparseCellsWithDamage(
     grid_metrics: contract.GridMetrics,
     damage: scene_mod.DamageInput,
 ) !LegacySparseCells {
+    const skip_clean_rows = canSkipCleanRows(damage, grid_metrics);
     var count: usize = 0;
-    for (cells, 0..) |cell, idx| {
+    var count_idx: usize = 0;
+    while (count_idx < cells.len) {
+        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, count_idx, cells.len)) |next_idx| {
+            count_idx = next_idx;
+            continue;
+        }
+        const idx = count_idx;
+        count_idx += 1;
+        const cell = cells[idx];
         if (cell.continuation) continue;
         if (cell.empty) continue;
         if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
@@ -138,7 +164,15 @@ pub fn buildSparseCellsWithDamage(
     defer unique_codepoints.deinit();
     var unique_count: usize = 0;
 
-    for (cells, 0..) |cell, idx| {
+    var intern_idx: usize = 0;
+    while (intern_idx < cells.len) {
+        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, intern_idx, cells.len)) |next_idx| {
+            intern_idx = next_idx;
+            continue;
+        }
+        const idx = intern_idx;
+        intern_idx += 1;
+        const cell = cells[idx];
         if (cell.continuation) continue;
         if (cell.empty) continue;
         if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
@@ -166,7 +200,15 @@ pub fn buildSparseCellsWithDamage(
     }
 
     var out_idx: usize = 0;
-    for (cells, 0..) |cell, idx| {
+    var cell_idx: usize = 0;
+    while (cell_idx < cells.len) {
+        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, cell_idx, cells.len)) |next_idx| {
+            cell_idx = next_idx;
+            continue;
+        }
+        const idx = cell_idx;
+        cell_idx += 1;
+        const cell = cells[idx];
         if (cell.continuation) continue;
         if (cell.empty) continue;
         const first_cell: u32 = @intCast(idx);
