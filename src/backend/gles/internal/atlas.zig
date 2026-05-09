@@ -1,3 +1,7 @@
+//! Responsibility: upload text raster outputs into the OpenGL ES atlas.
+//! Ownership: OpenGL ES backend internals own GLES texture residency details.
+//! Reason: keeps backend-specific atlas mutation behind the render-core backend owner.
+
 const std = @import("std");
 const render_core = @import("../../../render_core.zig").RenderCore;
 

@@ -1,3 +1,7 @@
+//! Responsibility: cover OpenGL backend behavior.
+//! Ownership: render-core OpenGL tests own backend-specific regression checks.
+//! Reason: keeps GL coverage close to the backend it validates.
+
 const std = @import("std");
 const backend_mod = @import("backend.zig");
 const render_core = @import("../../render_core.zig").RenderCore;
@@ -14,15 +18,15 @@ test "backend rejects operations after deinit" {
     try std.testing.expectError(error.BackendClosed, backend.resize(.{ .width = 800, .height = 600 }, .{ .width = 10, .height = 20 }));
 }
 
-test "backend exposes text provider and font session scaffold" {
+test "backend exposes text provider and font session" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
     var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
-    var adapter = backend.textProvider();
-    const provider = adapter.textProvider();
+    var ft_hb = backend.textProvider();
+    const provider = ft_hb.textProvider();
     const session = backend.fontSession(&faces);
     try std.testing.expect(provider.face_provider != null);
     try std.testing.expectEqual(@as(u32, backend_mod.test_primary_face_id), session.primary_face.value);
@@ -51,8 +55,8 @@ test "backend text provider shaper returns glyph instances" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    var adapter = backend.textProvider();
-    const provider = adapter.textProvider();
+    var ft_hb = backend.textProvider();
+    const provider = ft_hb.textProvider();
     const clusters = [_]render_core.CellCluster{.{
         .text_id = .{ .value = 0 },
         .first_cell = 0,
@@ -79,8 +83,8 @@ test "backend text provider rasterizer returns sprite output" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    var adapter = backend.textProvider();
-    const provider = adapter.textProvider();
+    var ft_hb = backend.textProvider();
+    const provider = ft_hb.textProvider();
     const glyph = render_core.GlyphInstance{
         .face_id = .{ .value = backend_mod.test_primary_face_id },
         .glyph_id = backend_mod.testProviderGlyphId(&backend, .{ .value = backend_mod.test_primary_face_id }, 'A'),
@@ -106,8 +110,8 @@ test "backend text provider rasterizer draws box fallback alpha" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    var adapter = backend.textProvider();
-    const provider = adapter.textProvider();
+    var ft_hb = backend.textProvider();
+    const provider = ft_hb.textProvider();
     const group = render_core.GlyphGroup{
         .first_cell = 0,
         .first_cp = 0x2500,
@@ -132,8 +136,8 @@ test "backend text provider rasterizer draws generated braille alpha" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    var adapter = backend.textProvider();
-    const provider = adapter.textProvider();
+    var ft_hb = backend.textProvider();
+    const provider = ft_hb.textProvider();
     const group = render_core.GlyphGroup{
         .first_cell = 0,
         .first_cp = 0x2801,
@@ -314,7 +318,7 @@ test "backend stores raster visual bounds separately from logical sprite span" {
     try std.testing.expectEqual(@as(u16, 2), backend.atlas_slot_draw_h[0]);
 }
 
-test "backend renders text scene handoff without legacy glyph batch" {
+test "backend renders prepared text scene" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },

@@ -430,7 +430,7 @@ test "text engine analyzes rich multi-codepoint cell inputs" {
     try std.testing.expectEqual(contract.GlyphGroupKind.emoji, analysis.groups.groups[1].kind);
 }
 
-test "text engine uses ft hb adapter coverage for fallback" {
+test "text engine uses ft hb source coverage for fallback" {
     const Backend = struct {
         fn has(ctx: *anyopaque, face_id: contract.FontFaceId, cp: u32) bool {
             _ = ctx;
@@ -439,8 +439,8 @@ test "text engine uses ft hb adapter coverage for fallback" {
         }
     };
     var dummy: u8 = 0;
-    var adapter = ft_hb_provider.Adapter{ .ctx = &dummy, .has_codepoint = Backend.has };
-    var engine = try Engine.initWithProvider(std.testing.allocator, 16, adapter.textProvider());
+    var ft_hb = ft_hb_provider.FtHbSource{ .ctx = &dummy, .has_codepoint = Backend.has };
+    var engine = try Engine.initWithProvider(std.testing.allocator, 16, ft_hb.textProvider());
     defer engine.deinit();
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
@@ -450,7 +450,7 @@ test "text engine uses ft hb adapter coverage for fallback" {
         .{ .id = .{ .value = 1 }, .role = .primary, .coverage = .all },
         .{ .id = .{ .value = 2 }, .role = .fallback, .coverage = .all },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 1, .rows = 1 }, adapter.textProvider().applyToSession(.{ .faces = &faces }));
+    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 1, .rows = 1 }, ft_hb.textProvider().applyToSession(.{ .faces = &faces }));
     defer analysis.deinit();
     try std.testing.expectEqual(@as(u32, 2), analysis.runs.runs[0].run.font.face_id.value);
 }

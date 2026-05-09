@@ -1,4 +1,4 @@
-//! Responsibility: define rendered sprite cache identity helpers.
+//! Responsibility: define rendered sprite cache identity.
 //! Ownership: render-core text engine.
 //! Reason: cache rendered glyph groups by output identity instead of source codepoint.
 

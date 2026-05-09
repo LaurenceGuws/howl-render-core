@@ -1,3 +1,7 @@
+//! Responsibility: implement OpenGL backend text provider callbacks.
+//! Ownership: OpenGL backend internals own FreeType/HarfBuzz cache wiring.
+//! Reason: keeps backend font access behind the render-core text provider boundary.
+
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../../render_core.zig").RenderCore;
@@ -10,6 +14,17 @@ const FtFace = c_api.FtFace;
 const HbFont = c_api.HbFont;
 
 pub const primary_face_id: u32 = 1;
+
+fn lockFt(self: anytype) void {
+    while (!self.ft_mutex.tryLock()) {
+        std.atomic.spinLoopHint();
+        std.Thread.yield() catch {};
+    }
+}
+
+fn unlockFt(self: anytype) void {
+    self.ft_mutex.unlock();
+}
 
 pub const ResolvedGlyphKey = struct {
     codepoint: u21,
@@ -103,14 +118,6 @@ fn shapeRunViaProviderOrFallback(
     start: usize,
     end: usize,
 ) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
-    const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse {
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
-    };
-    defer releaseShapingFace(shaped_face);
-    const hb_font = shaped_face.hb_font orelse {
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
-    };
-
     var run_codepoints = std.ArrayList(u32).empty;
     defer run_codepoints.deinit(allocator);
     var cluster_map = std.ArrayList(u32).empty;
@@ -132,6 +139,24 @@ fn shapeRunViaProviderOrFallback(
     c.hb_buffer_set_cluster_level(buffer, c.HB_BUFFER_CLUSTER_LEVEL_MONOTONE_CHARACTERS);
     c.hb_buffer_add_utf32(buffer, run_codepoints.items.ptr, @intCast(run_codepoints.items.len), 0, @intCast(run_codepoints.items.len));
     c.hb_buffer_guess_segment_properties(buffer);
+
+    if (!ensureFont(backend)) {
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    }
+
+    lockFt(backend);
+    defer unlockFt(backend);
+    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse {
+        unlockFt(backend);
+        defer lockFt(backend);
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    };
+    defer releaseShapingFace(shaped_face);
+    const hb_font = shaped_face.hb_font orelse {
+        unlockFt(backend);
+        defer lockFt(backend);
+        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
+    };
     c.hb_shape(@ptrCast(hb_font), buffer, null, 0);
 
     var glyph_count: c_uint = 0;
@@ -151,7 +176,7 @@ fn shapeRunViaProviderOrFallback(
         const cluster_idx = cluster_map.items[cluster_cp_idx];
         const shaped_advance = render_core.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
         const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[cluster_idx].first_cp))
-            @max(shaped_advance, glyphVisualWidthPx(shaped_face.face, info.codepoint))
+            @max(shaped_advance, glyphVisualWidthPxLocked(shaped_face.face, info.codepoint))
         else
             shaped_advance;
         glyph.* = .{
@@ -271,6 +296,8 @@ pub fn providerRasterizeSprite(
 }
 
 pub fn ensurePrimaryFont(self: anytype) bool {
+    lockFt(self);
+    defer unlockFt(self);
     if (self.ft_face != null) return true;
     if (!ensureFreeTypeLibrary(self)) return false;
     if (self.config.font_path == null) return false;
@@ -313,6 +340,8 @@ pub fn ensureFont(self: anytype) bool {
 }
 
 pub fn resetLoadedFace(self: anytype) void {
+    lockFt(self);
+    defer unlockFt(self);
     resetFallbackFaces(self);
     if (self.ft_face != null) {
         if (self.hb_font != null and builtin.target.abi != .android) {
@@ -328,7 +357,19 @@ pub fn resetLoadedFace(self: anytype) void {
     }
 }
 
+pub fn resizeLoadedFaces(self: anytype) void {
+    lockFt(self);
+    defer unlockFt(self);
+    if (self.ft_face) |face| _ = setFacePixelHeight(self, face);
+    var i: usize = 0;
+    while (i < self.fallback_faces.len) : (i += 1) {
+        if (self.fallback_faces[i]) |face| _ = setFacePixelHeight(self, face);
+    }
+}
+
 pub fn ensureFallbackFace(self: anytype, fallback_index: usize) ?FtFace {
+    lockFt(self);
+    defer unlockFt(self);
     if (fallback_index >= self.fallback_font_paths_len) return null;
     if (self.fallback_faces[fallback_index]) |face| return face;
     if (!ensureFreeTypeLibrary(self)) return null;
@@ -448,12 +489,12 @@ fn providerGlyphVisualWidth(self: anytype, face_id: render_core.FontFaceId, glyp
     if (!ensureFont(self)) return 0;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return 0;
-        return glyphVisualWidthPx(face, glyph_id);
+        return glyphVisualWidthPx(self, face, glyph_id);
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
     const face = ensureFallbackFace(self, fallback_index) orelse return 0;
-    return glyphVisualWidthPx(face, glyph_id);
+    return glyphVisualWidthPx(self, face, glyph_id);
 }
 
 const ShapingFace = struct {
@@ -464,13 +505,20 @@ const ShapingFace = struct {
 
 fn acquireShapingFace(self: anytype, face_id: render_core.FontFaceId) ?ShapingFace {
     if (!ensureFont(self)) return null;
+    lockFt(self);
+    defer unlockFt(self);
+    return acquireShapingFaceLocked(self, face_id);
+}
+
+fn acquireShapingFaceLocked(self: anytype, face_id: render_core.FontFaceId) ?ShapingFace {
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return null;
         return .{ .face = face, .hb_font = self.hb_font, .owns_face = false };
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return null;
-    const face = ensureFallbackFace(self, fallback_index) orelse return null;
+    if (fallback_index >= self.fallback_font_paths_len) return null;
+    const face = self.fallback_faces[fallback_index] orelse return null;
     return .{ .face = face, .hb_font = self.fallback_hb_fonts[fallback_index], .owns_face = false };
 }
 
@@ -489,7 +537,13 @@ fn textForCluster(text_cache: render_core.LineTextCache, cluster: render_core.Ce
     return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
 }
 
-fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
+fn glyphVisualWidthPx(self: anytype, face: FtFace, glyph_id: u32) f32 {
+    lockFt(self);
+    defer unlockFt(self);
+    return glyphVisualWidthPxLocked(face, glyph_id);
+}
+
+fn glyphVisualWidthPxLocked(face: FtFace, glyph_id: u32) f32 {
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return 0;
     if (face.*.glyph == null) return 0;
     const metrics = face.*.glyph.*.metrics;
@@ -509,16 +563,18 @@ fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, bas
     if (!ensureFont(self)) return false;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return false;
-        return rasterizeProviderGlyphFromFace(dst, width, height, baseline_px, face, glyph_id, x_origin_px, y_origin_px, glyph_index);
+        return rasterizeProviderGlyphFromFace(self, dst, width, height, baseline_px, face, glyph_id, x_origin_px, y_origin_px, glyph_index);
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return false;
     const face = ensureFallbackFace(self, fallback_index) orelse return false;
-    return rasterizeProviderGlyphFromFace(dst, width, height, baseline_px, face, glyph_id, x_origin_px, y_origin_px, glyph_index);
+    return rasterizeProviderGlyphFromFace(self, dst, width, height, baseline_px, face, glyph_id, x_origin_px, y_origin_px, glyph_index);
 }
 
-fn rasterizeProviderGlyphFromFace(dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+fn rasterizeProviderGlyphFromFace(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
     if (glyph_id == 0) return false;
+    lockFt(self);
+    defer unlockFt(self);
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return false;
     const glyph = face.*.glyph;
     if (glyph == null) return false;
@@ -738,9 +794,9 @@ fn rasterizeSpecialSpriteAlpha(dst: []u8, width: u16, height: u16, codepoint: u3
             const hw = @max(1, w / 2);
             drawAlphaRect(dst, w, w - hw, 0, hw, h, 255);
         },
-        0x2591 => fillAlphaPattern(dst, w, h, 0x33),
-        0x2592 => fillAlphaPattern(dst, w, h, 0x77),
-        0x2593 => fillAlphaPattern(dst, w, h, 0xbb),
+        0x2591 => fillAlphaChecker(dst, w, h, 0x33),
+        0x2592 => fillAlphaChecker(dst, w, h, 0x77),
+        0x2593 => fillAlphaChecker(dst, w, h, 0xbb),
         else => {},
     }
 }
@@ -788,10 +844,10 @@ fn drawAlphaRect(dst: []u8, stride: u16, x: u16, y: u16, width: u16, height: u16
     }
 }
 
-fn fillAlphaPattern(dst: []u8, w: u16, h: u16, alpha: u8) void {
-    for (0..h) |yy| {
-        for (0..w) |xx| {
-            if (((xx + yy) & 1) == 0) dst[yy * @as(usize, w) + xx] = alpha;
+fn fillAlphaChecker(target: []u8, width: u16, height: u16, alpha: u8) void {
+    for (0..height) |yy| {
+        for (0..width) |xx| {
+            if (((xx + yy) & 1) == 0) target[yy * @as(usize, width) + xx] = alpha;
         }
     }
 }

@@ -9,13 +9,13 @@ pub const Engine = @import("text/engine.zig");
 pub const FontSession = @import("text/font_session.zig");
 /// Backend-independent font resolver vocabulary.
 pub const FontResolver = @import("text/font_resolver.zig");
-/// Cell text and grapheme cluster helpers.
+/// Cell text and grapheme cluster extraction.
 pub const Cluster = @import("text/cluster.zig");
 /// HarfBuzz run-shaping boundary.
 pub const ShapeRun = @import("text/shape_run.zig");
 /// Shape-output to terminal-cell grouping policy.
 pub const Grouping = @import("text/grouping.zig");
-/// Rendered sprite identity helpers.
+/// Rendered sprite cache identity.
 pub const SpriteKey = @import("text/sprite_key.zig");
 /// Glyph-group rasterization contracts.
 pub const Rasterizer = @import("text/rasterizer.zig");
@@ -29,15 +29,15 @@ pub const SymbolMap = @import("text/symbol_map.zig");
 pub const Metrics = @import("text/metrics.zig");
 /// Unified provider boundary for FT/HB integrations.
 pub const Provider = @import("text/provider.zig");
-/// Backend adapter scaffold for FreeType/HarfBuzz providers.
+/// FreeType/HarfBuzz callback source for backend-owned providers.
 pub const FtHbProvider = @import("text/ft_hb_provider.zig");
-/// Shared atlas math helpers.
+/// Shared atlas placement math.
 pub const Atlas = @import("text/atlas.zig");
-/// Shared shaping helpers.
+/// Shared shaping policy.
 pub const Shaping = @import("text/shaping.zig");
-/// Shared fallback raster helpers.
+/// Shared fallback raster policy.
 pub const Fallback = @import("text/fallback.zig");
-/// Shared special-glyph classification helpers.
+/// Shared special-glyph classification.
 pub const SpecialGlyphs = @import("text/special_glyphs.zig");
 
 test "text module surface imports" {

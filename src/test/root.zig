@@ -1,3 +1,7 @@
+//! Responsibility: cover the render-core package surface.
+//! Ownership: render-core test target owns public surface compile checks.
+//! Reason: keeps package export regressions visible in one test root.
+
 const std = @import("std");
 const root = @import("howl_render");
 

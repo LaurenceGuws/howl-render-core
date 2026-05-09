@@ -1,4 +1,4 @@
-//! Responsibility: shared font and cell metric policy helpers.
+//! Responsibility: define shared font and cell metric policy.
 //! Ownership: render-core text engine.
 //! Reason: baseline and decoration geometry must not diverge by backend.
 
@@ -229,7 +229,7 @@ test "bitmap placement preserves bearings around baseline" {
     try std.testing.expectEqual(@as(u16, 8), placement.width_px);
 }
 
-test "advance helper preserves positive glyph advance" {
+test "advance conversion preserves positive glyph advance" {
     try std.testing.expectEqual(@as(f32, 9.0), advancePx(9 * 64, 8));
     try std.testing.expectEqual(@as(f32, 8.0), advancePx(0, 8));
 }

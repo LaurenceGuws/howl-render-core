@@ -1,3 +1,7 @@
+//! Responsibility: upload text raster outputs into the OpenGL atlas.
+//! Ownership: OpenGL backend internals own GL texture residency details.
+//! Reason: keeps backend-specific atlas mutation behind the render-core backend owner.
+
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../../render_core.zig").RenderCore;

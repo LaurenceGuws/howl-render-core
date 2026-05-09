@@ -310,7 +310,7 @@ pub const Backend = struct {
         return self.resolve_stage;
     }
 
-    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.Adapter {
+    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.FtHbSource {
         return .{
             .ctx = self,
             .has_codepoint = providerHasCodepoint,
@@ -709,8 +709,8 @@ pub const Backend = struct {
 
     fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.Text.Engine.Engine {
         if (self.text_engine == null) {
-            var adapter = self.textProvider();
-            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
+            var ft_hb = self.textProvider();
+            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, ft_hb.textProvider());
         }
         return &self.text_engine.?;
     }

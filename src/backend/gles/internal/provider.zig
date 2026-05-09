@@ -1,3 +1,7 @@
+//! Responsibility: implement OpenGL ES backend text provider callbacks.
+//! Ownership: OpenGL ES backend internals own FreeType/HarfBuzz cache wiring.
+//! Reason: keeps backend font access behind the render-core text provider boundary.
+
 const builtin = @import("builtin");
 const std = @import("std");
 const render_core = @import("../../../render_core.zig").RenderCore;

@@ -1,6 +1,6 @@
 //! Responsibility: shape resolved text runs.
 //! Ownership: render-core text engine.
-//! Reason: make HarfBuzz run shaping the architecture boundary, not a backend helper.
+//! Reason: make HarfBuzz run shaping the architecture boundary, not backend glue.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

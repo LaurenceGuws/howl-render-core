@@ -464,15 +464,15 @@ test "cell inputs build text cache renderable cells clusters and runs" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
         .{ .codepoint = 'C', .fg = white, .bg = black, .continuation = true },
     };
 
-    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &cells);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &cells, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -489,15 +489,15 @@ test "blank cells do not produce text clusters" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = ' ', .fg = white, .bg = black },
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black },
     };
 
-    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &cells);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &cells, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -511,15 +511,15 @@ test "continuation cells expand base cell spans" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = 0x4f60, .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
         .{ .codepoint = 'x', .fg = white, .bg = black },
     };
 
-    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &cells);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &cells, cache.view());
     defer renderable.deinit();
     var clusters = try extractClusters(allocator, renderable.cells, cache.view());
     defer clusters.deinit();
@@ -535,7 +535,7 @@ test "partial damage filters clean clusters before shaping" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
         .{ .codepoint = 'C', .fg = white, .bg = black },
@@ -545,9 +545,9 @@ test "partial damage filters clean clusters before shaping" {
     const dirty_starts = [_]u16{ 0, 0 };
     const dirty_ends = [_]u16{ 0, 0 };
 
-    var cache = try buildLineTextCacheFromCells(allocator, &legacy);
+    var cache = try buildLineTextCacheFromCells(allocator, &cells);
     defer cache.deinit();
-    var renderable = try buildRenderableCellsFromCells(allocator, &legacy, cache.view());
+    var renderable = try buildRenderableCellsFromCells(allocator, &cells, cache.view());
     defer renderable.deinit();
     var clusters = try extractClustersWithDamage(allocator, renderable.cells, cache.view(), .{ .cols = 2, .rows = 2 }, .{
         .full = false,
@@ -566,7 +566,7 @@ test "sparse cells keep only damaged base cells" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
         .{ .codepoint = 'B', .fg = white, .bg = black },
@@ -576,7 +576,7 @@ test "sparse cells keep only damaged base cells" {
     const dirty_starts = [_]u16{ 0, 0 };
     const dirty_ends = [_]u16{ 1, 0 };
 
-    var sparse = try buildSparseCellsWithDamage(allocator, &legacy, .{ .cols = 2, .rows = 2 }, .{
+    var sparse = try buildSparseCellsWithDamage(allocator, &cells, .{ .cols = 2, .rows = 2 }, .{
         .full = false,
         .dirty_rows = &dirty_rows,
         .dirty_cols_start = &dirty_starts,
@@ -595,13 +595,13 @@ test "sparse cells intern repeated codepoints" {
     const allocator = std.testing.allocator;
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const legacy = [_]types.CellInput{
+    const cells = [_]types.CellInput{
         .{ .codepoint = 'Z', .fg = white, .bg = black },
         .{ .codepoint = 'Z', .fg = white, .bg = black },
         .{ .codepoint = 'Y', .fg = white, .bg = black },
     };
 
-    var sparse = try buildSparseCellsWithDamage(allocator, &legacy, .{ .cols = 3, .rows = 1 }, .{ .full = true });
+    var sparse = try buildSparseCellsWithDamage(allocator, &cells, .{ .cols = 3, .rows = 1 }, .{ .full = true });
     defer sparse.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), sparse.text_cache.texts.len);

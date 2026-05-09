@@ -181,6 +181,8 @@ pub const Backend = struct {
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
+    ft_mutex: std.atomic.Mutex = .unlocked,
+    font_analysis_mutex: std.atomic.Mutex = .unlocked,
     fallback_faces: [MaxFallbackFonts]?FtFace = [_]?FtFace{null} ** MaxFallbackFonts,
     fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     target_texture: ?u32 = null,
@@ -352,12 +354,16 @@ pub const Backend = struct {
     }
 
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         self.config.font_path = font_path;
         self.resetLoadedFace();
         self.clearAtlasCache();
     }
 
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         const n = @min(paths.len, MaxFallbackFonts);
         self.fallback_font_paths_len = n;
         var i: usize = 0;
@@ -368,8 +374,10 @@ pub const Backend = struct {
     }
 
     pub fn setFontSizePx(self: *Backend, font_size_px: u16) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         self.config.font_size_px = @max(font_size_px, 1);
-        self.resetLoadedFace();
+        self.resizeLoadedFaces();
         self.clearAtlasCache();
     }
 
@@ -395,7 +403,7 @@ pub const Backend = struct {
         return self.resolve_stage;
     }
 
-    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.Adapter {
+    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.FtHbSource {
         return .{
             .ctx = self,
             .has_codepoint = providerHasCodepoint,
@@ -442,6 +450,8 @@ pub const Backend = struct {
         faces: []render_core.Text.FontSession.FontFaceRecord,
         options: render_core.Text.Engine.AnalysisOptions,
     ) !render_core.Text.Engine.OwnedTextAnalysis {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         const engine = try self.ensureTextEngine(allocator);
         return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
@@ -701,10 +711,27 @@ pub const Backend = struct {
 
     fn ensureFreeTypeLibrary(self: *Backend) bool {
         if (self.ft_lib != null) return true;
+        while (!self.ft_mutex.tryLock()) {
+            std.atomic.spinLoopHint();
+            std.Thread.yield() catch {};
+        }
+        defer self.ft_mutex.unlock();
+        if (self.ft_lib != null) return true;
         var lib: FtLibrary = undefined;
         if (c.FT_Init_FreeType(&lib) != 0) return false;
         self.ft_lib = lib;
         return true;
+    }
+
+    fn lockFontAnalysis(self: *Backend) void {
+        while (!self.font_analysis_mutex.tryLock()) {
+            std.atomic.spinLoopHint();
+            std.Thread.yield() catch {};
+        }
+    }
+
+    fn unlockFontAnalysis(self: *Backend) void {
+        self.font_analysis_mutex.unlock();
     }
 
     fn ensurePrimaryFont(self: *Backend) bool {
@@ -717,6 +744,12 @@ pub const Backend = struct {
 
     fn resetLoadedFace(self: *Backend) void {
         provider_mod.resetLoadedFace(self);
+        self.face_text_cache.clear();
+        self.shape_run_cache.clear();
+    }
+
+    fn resizeLoadedFaces(self: *Backend) void {
+        provider_mod.resizeLoadedFaces(self);
         self.face_text_cache.clear();
         self.shape_run_cache.clear();
     }
@@ -746,8 +779,8 @@ pub const Backend = struct {
 
     fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.Text.Engine.Engine {
         if (self.text_engine == null) {
-            var adapter = self.textProvider();
-            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, adapter.textProvider());
+            var ft_hb = self.textProvider();
+            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, ft_hb.textProvider());
         }
         return &self.text_engine.?;
     }
@@ -1111,9 +1144,9 @@ fn rasterizeSpecialSpriteAlpha(dst: []u8, width: u16, height: u16, codepoint: u3
             const hw = @max(1, w / 2);
             drawAlphaRect(dst, w, w - hw, 0, hw, h, 255);
         },
-        0x2591 => fillAlphaPattern(dst, w, h, 0x33),
-        0x2592 => fillAlphaPattern(dst, w, h, 0x77),
-        0x2593 => fillAlphaPattern(dst, w, h, 0xbb),
+        0x2591 => fillAlphaChecker(dst, w, h, 0x33),
+        0x2592 => fillAlphaChecker(dst, w, h, 0x77),
+        0x2593 => fillAlphaChecker(dst, w, h, 0xbb),
         else => {},
     }
 }
@@ -1161,10 +1194,10 @@ fn drawAlphaRect(dst: []u8, stride: u16, x: u16, y: u16, width: u16, height: u16
     }
 }
 
-fn fillAlphaPattern(dst: []u8, w: u16, h: u16, alpha: u8) void {
-    for (0..h) |yy| {
-        for (0..w) |xx| {
-            if (((xx + yy) & 1) == 0) dst[yy * @as(usize, w) + xx] = alpha;
+fn fillAlphaChecker(target: []u8, width: u16, height: u16, alpha: u8) void {
+    for (0..height) |yy| {
+        for (0..width) |xx| {
+            if (((xx + yy) & 1) == 0) target[yy * @as(usize, width) + xx] = alpha;
         }
     }
 }

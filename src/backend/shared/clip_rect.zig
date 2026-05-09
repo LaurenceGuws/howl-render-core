@@ -1,3 +1,7 @@
+//! Responsibility: define backend-shared clipping rectangles.
+//! Ownership: render-core backend shared layer owns common draw constraints.
+//! Reason: avoids duplicating clipping vocabulary across GL backend variants.
+
 const std = @import("std");
 const render_core = @import("../../render_core.zig").RenderCore;
 

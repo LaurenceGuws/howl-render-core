@@ -1,4 +1,4 @@
-//! Responsibility: own renderer-neutral text scene helpers.
+//! Responsibility: build renderer-neutral text scenes.
 //! Ownership: render-core text engine.
 //! Reason: separate text decisions from backend draw submission.
 
@@ -671,7 +671,7 @@ test "scene emits explicit clears for transparent default backgrounds on partial
     try std.testing.expectEqual(@as(usize, 0), owned.scene.background_draws.len);
 }
 
-test "scene cursor helper emits shared cursor geometry" {
+test "scene cursor draws emit shared cursor geometry" {
     const color = contract.Rgba8{ .r = 9, .g = 8, .b = 7, .a = 255 };
     const cell_metrics = contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 };
     const underline = try cursorDraws(std.testing.allocator, .{ .cell_col = 2, .cell_row = 1, .shape = .underline, .color = color }, cell_metrics);
