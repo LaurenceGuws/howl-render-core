@@ -73,32 +73,43 @@ pub fn requestForUndercurl(key: contract.SpriteKey, width_px: u16, height_px: u1
     };
 }
 
-/// Rasterizes a smooth sinusoidal undercurl into an alpha mask.
+/// Rasterizes a Kitty-style cosine undercurl into an alpha mask.
 pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, decoration: contract.DecorationSpriteRaster) void {
     @memset(pixels, 0);
     const width = @max(width_px, 1);
     const height = @max(height_px, 1);
-    const period = @max(decoration.period_px, 4);
+    const period = @as(f64, @floatFromInt(@max(decoration.period_px, 2)));
     const amplitude = @max(decoration.amplitude_px, 1);
     const stroke = @max(decoration.stroke_px, 1);
-    const radius = @as(f32, @floatFromInt(stroke)) / 2.0;
-    const center_y = @as(f32, @floatFromInt(@min(decoration.y_px, height - 1)));
-    const amp = @as(f32, @floatFromInt(amplitude));
-    const period_f = @as(f32, @floatFromInt(period));
+    const center_y = @as(f64, @floatFromInt(@min(decoration.y_px, height - 1)));
+    const amp = @as(f64, @floatFromInt(amplitude));
+    const stroke_i: i32 = @intCast(stroke);
 
-    var y: u16 = 0;
-    while (y < height) : (y += 1) {
-        var x: u16 = 0;
-        while (x < width) : (x += 1) {
-            const xf = @as(f32, @floatFromInt(x)) + 0.5;
-            const yf = @as(f32, @floatFromInt(y)) + 0.5;
-            const wave = center_y + std.math.sin((xf / period_f) * std.math.tau) * amp;
-            const distance = @abs(yf - wave);
-            if (distance > radius + 1.0) continue;
-            const coverage = std.math.clamp(radius + 1.0 - distance, 0.0, 1.0);
-            pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = @intFromFloat(@round(coverage * 255.0));
+    var x: u16 = 0;
+    while (x < width) : (x += 1) {
+        const xf = @as(f64, @floatFromInt(x));
+        const wave = amp * std.math.cos((xf / period) * std.math.tau);
+        const floor_y = std.math.floor(wave);
+        const upper_y: i32 = @as(i32, @intFromFloat(floor_y)) - stroke_i;
+        const lower_y: i32 = @as(i32, @intFromFloat(std.math.ceil(wave)));
+        const lower_alpha: u8 = @intFromFloat(@round((wave - floor_y) * 255.0));
+        const upper_alpha: u8 = 255 - lower_alpha;
+
+        addAlpha(pixels, width, height, x, center_y, upper_y, upper_alpha);
+        var fill_y = upper_y + 1;
+        while (fill_y <= upper_y + stroke_i) : (fill_y += 1) {
+            addAlpha(pixels, width, height, x, center_y, fill_y, 255);
         }
+        addAlpha(pixels, width, height, x, center_y, lower_y, lower_alpha);
     }
+}
+
+fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, center_y: f64, y_offset: i32, alpha: u8) void {
+    if (alpha == 0) return;
+    const y_float = center_y + @as(f64, @floatFromInt(y_offset));
+    const y_clamped = std.math.clamp(@as(i32, @intFromFloat(@round(y_float))), 0, @as(i32, @intCast(height - 1)));
+    const idx = @as(usize, @intCast(y_clamped)) * @as(usize, width) + @as(usize, x);
+    pixels[idx] = @intCast(@min(@as(u16, pixels[idx]) + @as(u16, alpha), 255));
 }
 
 pub fn placeholderRaster(allocator: std.mem.Allocator, req: contract.SpriteRasterRequest) !RasterSpriteOutput {

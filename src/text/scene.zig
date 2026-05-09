@@ -466,7 +466,7 @@ fn appendUndercurlSprite(
     const cell_h = @max(cell_metrics.cell_h_px, 1);
     const stroke: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 9, 10), 1, 4));
     const amplitude: u16 = @intCast(std.math.clamp(@divTrunc(@as(u32, cell_h) + 5, 6), 2, @max(@as(u32, 2), @divTrunc(@as(u32, cell_h), 3))));
-    const period: u16 = @max(amplitude * 4, @max(cell_metrics.cell_w_px, 4));
+    const period: u16 = @max(cell_metrics.cell_w_px, 4);
     const y_px: u16 = @intCast(std.math.clamp(@as(i32, @intCast(cell_h)) - @as(i32, @intCast(amplitude)) - @as(i32, @intCast(stroke)), 0, @as(i32, @intCast(cell_h - 1))));
     const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
     const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
