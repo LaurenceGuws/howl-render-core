@@ -130,12 +130,57 @@ pub const Renderer = struct {
                 .required_target_epoch = request.known_target_epoch,
             };
         }
+
+        pub fn renderMetrics(self: *const FrameRecord, submitted: Submitted, render_us: u64) render_core.RenderMetrics {
+            const report = submitted.report;
+            const resolve_after = submitted.resolve_after;
+            return .{
+                .sync_us = self.sync_us,
+                .copy_us = self.copy_us,
+                .render_us = render_us,
+                .glyphs = report.sprite_draws,
+                .fills = report.clear_draws + report.background_draws + report.decoration_draws + report.cursor_draws,
+                .clear_fills = report.clear_draws,
+                .background_fills = report.background_draws,
+                .decoration_fills = report.decoration_draws,
+                .cursor_fills = report.cursor_draws,
+                .uploads = report.raster_uploads_committed,
+                .face_checks = resolve_after.face_checks -| self.resolve_before.face_checks,
+                .face_cache_hits = resolve_after.face_cache_hits -| self.resolve_before.face_cache_hits,
+                .shape_requests = resolve_after.shape_requests -| self.resolve_before.shape_requests,
+                .shape_cache_hits = resolve_after.shape_cache_hits -| self.resolve_before.shape_cache_hits,
+                .fallback_hits = resolve_after.fallback_hits -| self.resolve_before.fallback_hits,
+                .fallback_misses = resolve_after.fallback_misses -| self.resolve_before.fallback_misses,
+                .missing_glyphs = resolve_after.missing_glyphs -| self.resolve_before.missing_glyphs,
+            };
+        }
+
+        pub fn submittedFrame(self: *const FrameRecord, submitted: Submitted) render_core.FramePipeline.SubmittedFrame {
+            return .{
+                .token = .{
+                    .snapshot_seq = self.render_seq,
+                    .dirty_epoch = self.render_dirty_epoch,
+                    .geometry_epoch = self.geometry_epoch,
+                    .damage_base_seq = 0,
+                    .damage_kind = submitted.damageKind(),
+                },
+                .target_epoch = submitted.surface.epoch,
+                .surface_epoch = submitted.surface.epoch,
+                .content_valid = submitted.surface.texture_id != 0,
+            };
+        }
     };
 
     pub const Submitted = struct {
         report: SubmittedReport,
         resolve_after: render_core.ResolveCounters,
         surface: render_core.SurfaceHandle,
+
+        pub fn damageKind(self: Submitted) render_core.FramePipeline.DamageKind {
+            if (self.report.full_redraw) return .full;
+            if (self.report.scroll_up_px > 0) return .scroll;
+            return .partial;
+        }
     };
 
     pub fn init(config: render_core.BackendConfig) Renderer {
