@@ -125,6 +125,32 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_core_step);
     test_step.dependOn(test_unit_step);
 
+    const ffi_mod = b.createModule(.{
+        .root_source_file = b.path("src/howl_render.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ffi_mod.addImport("howl_render", ffi_mod);
+    ffi_mod.addImport("howl_render_core", ffi_mod);
+    ffi_mod.addImport("build_options", build_options.createModule());
+    ffi_mod.linkLibrary(freetype_lib);
+    ffi_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
+    ffi_mod.linkLibrary(harfbuzz_lib);
+    ffi_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
+    if (selected_backend == .gl) {
+        ffi_mod.linkSystemLibrary("GL", .{});
+    } else if (target.result.abi != .android) {
+        ffi_mod.linkSystemLibrary("GLESv2", .{});
+    }
+    const ffi_lib = b.addLibrary(.{
+        .name = "howl_render",
+        .linkage = .dynamic,
+        .root_module = ffi_mod,
+    });
+    const ffi_build_step = b.step("ffi:build", "Build the howl-render-core C FFI library");
+    ffi_build_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
+    b.installArtifact(ffi_lib);
+
     const benchmark_mod = b.createModule(.{
         .root_source_file = b.path("src/test/render_core_benchmark.zig"),
         .target = target,
