@@ -1,0 +1,199 @@
+//! Responsibility: own the selected render backend runtime surface.
+//! Ownership: backend locking, prepared-frame lifetime, and renderer counters.
+//! Reason: keep terminal packages from wrapping backend internals directly.
+
+const std = @import("std");
+const build_options = @import("build_options");
+const render_core = @import("render_core.zig").RenderCore;
+const backend_mod = switch (build_options.render_backend) {
+    .gl => @import("backend/gl/backend.zig"),
+    .gles => @import("backend/gles/backend.zig"),
+};
+
+const ThreadMutex = struct {
+    state: std.Io.Mutex = .init,
+
+    pub fn unlock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexUnlock(&self.state);
+    }
+};
+
+fn lockMutex(mutex: *ThreadMutex) void {
+    std.Io.Threaded.mutexLock(&mutex.state);
+}
+
+pub const Renderer = struct {
+    backend: backend_mod.Backend,
+    mutex: ThreadMutex = .{},
+
+    pub const FrameLayout = struct {
+        cell_px: render_core.CellSize,
+        grid: render_core.GridSize,
+    };
+
+    pub const PreparedTimings = struct {
+        input_us: u64 = 0,
+        sparse_us: u64 = 0,
+        clusters_us: u64 = 0,
+        resolve_us: u64 = 0,
+        shape_us: u64 = 0,
+        group_us: u64 = 0,
+        scene_us: u64 = 0,
+        raster_us: u64 = 0,
+        atlas_us: u64 = 0,
+    };
+
+    pub const DamageKind = enum {
+        partial,
+        scroll,
+        full,
+    };
+
+    pub const SubmittedReport = struct {
+        raster_uploads_committed: usize,
+        full_redraw: bool,
+        scroll_up_px: u16,
+        clear_draws: usize,
+        background_draws: usize,
+        sprite_draws: usize,
+        decoration_draws: usize,
+        cursor_draws: usize,
+    };
+
+    pub const PreparedFrame = struct {
+        prepared: backend_mod.PreparedTextScene,
+
+        pub fn deinit(self: *PreparedFrame) void {
+            self.prepared.deinit();
+            self.* = undefined;
+        }
+
+        pub fn timings(self: *const PreparedFrame) PreparedTimings {
+            const t = self.prepared.timings;
+            return .{
+                .input_us = t.input_us,
+                .sparse_us = t.sparse_us,
+                .clusters_us = t.clusters_us,
+                .resolve_us = t.resolve_us,
+                .shape_us = t.shape_us,
+                .group_us = t.group_us,
+                .scene_us = t.scene_us,
+                .raster_us = t.raster_us,
+                .atlas_us = t.atlas_us,
+            };
+        }
+
+        pub fn damageKind(self: *const PreparedFrame) DamageKind {
+            if (self.prepared.scene.scene.full_redraw) return .full;
+            if (self.prepared.scene.scene.scroll_up_px > 0) return .scroll;
+            return .partial;
+        }
+    };
+
+    pub const Prepared = struct {
+        resolve_before: render_core.ResolveCounters,
+        frame: PreparedFrame,
+    };
+
+    pub const Submitted = struct {
+        report: SubmittedReport,
+        resolve_after: render_core.ResolveCounters,
+        surface: render_core.SurfaceHandle,
+    };
+
+    pub fn init(config: render_core.BackendConfig) Renderer {
+        return .{ .backend = backend_mod.Backend.init(config) };
+    }
+
+    pub fn deinit(self: *Renderer) void {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        self.backend.deinit();
+    }
+
+    pub fn setFontPath(self: *Renderer, font_path: ?[:0]const u8) void {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        self.backend.setFontPath(font_path);
+    }
+
+    pub fn setFallbackFontPaths(self: *Renderer, paths: []const [:0]const u8) void {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        self.backend.setFallbackFontPaths(paths);
+    }
+
+    pub fn setFontSizePx(self: *Renderer, font_size_px: u16) void {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        self.backend.setFontSizePx(font_size_px);
+    }
+
+    pub fn deriveFrameLayout(
+        self: *Renderer,
+        render_px: render_core.PixelSize,
+        grid_px: render_core.PixelSize,
+    ) render_core.FrameGeometryError!FrameLayout {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        const layout = try self.backend.deriveFrameLayout(render_px, grid_px);
+        return .{ .cell_px = layout.cell_px, .grid = layout.grid };
+    }
+
+    pub fn prepareFrame(
+        self: *Renderer,
+        allocator: std.mem.Allocator,
+        state: render_core.SurfaceFrameData,
+        surface_px: render_core.PixelSize,
+        cell_px: render_core.CellSize,
+    ) !Prepared {
+        var faces: [32]render_core.Text.FontSession.FontFaceRecord = undefined;
+        lockMutex(&self.mutex);
+        errdefer self.mutex.unlock();
+        const resolve_before = self.backend.resolveCounters();
+        const prepared = try self.backend.prepareFrameStateTextScene(allocator, state, surface_px, cell_px, &faces);
+        self.mutex.unlock();
+        return .{ .resolve_before = resolve_before, .frame = .{ .prepared = prepared } };
+    }
+
+    pub fn submitFrame(self: *Renderer, frame: *PreparedFrame) !Submitted {
+        lockMutex(&self.mutex);
+        errdefer self.mutex.unlock();
+        const report = try self.backend.submitPreparedTextScene(&frame.prepared);
+        const resolve_after = self.backend.resolveCounters();
+        const surface = self.backend.surfaceHandle();
+        self.mutex.unlock();
+        return .{
+            .report = .{
+                .raster_uploads_committed = report.raster_uploads_committed,
+                .full_redraw = report.full_redraw,
+                .scroll_up_px = report.scroll_up_px,
+                .clear_draws = report.clear_draws,
+                .background_draws = report.background_draws,
+                .sprite_draws = report.sprite_draws,
+                .decoration_draws = report.decoration_draws,
+                .cursor_draws = report.cursor_draws,
+            },
+            .resolve_after = resolve_after,
+            .surface = surface,
+        };
+    }
+
+    pub fn surfaceHandle(self: *Renderer) render_core.SurfaceHandle {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        return self.backend.surfaceHandle();
+    }
+
+    pub fn resolveCounters(self: *Renderer) render_core.ResolveCounters {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        return self.backend.resolveCounters();
+    }
+
+    pub fn lastResolveStage(self: *Renderer) render_core.ResolveStage {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        return self.backend.lastResolveStage();
+    }
+};
