@@ -3,7 +3,13 @@
 //! Reason: keep text semantics out of backend draw/upload code.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const c = @cImport({
+    if (builtin.target.abi == .android) {
+        @cDefine("_Nonnull", "");
+        @cDefine("_Nullable", "");
+        @cDefine("_Null_unspecified", "");
+    }
     @cInclude("time.h");
 });
 const contract = @import("../text_contract.zig");
