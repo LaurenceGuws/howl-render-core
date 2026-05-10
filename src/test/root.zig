@@ -9,14 +9,25 @@ test "renderer package surface remains available" {
     _ = root.Core;
     _ = root.Core.Text;
     _ = root.Core.BackendConfig;
+    _ = root.Core.FramePixels;
     _ = root.Core.SurfaceFrameData;
     _ = root.Core.FrameSnapshot;
+    _ = root.Core.PrepareMetrics;
+    _ = root.Core.RenderMetrics;
     _ = root.Core.FramePipeline;
     _ = root.Core.FrameQueue;
     _ = root.Core.ResolveResult;
     _ = root.Ffi;
     _ = root.Renderer;
     _ = root.geometry;
+}
+
+test "render frame pixel geometry clamps to drawable size" {
+    const frame = root.Core.FramePixels{ .render_width = 0, .render_height = -2, .grid_width = 80, .grid_height = 24 };
+    try std.testing.expectEqual(@as(u16, 1), frame.renderWidth());
+    try std.testing.expectEqual(@as(u16, 1), frame.renderHeight());
+    try std.testing.expectEqual(@as(u16, 80), frame.gridWidth());
+    try std.testing.expectEqual(@as(u16, 24), frame.gridHeight());
 }
 
 test "renderer root helpers forward deterministically" {

@@ -33,6 +33,29 @@ pub const GridSize = struct {
     rows: u16,
 };
 
+pub const FramePixels = struct {
+    render_width: i32,
+    render_height: i32,
+    grid_width: i32,
+    grid_height: i32,
+
+    pub fn renderWidth(self: FramePixels) u16 {
+        return @intCast(@max(self.render_width, 1));
+    }
+
+    pub fn renderHeight(self: FramePixels) u16 {
+        return @intCast(@max(self.render_height, 1));
+    }
+
+    pub fn gridWidth(self: FramePixels) u16 {
+        return @intCast(@max(self.grid_width, 1));
+    }
+
+    pub fn gridHeight(self: FramePixels) u16 {
+        return @intCast(@max(self.grid_height, 1));
+    }
+};
+
 pub const Rgba8 = rgba.Rgba8;
 
 pub const UnderlineStyle = enum {
