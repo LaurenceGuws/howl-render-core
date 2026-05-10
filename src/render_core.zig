@@ -5,6 +5,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const frame_input = @import("frame_input.zig");
+const frame_snapshot = @import("frame_snapshot.zig");
 const surface = @import("surface.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
@@ -37,6 +38,10 @@ pub const RenderCore = struct {
     pub const SurfaceCursorShape = surface.CursorShape;
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
+    pub const FrameSnapshot = frame_snapshot.Snapshot;
+    pub const FrameSnapshotDirty = frame_snapshot.Dirty;
+    pub const FrameSnapshotDamage = frame_snapshot.Damage;
+    pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
     pub const SurfaceHandle = struct {
         texture_id: u32,
         width: u16,
