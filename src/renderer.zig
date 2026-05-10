@@ -95,6 +95,43 @@ pub const Renderer = struct {
         frame: PreparedFrame,
     };
 
+    pub const FrameRecord = struct {
+        render_seq: u64,
+        render_dirty_epoch: u64,
+        geometry_epoch: u64,
+        sync_us: u64,
+        copy_us: u64,
+        prepare_metrics: render_core.PrepareMetrics,
+        resolve_before: render_core.ResolveCounters,
+        prepared: PreparedFrame,
+
+        pub fn deinit(self: *FrameRecord) void {
+            self.prepared.deinit();
+            self.* = undefined;
+        }
+
+        pub fn pipelineFrame(self: *const FrameRecord, request: render_core.FramePipeline.RenderRequest) render_core.FramePipeline.PreparedFrame {
+            const damage_kind: render_core.FramePipeline.DamageKind = switch (self.prepared.damageKind()) {
+                .full => .full,
+                .scroll => .scroll,
+                .partial => .partial,
+            };
+            const damage_base_seq = if (damage_kind == .partial or damage_kind == .scroll) request.token.damage_base_seq else 0;
+            const token = render_core.FramePipeline.SnapshotToken{
+                .snapshot_seq = self.render_seq,
+                .dirty_epoch = self.render_dirty_epoch,
+                .geometry_epoch = self.geometry_epoch,
+                .damage_base_seq = damage_base_seq,
+                .damage_kind = damage_kind,
+            };
+            return .{
+                .token = token,
+                .required_base_seq = damage_base_seq,
+                .required_target_epoch = request.known_target_epoch,
+            };
+        }
+    };
+
     pub const Submitted = struct {
         report: SubmittedReport,
         resolve_after: render_core.ResolveCounters,
