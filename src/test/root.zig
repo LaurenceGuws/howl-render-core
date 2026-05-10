@@ -12,14 +12,15 @@ test "renderer package surface remains available" {
     _ = root.Core.SurfaceFrameData;
     _ = root.Core.ResolveResult;
     _ = root.Renderer;
+    _ = root.geometry;
 }
 
 test "renderer root helpers forward deterministically" {
-    const grid = root.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
+    const grid = root.geometry.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
     try std.testing.expectEqual(@as(u16, 10), grid.cols);
     try std.testing.expectEqual(@as(u16, 3), grid.rows);
 
-    const frame_grid = try root.deriveGridForFrame(
+    const frame_grid = try root.geometry.deriveGridForFrame(
         .{ .width = 800, .height = 600 },
         .{ .width = 640, .height = 320 },
         .{ .width = 8, .height = 16 },
