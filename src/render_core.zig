@@ -5,6 +5,8 @@
 const std = @import("std");
 const types = @import("types.zig");
 const frame_input = @import("frame_input.zig");
+const frame_pipeline = @import("frame_pipeline.zig");
+const frame_queue = @import("frame_queue.zig");
 const frame_snapshot = @import("frame_snapshot.zig");
 const surface = @import("surface.zig");
 const text_contract = @import("text_contract.zig");
@@ -42,6 +44,8 @@ pub const RenderCore = struct {
     pub const FrameSnapshotDirty = frame_snapshot.Dirty;
     pub const FrameSnapshotDamage = frame_snapshot.Damage;
     pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
+    pub const FramePipeline = frame_pipeline;
+    pub const FrameQueue = frame_queue;
     pub const SurfaceHandle = struct {
         texture_id: u32,
         width: u16,
