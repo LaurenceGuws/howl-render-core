@@ -4,7 +4,7 @@
 
 const lib = @This();
 const std = @import("std");
-const render = @import("render/main.zig");
+const render = @import("render_namespace.zig");
 const ffi = render.c_api;
 
 pub const Core = render.Core;

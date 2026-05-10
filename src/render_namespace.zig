@@ -2,10 +2,10 @@
 
 const std = @import("std");
 
-pub const c_api = @import("../ffi.zig");
+pub const c_api = @import("ffi.zig");
 
-const core = @import("../render_core.zig").RenderCore;
-const renderer = @import("../renderer.zig");
+const core = @import("render_core.zig").RenderCore;
+const renderer = @import("renderer.zig");
 
 pub const Core = core;
 pub const Renderer = renderer.Renderer;
