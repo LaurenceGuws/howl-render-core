@@ -33,8 +33,15 @@ pub fn build(b: *std.Build) void {
         freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/aarch64-linux-android", .{android_ndk_sysroot}) });
     }
 
-    const build_options = b.addOptions();
-    build_options.addOption(RenderBackend, "render_backend", selected_backend);
+    const module_options = b.addOptions();
+    module_options.addOption(RenderBackend, "render_backend", selected_backend);
+    module_options.addOption(bool, "c_abi", false);
+    const perf_options = b.addOptions();
+    perf_options.addOption(RenderBackend, "render_backend", selected_backend);
+    perf_options.addOption(bool, "c_abi", false);
+    const ffi_options = b.addOptions();
+    ffi_options.addOption(RenderBackend, "render_backend", selected_backend);
+    ffi_options.addOption(bool, "c_abi", true);
 
     const mod = b.addModule("howl_render", .{
         .root_source_file = b.path("src/howl_render.zig"),
@@ -43,7 +50,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.addImport("howl_render", mod);
     mod.addImport("howl_render_core", mod);
-    mod.addImport("build_options", build_options.createModule());
+    mod.addImport("render_options", module_options.createModule());
     mod.linkLibrary(freetype_lib);
     mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
     mod.linkLibrary(harfbuzz_lib);
@@ -75,7 +82,7 @@ pub fn build(b: *std.Build) void {
     });
     perf_mod.addImport("howl_render", perf_mod);
     perf_mod.addImport("howl_render_core", perf_mod);
-    perf_mod.addImport("build_options", build_options.createModule());
+    perf_mod.addImport("render_options", perf_options.createModule());
     perf_mod.linkLibrary(perf_freetype_lib);
     perf_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
     perf_mod.linkLibrary(perf_harfbuzz_lib);
@@ -132,7 +139,7 @@ pub fn build(b: *std.Build) void {
     });
     ffi_mod.addImport("howl_render", ffi_mod);
     ffi_mod.addImport("howl_render_core", ffi_mod);
-    ffi_mod.addImport("build_options", build_options.createModule());
+    ffi_mod.addImport("render_options", ffi_options.createModule());
     ffi_mod.linkLibrary(freetype_lib);
     ffi_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
     ffi_mod.linkLibrary(harfbuzz_lib);
@@ -157,7 +164,7 @@ pub fn build(b: *std.Build) void {
         .optimize = perf_optimize,
     });
     benchmark_mod.addImport("howl_render", perf_mod);
-    benchmark_mod.addImport("build_options", build_options.createModule());
+    benchmark_mod.addImport("render_options", perf_options.createModule());
     benchmark_mod.linkLibrary(perf_freetype_lib);
     benchmark_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
     benchmark_mod.linkLibrary(perf_harfbuzz_lib);

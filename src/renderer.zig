@@ -3,9 +3,9 @@
 //! Reason: keep terminal packages from wrapping backend internals directly.
 
 const std = @import("std");
-const build_options = @import("build_options");
+const render_options = @import("render_options");
 const render_core = @import("render_core.zig").RenderCore;
-const backend_mod = switch (build_options.render_backend) {
+const backend_mod = switch (render_options.render_backend) {
     .gl => @import("backend/gl/backend.zig"),
     .gles => @import("backend/gles/backend.zig"),
 };

@@ -1,8 +1,9 @@
 //! Render namespace wrapper for the howl-render-core module.
 
 const std = @import("std");
+const options = @import("render_options");
 
-pub const c_api = @import("ffi.zig");
+pub const c_api = if (options.c_abi) @import("ffi.zig") else void;
 
 const core = @import("render_core.zig").RenderCore;
 const renderer = @import("renderer.zig");
