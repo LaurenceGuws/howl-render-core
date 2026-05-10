@@ -2,6 +2,8 @@
 //! Ownership: renderer API boundary and backend selection.
 //! Reason: keep the package root named after the public domain instead of a generic root facade.
 
+const lib = @This();
+const std = @import("std");
 const build_options = @import("build_options");
 const core = @import("render_core.zig").RenderCore;
 const backend = switch (build_options.render_backend) {
@@ -26,4 +28,5 @@ pub fn deriveGridForFrame(render_px: Core.PixelSize, grid_px: Core.PixelSize, ce
 
 test {
     _ = @import("test/root.zig");
+    std.testing.refAllDecls(lib);
 }
