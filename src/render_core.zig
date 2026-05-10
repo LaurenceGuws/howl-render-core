@@ -165,3 +165,8 @@ pub const RenderCore = struct {
         return deriveGridSize(grid_px, cell_px);
     }
 };
+
+pub const geometry = struct {
+    pub const deriveGridSize = RenderCore.deriveGridSize;
+    pub const deriveGridForFrame = RenderCore.deriveGridForFrame;
+};
