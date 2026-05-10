@@ -10,11 +10,6 @@ const backend = switch (build_options.render_backend) {
 };
 
 pub const Core = core;
-pub const Backend = backend.Backend;
-pub const BackendError = backend.BackendError;
-pub const RenderReport = backend.RenderReport;
-pub const PreparedTextScene = backend.PreparedTextScene;
-pub const TextSceneRenderReport = backend.TextSceneRenderReport;
 pub const Renderer = @import("renderer.zig").Renderer;
 
 pub fn init(config: Core.BackendConfig, capability: Core.BackendCapability) Core {

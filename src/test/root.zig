@@ -7,8 +7,6 @@ const root = @import("howl_render");
 
 test "renderer package surface remains available" {
     _ = root.Core;
-    _ = root.Backend;
-    _ = root.RenderReport;
     _ = root.Core.Text;
     _ = root.Core.BackendConfig;
     _ = root.Core.SurfaceFrameData;
