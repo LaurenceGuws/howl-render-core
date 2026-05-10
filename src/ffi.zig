@@ -2,7 +2,7 @@
 //! Ownership: render-core pixel, cell, grid, and frame geometry contracts.
 //! Reason: keep C consumers on the same backend-agnostic sizing policy as Zig consumers.
 
-const render = @import("howl_render.zig");
+const Core = @import("render_core.zig").RenderCore;
 
 pub const FfiPixelSize = extern struct {
     width: u16,
@@ -24,24 +24,24 @@ pub const FfiFrameGridResult = extern struct {
     grid: FfiGridSize,
 };
 
-fn pixelIn(value: FfiPixelSize) render.Core.PixelSize {
+fn pixelIn(value: FfiPixelSize) Core.PixelSize {
     return .{ .width = value.width, .height = value.height };
 }
 
-fn cellIn(value: FfiCellSize) render.Core.CellSize {
+fn cellIn(value: FfiCellSize) Core.CellSize {
     return .{ .width = value.width, .height = value.height };
 }
 
-fn gridOut(value: render.Core.GridSize) FfiGridSize {
+fn gridOut(value: Core.GridSize) FfiGridSize {
     return .{ .cols = value.cols, .rows = value.rows };
 }
 
 pub fn deriveGridSize(grid_px: FfiPixelSize, cell_px: FfiCellSize) callconv(.c) FfiGridSize {
-    return gridOut(render.geometry.deriveGridSize(pixelIn(grid_px), cellIn(cell_px)));
+    return gridOut(Core.deriveGridSize(pixelIn(grid_px), cellIn(cell_px)));
 }
 
 pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_px: FfiCellSize) callconv(.c) FfiFrameGridResult {
-    const grid = render.geometry.deriveGridForFrame(pixelIn(render_px), pixelIn(grid_px), cellIn(cell_px)) catch |err| {
+    const grid = Core.deriveGridForFrame(pixelIn(render_px), pixelIn(grid_px), cellIn(cell_px)) catch |err| {
         return .{
             .status = switch (err) {
                 error.InvalidSurfaceSize => -1,
