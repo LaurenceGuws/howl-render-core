@@ -55,6 +55,7 @@ pub fn resolveClusters(
     session: font_session.FontSession,
     clusters: []const contract.CellCluster,
     text_cache: contract.LineTextCache,
+    grid_metrics: contract.GridMetrics,
 ) !OwnedResolvedRuns {
     var runs = std.ArrayList(contract.ResolvedRun).empty;
     errdefer runs.deinit(allocator);
@@ -65,6 +66,7 @@ pub fn resolveClusters(
     var resolve_memo = std.AutoHashMap(ResolveMemoKey, ResolveMemoValue).init(allocator);
     defer resolve_memo.deinit();
 
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
     var idx: usize = 0;
     while (idx < clusters.len) {
         const cluster = clusters[idx];
@@ -92,6 +94,7 @@ pub fn resolveClusters(
         while (idx < clusters.len) : (idx += 1) {
             const next = clusters[idx];
             if (symbol_map.builtinRoute(next.first_cp) != null) break;
+            if (next.first_cell / cols != cluster.first_cell / cols) break;
             const next_face = (try resolveFaceMemoized(&resolve_memo, session, next, textForCluster(text_cache, next))) orelse break;
             if (next_face.id.value != face.id.value or next.style != cluster.style or next.presentation != cluster.presentation) break;
         }
@@ -182,7 +185,7 @@ test "resolver groups adjacent primary clusters and separates sprite routes" {
         .{ .id = .{ .value = 1 }, .first_cp = 'b', .codepoints = &.{'b'} },
         .{ .id = .{ .value = 2 }, .first_cp = 0x2500, .codepoints = &.{0x2500} },
     };
-    var resolved = try resolveClusters(std.testing.allocator, .{}, &clusters, .{ .texts = &texts });
+    var resolved = try resolveClusters(std.testing.allocator, .{}, &clusters, .{ .texts = &texts }, .{ .cols = 3, .rows = 1 });
     defer resolved.deinit();
     try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
     try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.cluster_count);
@@ -198,7 +201,7 @@ test "resolver falls back when primary cannot cover whole cell text" {
     const session = font_session.FontSession{ .faces = &faces };
     const clusters = [_]contract.CellCluster{.{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'i', .style = .regular, .presentation = .any }};
     const texts = [_]contract.CellText{.{ .id = .{ .value = 0 }, .first_cp = 'i', .codepoints = &.{ 'i', 0x0332 } }};
-    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts }, .{ .cols = 3, .rows = 1 });
     defer resolved.deinit();
     try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
     try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
@@ -220,7 +223,7 @@ test "resolver uses face provider validation" {
     const session = font_session.FontSession{ .faces = &faces, .provider = .{ .ctx = &dummy, .has_cell_text = Provider.has } };
     const clusters = [_]contract.CellCluster{.{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .first_cp = 'x', .style = .regular, .presentation = .any }};
     const texts = [_]contract.CellText{.{ .id = .{ .value = 0 }, .first_cp = 'x', .codepoints = &.{ 'x', 0x0332 } }};
-    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts }, .{ .cols = 3, .rows = 1 });
     defer resolved.deinit();
     try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);
 }
@@ -250,7 +253,7 @@ test "resolver memoizes repeated text face validation" {
     var provider = Provider{};
     const session = font_session.FontSession{ .faces = &faces, .provider = .{ .ctx = &provider, .has_cell_text = Provider.has } };
 
-    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts });
+    var resolved = try resolveClusters(std.testing.allocator, session, &clusters, .{ .texts = &texts }, .{ .cols = 3, .rows = 1 });
     defer resolved.deinit();
     try std.testing.expectEqual(@as(usize, 1), resolved.runs.len);
     try std.testing.expectEqual(@as(u32, 2), resolved.runs[0].run.font.face_id.value);

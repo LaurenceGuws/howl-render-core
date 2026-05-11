@@ -154,7 +154,7 @@ pub const Engine = struct {
         timings.clusters_us = elapsedUs(clusters_start_ns);
         errdefer clusters.deinit();
         const resolve_start_ns = monotonicNs();
-        var runs = try font_resolver.resolveClusters(self.allocator, session, clusters.clusters, owned_text_cache.view());
+        var runs = try font_resolver.resolveClusters(self.allocator, session, clusters.clusters, owned_text_cache.view(), grid_metrics);
         timings.resolve_us = elapsedUs(resolve_start_ns);
         errdefer runs.deinit();
         const shape_start_ns = monotonicNs();
