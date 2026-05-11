@@ -142,62 +142,16 @@ pub fn buildSparseCellsWithDamage(
     damage: scene_mod.DamageInput,
 ) !LegacySparseCells {
     const skip_clean_rows = canSkipCleanRows(damage, grid_metrics);
-    var count: usize = 0;
-    var count_idx: usize = 0;
-    while (count_idx < cells.len) {
-        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, count_idx, cells.len)) |next_idx| {
-            count_idx = next_idx;
-            continue;
-        }
-        const idx = count_idx;
-        count_idx += 1;
-        const cell = cells[idx];
-        if (cell.continuation) continue;
-        if (cell.empty) continue;
-        if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
-        count += 1;
-    }
-
-    const renderable = try allocator.alloc(contract.RenderableCell, count);
+    var renderable = try allocator.alloc(contract.RenderableCell, cells.len);
     errdefer allocator.free(renderable);
+    var texts = try allocator.alloc(contract.CellText, cells.len);
+    errdefer allocator.free(texts);
+    var codepoints = try allocator.alloc(u32, cells.len);
+    errdefer allocator.free(codepoints);
+
     var unique_codepoints = std.AutoHashMap(u32, u32).init(allocator);
     defer unique_codepoints.deinit();
     var unique_count: usize = 0;
-
-    var intern_idx: usize = 0;
-    while (intern_idx < cells.len) {
-        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, intern_idx, cells.len)) |next_idx| {
-            intern_idx = next_idx;
-            continue;
-        }
-        const idx = intern_idx;
-        intern_idx += 1;
-        const cell = cells[idx];
-        if (cell.continuation) continue;
-        if (cell.empty) continue;
-        if (!includeSpan(damage, grid_metrics, @intCast(idx), inferredCellSpan(cells, idx))) continue;
-        const entry = try unique_codepoints.getOrPut(cell.codepoint);
-        if (!entry.found_existing) {
-            entry.value_ptr.* = @intCast(unique_count);
-            unique_count += 1;
-        }
-    }
-
-    const texts = try allocator.alloc(contract.CellText, unique_count);
-    errdefer allocator.free(texts);
-    const codepoints = try allocator.alloc(u32, unique_count);
-    errdefer allocator.free(codepoints);
-
-    var iterator = unique_codepoints.iterator();
-    while (iterator.next()) |entry| {
-        const text_idx = @as(usize, @intCast(entry.value_ptr.*));
-        codepoints[text_idx] = entry.key_ptr.*;
-        texts[text_idx] = .{
-            .id = .{ .value = entry.value_ptr.* },
-            .first_cp = entry.key_ptr.*,
-            .codepoints = codepoints[text_idx .. text_idx + 1],
-        };
-    }
 
     var out_idx: usize = 0;
     var cell_idx: usize = 0;
@@ -214,7 +168,21 @@ pub fn buildSparseCellsWithDamage(
         const first_cell: u32 = @intCast(idx);
         const span = inferredCellSpan(cells, idx);
         if (!includeSpan(damage, grid_metrics, first_cell, span)) continue;
-        const text_id = unique_codepoints.get(cell.codepoint).?;
+        const entry = try unique_codepoints.getOrPut(cell.codepoint);
+        const text_id: u32 = if (entry.found_existing)
+            entry.value_ptr.*
+        else blk: {
+            const next_id: u32 = @intCast(unique_count);
+            entry.value_ptr.* = next_id;
+            codepoints[unique_count] = cell.codepoint;
+            texts[unique_count] = .{
+                .id = .{ .value = next_id },
+                .first_cp = cell.codepoint,
+                .codepoints = codepoints[unique_count .. unique_count + 1],
+            };
+            unique_count += 1;
+            break :blk next_id;
+        };
         renderable[out_idx] = .{
             .text_id = .{ .value = text_id },
             .first_cell = first_cell,
@@ -238,9 +206,29 @@ pub fn buildSparseCellsWithDamage(
         out_idx += 1;
     }
 
+    const final_renderable = try allocator.realloc(renderable, out_idx);
+    errdefer allocator.free(final_renderable);
+
+    const final_codepoints = try allocator.alloc(u32, unique_count);
+    errdefer allocator.free(final_codepoints);
+    @memcpy(final_codepoints, codepoints[0..unique_count]);
+
+    const final_texts = try allocator.alloc(contract.CellText, unique_count);
+    errdefer allocator.free(final_texts);
+    for (0..unique_count) |idx| {
+        final_texts[idx] = .{
+            .id = .{ .value = @intCast(idx) },
+            .first_cp = final_codepoints[idx],
+            .codepoints = final_codepoints[idx .. idx + 1],
+        };
+    }
+
+    allocator.free(texts);
+    allocator.free(codepoints);
+
     return .{
-        .text_cache = .{ .allocator = allocator, .texts = texts, .codepoints = codepoints },
-        .renderable = .{ .allocator = allocator, .cells = renderable },
+        .text_cache = .{ .allocator = allocator, .texts = final_texts, .codepoints = final_codepoints },
+        .renderable = .{ .allocator = allocator, .cells = final_renderable },
     };
 }
 
