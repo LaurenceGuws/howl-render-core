@@ -128,6 +128,7 @@ pub const RasterizeRequest = struct {
     glyph_id: u32,
     atlas_key: u64,
     cell_metrics: contract.CellMetrics,
+    cell_span: u8 = 1,
     sprite_key: ?contract.SpriteKey = null,
 };
 

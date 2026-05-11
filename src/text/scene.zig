@@ -46,15 +46,18 @@ pub const BuildOptions = struct {
 pub const OwnedTextScene = struct {
     allocator: std.mem.Allocator,
     scene: contract.TextScene,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedTextScene) void {
-        self.allocator.free(self.scene.clear_draws);
-        self.allocator.free(self.scene.background_draws);
-        self.allocator.free(self.scene.sprite_draws);
-        self.allocator.free(self.scene.decoration_draws);
-        self.allocator.free(self.scene.cursor_draws);
-        self.allocator.free(self.scene.raster_requests);
-        self.allocator.free(self.scene.missing);
+        if (self.owned) {
+            self.allocator.free(self.scene.clear_draws);
+            self.allocator.free(self.scene.background_draws);
+            self.allocator.free(self.scene.sprite_draws);
+            self.allocator.free(self.scene.decoration_draws);
+            self.allocator.free(self.scene.cursor_draws);
+            self.allocator.free(self.scene.raster_requests);
+            self.allocator.free(self.scene.missing);
+        }
         self.* = undefined;
     }
 };

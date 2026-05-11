@@ -72,10 +72,13 @@ pub fn alphaBounds(pixels: []const u8, width_px: u16, height_px: u16) SpriteBoun
 pub const OwnedRasterPlan = struct {
     allocator: std.mem.Allocator,
     outputs: []RasterSpriteOutput,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedRasterPlan) void {
-        for (self.outputs) |*out| out.deinit();
-        self.allocator.free(self.outputs);
+        if (self.owned) {
+            for (self.outputs) |*out| out.deinit();
+            self.allocator.free(self.outputs);
+        }
         self.* = undefined;
     }
 };

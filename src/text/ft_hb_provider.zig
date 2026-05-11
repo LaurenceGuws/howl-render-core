@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");
+const pipeline = @import("../text_pipeline.zig");
 const font_session = @import("font_session.zig");
 const provider = @import("provider.zig");
 const rasterizer = @import("rasterizer.zig");
@@ -16,12 +17,16 @@ pub const FtHbSource = struct {
     has_codepoint: HasCodepointFn,
     shaper: shape_run.Shaper = shape_run.defaultShaper(),
     rasterizer: rasterizer.Rasterizer = rasterizer.defaultRasterizer(),
+    glyph_lookup: provider.LookupGlyphOp = provider.defaultLookupGlyph(),
+    glyph_raster: pipeline.RasterizeGlyphOp = provider.defaultGlyphRaster(),
 
     pub fn textProvider(self: *FtHbSource) provider.TextProvider {
         return .{
             .face_provider = .{ .ctx = self, .has_cell_text = hasCellTextThunk },
             .shaper = self.shaper,
             .rasterizer = self.rasterizer,
+            .glyph_lookup = self.glyph_lookup,
+            .glyph_raster = self.glyph_raster,
         };
     }
 };

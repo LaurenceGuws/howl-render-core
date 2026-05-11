@@ -19,6 +19,17 @@ pub fn hashGlyphSequence(face: contract.FontFaceId, glyphs: []const contract.Gly
     return .{ .value = h.final() };
 }
 
+pub fn hashGlyphLocal(face: contract.FontFaceId, glyph_id: u32, cell_span: u8, cell_metrics: contract.CellMetrics) contract.SpriteKey {
+    var h = std.hash.Wyhash.init(0x474c5946484f574c);
+    h.update(std.mem.asBytes(&face.value));
+    h.update(std.mem.asBytes(&glyph_id));
+    h.update(std.mem.asBytes(&cell_span));
+    h.update(std.mem.asBytes(&cell_metrics.cell_w_px));
+    h.update(std.mem.asBytes(&cell_metrics.cell_h_px));
+    h.update(std.mem.asBytes(&cell_metrics.baseline_px));
+    return .{ .value = h.final() };
+}
+
 /// Returns a cache key for a generated undercurl sprite with fixed metrics.
 pub fn hashUndercurl(width_px: u16, height_px: u16, stroke_px: u16, amplitude_px: u16, period_px: u16, y_px: u16) contract.SpriteKey {
     var h = std.hash.Wyhash.init(0x756e646572637572);
@@ -35,6 +46,13 @@ test "sprite key changes by face" {
     const metrics = contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 };
     const a = hashGlyphSequence(.{ .value = 1 }, &.{}, 1, metrics);
     const b = hashGlyphSequence(.{ .value = 2 }, &.{}, 1, metrics);
+    try std.testing.expect(a.value != b.value);
+}
+
+test "local glyph key changes by glyph id" {
+    const metrics = contract.CellMetrics{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 };
+    const a = hashGlyphLocal(.{ .value = 1 }, 10, 1, metrics);
+    const b = hashGlyphLocal(.{ .value = 1 }, 11, 1, metrics);
     try std.testing.expect(a.value != b.value);
 }
 

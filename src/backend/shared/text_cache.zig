@@ -18,6 +18,19 @@ pub const ShapeRunKey = struct {
     baseline_px: i16,
 };
 
+pub const GlyphCellKey = struct {
+    face_id: u32,
+    codepoint: u32,
+    cell_w_px: u16,
+    cell_h_px: u16,
+    baseline_px: i16,
+};
+
+pub const GlyphCellValue = struct {
+    glyph_id: u32,
+    advance_px: f32,
+};
+
 pub const CachedGlyph = struct {
     glyph_id: u32,
     cluster_offset: u32,
@@ -103,6 +116,23 @@ pub const ShapeRunCache = struct {
         const entry = try self.map.getOrPut(key);
         if (entry.found_existing) self.allocator.free(entry.value_ptr.*);
         entry.value_ptr.* = templates;
+    }
+};
+
+pub const GlyphCellCache = struct {
+    map: std.AutoHashMap(GlyphCellKey, GlyphCellValue),
+
+    pub fn init(allocator: std.mem.Allocator) GlyphCellCache {
+        return .{ .map = std.AutoHashMap(GlyphCellKey, GlyphCellValue).init(allocator) };
+    }
+
+    pub fn deinit(self: *GlyphCellCache) void {
+        self.map.deinit();
+        self.* = undefined;
+    }
+
+    pub fn clear(self: *GlyphCellCache) void {
+        self.map.clearRetainingCapacity();
     }
 };
 

@@ -24,7 +24,7 @@ test "gles backend analyzes text cells through provider-backed engine" {
     var faces: [8]render_core.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
     defer analysis.deinit();
-    try std.testing.expectEqual(@as(usize, 2), analysis.groups.groups.len);
+    try std.testing.expectEqual(@as(usize, 0), analysis.groups.groups.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
 }

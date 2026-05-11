@@ -6,6 +6,12 @@ const std = @import("std");
 const render = @import("howl_render");
 
 const OutputFormat = enum { ndjson, text };
+const LaneReport = render.Core.TextLaneReport;
+
+const WorkloadInput = union(enum) {
+    cells: []render.Core.TextCellInput,
+    cell_texts: []const render.Core.CellTextInput,
+};
 
 const Options = struct {
     runs: usize = 10,
@@ -21,6 +27,28 @@ const RunObservation = struct {
 
 const WorkloadResult = struct {
     name: []const u8,
+    grid_cols: u16,
+    grid_rows: u16,
+    visible_cells: usize,
+    normal_cells: usize,
+    complex_cells: usize,
+    complex_multi_codepoint_cells: usize,
+    complex_emoji_cells: usize,
+    complex_special_sprite_cells: usize,
+    normal_clusters: usize,
+    complex_clusters: usize,
+    direct_normal_draws: usize,
+    direct_normal_raster_misses: usize,
+    legacy_resolved_normal_clusters: usize,
+    legacy_resolved_complex_clusters: usize,
+    legacy_shaped_normal_clusters: usize,
+    legacy_shaped_complex_clusters: usize,
+    legacy_grouped_normal_groups: usize,
+    legacy_grouped_complex_groups: usize,
+    legacy_scene_normal_sprite_draws: usize,
+    legacy_scene_complex_sprite_draws: usize,
+    frame_fully_normal_input: bool,
+    frame_stayed_out_of_legacy_path: bool,
     dirty_cells_per_run: usize,
     runs: usize,
     median_ns: u64,
@@ -41,7 +69,7 @@ const WorkloadResult = struct {
 
 const Workload = struct {
     name: []const u8,
-    cells: []render.Core.TextCellInput,
+    input: WorkloadInput,
     grid: render.Core.GridMetrics,
     damage: struct {
         full: bool,
@@ -251,7 +279,7 @@ fn buildAsciiFullWorkload(allocator: std.mem.Allocator) !Workload {
         .name = "ascii_full",
         .cell_px = .{ .width = 9, .height = 18 },
         .dirty_cells_per_run = @as(usize, rows) * @as(usize, cols),
-        .cells = cells,
+        .input = .{ .cells = cells },
         .grid = .{ .cols = cols, .rows = rows },
         .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
@@ -279,7 +307,7 @@ fn buildSparseRowsWorkload(allocator: std.mem.Allocator) !Workload {
         .name = "sparse_rows",
         .cell_px = .{ .width = 9, .height = 18 },
         .dirty_cells_per_run = active_rows.len * 80,
-        .cells = cells,
+        .input = .{ .cells = cells },
         .grid = .{ .cols = cols, .rows = rows },
         .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
@@ -306,7 +334,7 @@ fn buildMixedBoxWorkload(allocator: std.mem.Allocator) !Workload {
         .name = "mixed_box_full",
         .cell_px = .{ .width = 10, .height = 18 },
         .dirty_cells_per_run = @as(usize, rows) * @as(usize, cols),
-        .cells = cells,
+        .input = .{ .cells = cells },
         .grid = .{ .cols = cols, .rows = rows },
         .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
@@ -333,9 +361,91 @@ fn buildWideDirtySpansWorkload(allocator: std.mem.Allocator) !Workload {
         .name = "wide_dirty_spans",
         .cell_px = .{ .width = 9, .height = 17 },
         .dirty_cells_per_run = dirty_rows_list.len * 108,
-        .cells = cells,
+        .input = .{ .cells = cells },
         .grid = .{ .cols = cols, .rows = rows },
         .damage = .{ .full = false, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
+fn buildComplexTextWorkload(allocator: std.mem.Allocator) !Workload {
+    const rows: u16 = 12;
+    const cols: u16 = 32;
+    const bg = rgba(14, 12, 18);
+    const fg = rgba(232, 236, 242);
+    const combining = &[_]u32{ 'i', 0x0332 };
+    const emoji = &[_]u32{0x1f642};
+    const cells = try allocator.alloc(render.Core.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const dirty = try initDirtyAll(allocator, rows, cols);
+    for (cells, 0..) |*cell, idx| {
+        const cp = if (idx % 2 == 0) combining else emoji;
+        cell.* = .{
+            .codepoints = cp,
+            .fg = fg,
+            .bg = bg,
+            .presentation = if (idx % 2 == 0) .any else .emoji,
+        };
+    }
+    return .{
+        .name = "complex_text_full",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = cells.len,
+        .input = .{ .cell_texts = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
+fn buildCellTextAsciiFullWorkload(allocator: std.mem.Allocator) !Workload {
+    const rows: u16 = 24;
+    const cols: u16 = 80;
+    const bg = rgba(12, 12, 18);
+    const fg = rgba(235, 238, 242);
+    const ascii = [_]u32{'a'};
+    const cells = try allocator.alloc(render.Core.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const dirty = try initDirtyAll(allocator, rows, cols);
+    for (cells) |*cell| {
+        cell.* = .{
+            .codepoints = &ascii,
+            .fg = fg,
+            .bg = bg,
+        };
+    }
+    return .{
+        .name = "cell_text_ascii_full",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = cells.len,
+        .input = .{ .cell_texts = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
+fn buildCellTextMixedWorkload(allocator: std.mem.Allocator) !Workload {
+    const rows: u16 = 16;
+    const cols: u16 = 48;
+    const bg = rgba(16, 14, 22);
+    const fg = rgba(232, 236, 242);
+    const accent = rgba(166, 212, 255);
+    const ascii = [_]u32{'a'};
+    const combining = [_]u32{ 'i', 0x0332 };
+    const cells = try allocator.alloc(render.Core.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const dirty = try initDirtyAll(allocator, rows, cols);
+    for (cells, 0..) |*cell, idx| {
+        const even = idx % 2 == 0;
+        cell.* = .{
+            .codepoints = if (even) &ascii else &combining,
+            .fg = if (even) fg else accent,
+            .bg = bg,
+            .presentation = .any,
+        };
+    }
+    return .{
+        .name = "cell_text_mixed",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = cells.len,
+        .input = .{ .cell_texts = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
 }
 
@@ -365,28 +475,63 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
             },
         },
     };
+    var lane_report: ?LaneReport = null;
+    var counting = CountingAllocator.init(allocator);
+    var engine = render.Core.TextEngine.init(counting.allocator());
+    defer engine.deinit();
+
+    {
+        var warm = switch (workload.input) {
+            .cells => |cells| try engine.analyzeCellsWithSessionOptions(
+                cells,
+                workload.grid,
+                session,
+                analysis_options,
+            ),
+            .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
+                cells,
+                workload.grid,
+                session,
+                analysis_options,
+            ),
+        };
+        for (warm.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
+        warm.deinit();
+    }
 
     var i: usize = 0;
     while (i < runs) : (i += 1) {
-        var counting = CountingAllocator.init(allocator);
         counting.resetWindow();
         const start = nowNs(io);
-        var engine = render.Core.TextEngine.init(counting.allocator());
-        defer engine.deinit();
-        var analysis = try engine.analyzeCellsWithSessionOptions(
-            workload.cells,
-            workload.grid,
-            session,
-            analysis_options,
-        );
+        var analysis = switch (workload.input) {
+            .cells => |cells| try engine.analyzeCellsWithSessionOptions(
+                cells,
+                workload.grid,
+                session,
+                analysis_options,
+            ),
+            .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
+                cells,
+                workload.grid,
+                session,
+                analysis_options,
+            ),
+        };
         const end = nowNs(io);
         defer analysis.deinit();
+        const run_lane_report = analysis.lane_report;
+        if (lane_report) |existing| {
+            std.debug.assert(std.meta.eql(existing, run_lane_report));
+        } else {
+            lane_report = run_lane_report;
+        }
         observations[i] = .{
             .ns = end - start,
             .alloc_count = counting.window_alloc_count,
             .alloc_bytes = counting.window_alloc_bytes,
             .peak_live_bytes = counting.window_peak_live_bytes,
         };
+        for (analysis.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
         fill_values[i] = analysis.scene.scene.background_draws.len + analysis.scene.scene.decoration_draws.len + analysis.scene.scene.cursor_draws.len;
         glyph_values[i] = analysis.scene.scene.sprite_draws.len;
         upload_values[i] = analysis.raster_plan.outputs.len;
@@ -408,8 +553,32 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         peak_live_values[idx] = obs.peak_live_bytes;
     }
 
+    const final_lane_report = lane_report orelse LaneReport{};
+
     return .{
         .name = workload.name,
+        .grid_cols = workload.grid.cols,
+        .grid_rows = workload.grid.rows,
+        .visible_cells = final_lane_report.visible_cells,
+        .normal_cells = final_lane_report.normal_cells,
+        .complex_cells = final_lane_report.complex_cells,
+        .complex_multi_codepoint_cells = final_lane_report.complex_multi_codepoint_cells,
+        .complex_emoji_cells = final_lane_report.complex_emoji_cells,
+        .complex_special_sprite_cells = final_lane_report.complex_special_sprite_cells,
+        .normal_clusters = final_lane_report.normal_clusters,
+        .complex_clusters = final_lane_report.complex_clusters,
+        .direct_normal_draws = final_lane_report.direct_normal_draws,
+        .direct_normal_raster_misses = final_lane_report.direct_normal_raster_misses,
+        .legacy_resolved_normal_clusters = final_lane_report.legacy.resolved_clusters.normal,
+        .legacy_resolved_complex_clusters = final_lane_report.legacy.resolved_clusters.complex,
+        .legacy_shaped_normal_clusters = final_lane_report.legacy.shaped_clusters.normal,
+        .legacy_shaped_complex_clusters = final_lane_report.legacy.shaped_clusters.complex,
+        .legacy_grouped_normal_groups = final_lane_report.legacy.grouped_groups.normal,
+        .legacy_grouped_complex_groups = final_lane_report.legacy.grouped_groups.complex,
+        .legacy_scene_normal_sprite_draws = final_lane_report.legacy.scene_sprite_draws.normal,
+        .legacy_scene_complex_sprite_draws = final_lane_report.legacy.scene_sprite_draws.complex,
+        .frame_fully_normal_input = final_lane_report.frameFullyNormalInput(),
+        .frame_stayed_out_of_legacy_path = final_lane_report.frameStayedOutOfLegacyPath(),
         .dirty_cells_per_run = workload.dirty_cells_per_run,
         .runs = runs,
         .median_ns = medianU64(ns_values),
@@ -451,6 +620,28 @@ fn printTextResult(result: WorkloadResult) void {
     const median_ms = @as(f64, @floatFromInt(result.median_ns)) / 1_000_000.0;
     const p95_ms = @as(f64, @floatFromInt(result.p95_ns)) / 1_000_000.0;
     std.debug.print("workload={s}\n", .{result.name});
+    std.debug.print("grid_cols={d}\n", .{result.grid_cols});
+    std.debug.print("grid_rows={d}\n", .{result.grid_rows});
+    std.debug.print("visible_cells={d}\n", .{result.visible_cells});
+    std.debug.print("normal_cells={d}\n", .{result.normal_cells});
+    std.debug.print("complex_cells={d}\n", .{result.complex_cells});
+    std.debug.print("complex_multi_codepoint_cells={d}\n", .{result.complex_multi_codepoint_cells});
+    std.debug.print("complex_emoji_cells={d}\n", .{result.complex_emoji_cells});
+    std.debug.print("complex_special_sprite_cells={d}\n", .{result.complex_special_sprite_cells});
+    std.debug.print("normal_clusters={d}\n", .{result.normal_clusters});
+    std.debug.print("complex_clusters={d}\n", .{result.complex_clusters});
+    std.debug.print("direct_normal_draws={d}\n", .{result.direct_normal_draws});
+    std.debug.print("direct_normal_raster_misses={d}\n", .{result.direct_normal_raster_misses});
+    std.debug.print("legacy_resolved_normal_clusters={d}\n", .{result.legacy_resolved_normal_clusters});
+    std.debug.print("legacy_resolved_complex_clusters={d}\n", .{result.legacy_resolved_complex_clusters});
+    std.debug.print("legacy_shaped_normal_clusters={d}\n", .{result.legacy_shaped_normal_clusters});
+    std.debug.print("legacy_shaped_complex_clusters={d}\n", .{result.legacy_shaped_complex_clusters});
+    std.debug.print("legacy_grouped_normal_groups={d}\n", .{result.legacy_grouped_normal_groups});
+    std.debug.print("legacy_grouped_complex_groups={d}\n", .{result.legacy_grouped_complex_groups});
+    std.debug.print("legacy_scene_normal_sprite_draws={d}\n", .{result.legacy_scene_normal_sprite_draws});
+    std.debug.print("legacy_scene_complex_sprite_draws={d}\n", .{result.legacy_scene_complex_sprite_draws});
+    std.debug.print("frame_fully_normal_input={}\n", .{result.frame_fully_normal_input});
+    std.debug.print("frame_stayed_out_of_legacy_path={}\n", .{result.frame_stayed_out_of_legacy_path});
     std.debug.print("runs={d}\n", .{result.runs});
     std.debug.print("dirty_cells_per_run={d}\n", .{result.dirty_cells_per_run});
     std.debug.print("median_ms={d:.3}\n", .{median_ms});
@@ -467,9 +658,36 @@ fn printTextResult(result: WorkloadResult) void {
 
 fn printNdjsonResult(result: WorkloadResult) void {
     std.debug.print(
-        "{{\"workload\":\"{s}\",\"runs\":{d},\"dirty_cells_per_run\":{d},\"median_ns\":{d},\"p95_ns\":{d},\"dirty_cells_per_second\":{d:.0},\"median_alloc_count\":{d},\"median_alloc_bytes\":{d},\"median_peak_live_bytes\":{d},\"median_fills\":{d},\"median_glyphs\":{d},\"median_uploads\":{d}}}\n",
+        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"direct_normal_raster_misses\":{d},\"legacy_resolved_normal_clusters\":{d},\"legacy_resolved_complex_clusters\":{d},\"legacy_shaped_normal_clusters\":{d},\"legacy_shaped_complex_clusters\":{d},\"legacy_grouped_normal_groups\":{d},\"legacy_grouped_complex_groups\":{d},",
         .{
             result.name,
+            result.grid_cols,
+            result.grid_rows,
+            result.visible_cells,
+            result.normal_cells,
+            result.complex_cells,
+            result.complex_multi_codepoint_cells,
+            result.complex_emoji_cells,
+            result.complex_special_sprite_cells,
+            result.normal_clusters,
+            result.complex_clusters,
+            result.direct_normal_draws,
+            result.direct_normal_raster_misses,
+            result.legacy_resolved_normal_clusters,
+            result.legacy_resolved_complex_clusters,
+            result.legacy_shaped_normal_clusters,
+            result.legacy_shaped_complex_clusters,
+            result.legacy_grouped_normal_groups,
+            result.legacy_grouped_complex_groups,
+        },
+    );
+    std.debug.print(
+        "\"legacy_scene_normal_sprite_draws\":{d},\"legacy_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_legacy_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"median_ns\":{d},\"p95_ns\":{d},\"dirty_cells_per_second\":{d:.0},\"median_alloc_count\":{d},\"median_alloc_bytes\":{d},\"median_peak_live_bytes\":{d},\"median_fills\":{d},\"median_glyphs\":{d},\"median_uploads\":{d}}}\n",
+        .{
+            result.legacy_scene_normal_sprite_draws,
+            result.legacy_scene_complex_sprite_draws,
+            result.frame_fully_normal_input,
+            result.frame_stayed_out_of_legacy_path,
             result.runs,
             result.dirty_cells_per_run,
             result.median_ns,
@@ -493,9 +711,12 @@ pub fn main(init: std.process.Init) !void {
 
     const workloads = [_]Workload{
         try buildAsciiFullWorkload(arena),
+        try buildCellTextAsciiFullWorkload(arena),
         try buildSparseRowsWorkload(arena),
         try buildMixedBoxWorkload(arena),
         try buildWideDirtySpansWorkload(arena),
+        try buildCellTextMixedWorkload(arena),
+        try buildComplexTextWorkload(arena),
     };
 
     for (workloads) |workload| {

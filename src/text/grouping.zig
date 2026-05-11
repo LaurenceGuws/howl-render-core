@@ -12,9 +12,10 @@ const sprite_key = @import("sprite_key.zig");
 pub const OwnedGlyphGroups = struct {
     allocator: std.mem.Allocator,
     groups: []contract.GlyphGroup,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedGlyphGroups) void {
-        self.allocator.free(self.groups);
+        if (self.owned) self.allocator.free(self.groups);
         self.* = undefined;
     }
 };

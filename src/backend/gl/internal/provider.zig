@@ -268,6 +268,32 @@ pub fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyp
     return glyphAdvanceFromFace(self, face, glyph_id, cell_metrics);
 }
 
+pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32, cell_metrics: render_core.CellMetrics) render_core.Text.Provider.LookupGlyphResult {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const key = shared_text_cache.GlyphCellKey{
+        .face_id = face_id.value,
+        .codepoint = codepoint,
+        .cell_w_px = cell_metrics.cell_w_px,
+        .cell_h_px = cell_metrics.cell_h_px,
+        .baseline_px = cell_metrics.baseline_px,
+    };
+    const entry = backend.glyph_cell_cache.map.getOrPut(key) catch return .{
+        .glyph_id = providerGlyphId(backend, face_id, codepoint),
+        .advance_px = providerGlyphAdvance(backend, face_id, providerGlyphId(backend, face_id, codepoint), cell_metrics),
+    };
+    if (!entry.found_existing) {
+        const glyph_id = providerGlyphId(backend, face_id, codepoint);
+        entry.value_ptr.* = .{
+            .glyph_id = glyph_id,
+            .advance_px = providerGlyphAdvance(backend, face_id, glyph_id, cell_metrics),
+        };
+    }
+    return .{
+        .glyph_id = entry.value_ptr.glyph_id,
+        .advance_px = entry.value_ptr.advance_px,
+    };
+}
+
 pub fn providerRasterizeSprite(
     comptime Backend: type,
     ctx: *anyopaque,

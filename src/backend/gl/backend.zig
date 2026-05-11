@@ -228,6 +228,7 @@ pub const Backend = struct {
     text_engine: ?render_core.Text.Engine.Engine = null,
     face_text_cache: shared_text_cache.FaceTextCache,
     shape_run_cache: shared_text_cache.ShapeRunCache,
+    glyph_cell_cache: shared_text_cache.GlyphCellCache,
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
     fallback_font_paths_len: usize = 0,
 
@@ -237,6 +238,7 @@ pub const Backend = struct {
             .config = config,
             .face_text_cache = shared_text_cache.FaceTextCache.init(std.heap.c_allocator),
             .shape_run_cache = shared_text_cache.ShapeRunCache.init(std.heap.c_allocator),
+            .glyph_cell_cache = shared_text_cache.GlyphCellCache.init(std.heap.c_allocator),
         };
     }
 
@@ -321,6 +323,7 @@ pub const Backend = struct {
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
         self.face_text_cache.deinit();
+        self.glyph_cell_cache.deinit();
         if (self.ft_lib != null) {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
@@ -433,6 +436,8 @@ pub const Backend = struct {
             .has_codepoint = providerHasCodepoint,
             .shaper = .{ .ctx = self, .shape_run = providerShapeRun },
             .rasterizer = .{ .ctx = self, .rasterize_sprite = providerRasterizeSprite },
+            .glyph_lookup = .{ .ctx = self, .lookup_glyph = providerLookupGlyph },
+            .glyph_raster = .{ .ctx = self, .call = providerRasterizeGlyph },
         };
     }
 
@@ -769,12 +774,14 @@ pub const Backend = struct {
         provider_mod.resetLoadedFace(self);
         self.face_text_cache.clear();
         self.shape_run_cache.clear();
+        self.glyph_cell_cache.clear();
     }
 
     fn resizeLoadedFaces(self: *Backend) void {
         provider_mod.resizeLoadedFaces(self);
         self.face_text_cache.clear();
         self.shape_run_cache.clear();
+        self.glyph_cell_cache.clear();
     }
 
     fn resetFallbackFaces(self: *Backend) void {
@@ -1106,6 +1113,29 @@ fn providerRasterizeSprite(
     req: render_core.SpriteRasterRequest,
 ) anyerror!render_core.Text.Rasterizer.RasterSpriteOutput {
     return provider_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
+}
+
+fn providerLookupGlyph(ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32, cell_metrics: render_core.CellMetrics) render_core.Text.Provider.LookupGlyphResult {
+    return provider_mod.providerLookupGlyph(Backend, ctx, face_id, codepoint, cell_metrics);
+}
+
+fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: render_core.RasterizeRequest) anyerror!render_core.RasterizeOutput {
+    const self: *Backend = @ptrCast(@alignCast(ctx));
+    const width = @as(u16, @intCast(@as(u32, @max(req.cell_span, 1)) * @as(u32, @max(req.cell_metrics.cell_w_px, 1))));
+    const height = @max(req.cell_metrics.cell_h_px, 1);
+    const alpha = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
+    errdefer allocator.free(alpha);
+    @memset(alpha, 0);
+    _ = rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
+    return .{
+        .allocator = allocator,
+        .width_px = width,
+        .height_px = height,
+        .bearing_x_px = 0,
+        .bearing_y_px = 0,
+        .advance_px = providerGlyphAdvance(self, .{ .value = req.face_id }, req.glyph_id, req.cell_metrics),
+        .alpha_mask = alpha,
+    };
 }
 
 fn rasterizeSpecialSpriteAlpha(dst: []u8, width: u16, height: u16, codepoint: u32) void {

@@ -27,6 +27,8 @@ pub const AtlasCache = @import("text/atlas_cache.zig");
 pub const SymbolMap = @import("text/symbol_map.zig");
 /// Shared font/cell metrics policy.
 pub const Metrics = @import("text/metrics.zig");
+/// Locked normal-vs-complex lane classifier.
+pub const Lane = @import("text/text_lane.zig");
 /// Unified provider boundary for FT/HB integrations.
 pub const Provider = @import("text/provider.zig");
 /// FreeType/HarfBuzz callback source for backend-owned providers.
@@ -53,6 +55,7 @@ test "text module surface imports" {
     _ = AtlasCache;
     _ = SymbolMap;
     _ = Metrics;
+    _ = Lane;
     _ = Provider;
     _ = FtHbProvider;
     _ = Atlas;

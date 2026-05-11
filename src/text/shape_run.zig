@@ -53,10 +53,13 @@ pub const OwnedShapedRun = struct {
 pub const OwnedShapedRuns = struct {
     allocator: std.mem.Allocator,
     runs: []OwnedShapedRun,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedShapedRuns) void {
-        for (self.runs) |*run| run.deinit();
-        self.allocator.free(self.runs);
+        if (self.owned) {
+            for (self.runs) |*run| run.deinit();
+            self.allocator.free(self.runs);
+        }
         self.* = undefined;
     }
 };

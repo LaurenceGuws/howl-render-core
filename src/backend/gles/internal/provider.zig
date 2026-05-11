@@ -280,7 +280,7 @@ fn providerGlyphId(self: anytype, face_id: render_core.FontFaceId, codepoint: u3
     return shapeGlyphId(self.fallback_hb_fonts[fallback_index], face, @intCast(codepoint));
 }
 
-fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+pub fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
     const fallback: f32 = @floatFromInt(cell_metrics.cell_w_px);
     if (glyph_id == 0) return fallback;
     if (useDeterministicTestTextFallback(self)) return fallback;
@@ -290,6 +290,32 @@ fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyph_id
         ensureFallbackFace(self, if (face_id.value >= 2) face_id.value - 2 else return fallback);
     if (face == null) return fallback;
     return glyphAdvanceFromFace(face.?, glyph_id, cell_metrics);
+}
+
+pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32, cell_metrics: render_core.CellMetrics) render_core.Text.Provider.LookupGlyphResult {
+    const backend: *Backend = @ptrCast(@alignCast(ctx));
+    const key = text_cache.GlyphCellKey{
+        .face_id = face_id.value,
+        .codepoint = codepoint,
+        .cell_w_px = cell_metrics.cell_w_px,
+        .cell_h_px = cell_metrics.cell_h_px,
+        .baseline_px = cell_metrics.baseline_px,
+    };
+    const entry = backend.glyph_cell_cache.map.getOrPut(key) catch return .{
+        .glyph_id = providerGlyphId(backend, face_id, codepoint),
+        .advance_px = providerGlyphAdvance(backend, face_id, providerGlyphId(backend, face_id, codepoint), cell_metrics),
+    };
+    if (!entry.found_existing) {
+        const glyph_id = providerGlyphId(backend, face_id, codepoint);
+        entry.value_ptr.* = .{
+            .glyph_id = glyph_id,
+            .advance_px = providerGlyphAdvance(backend, face_id, glyph_id, cell_metrics),
+        };
+    }
+    return .{
+        .glyph_id = entry.value_ptr.glyph_id,
+        .advance_px = entry.value_ptr.advance_px,
+    };
 }
 
 fn fallbackProviderShapeRun(
@@ -374,7 +400,7 @@ fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
     return @as(f32, @floatFromInt(@as(i32, @intCast(metrics.width)))) / 64.0;
 }
 
-fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+pub fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
     if (useDeterministicTestTextFallback(self)) {
         rasterizeFallbackGlyph(dst, width, height, @intCast(glyph_id), width, height);
         return true;

@@ -28,14 +28,17 @@ pub const OwnedLineTextCache = struct {
     allocator: std.mem.Allocator,
     texts: []contract.CellText,
     codepoints: []u32,
+    owned: bool = true,
 
     pub fn view(self: OwnedLineTextCache) contract.LineTextCache {
         return .{ .texts = self.texts };
     }
 
     pub fn deinit(self: *OwnedLineTextCache) void {
-        self.allocator.free(self.texts);
-        self.allocator.free(self.codepoints);
+        if (self.owned) {
+            self.allocator.free(self.texts);
+            self.allocator.free(self.codepoints);
+        }
         self.* = undefined;
     }
 };
@@ -43,9 +46,10 @@ pub const OwnedLineTextCache = struct {
 pub const OwnedRenderableCells = struct {
     allocator: std.mem.Allocator,
     cells: []contract.RenderableCell,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedRenderableCells) void {
-        self.allocator.free(self.cells);
+        if (self.owned) self.allocator.free(self.cells);
         self.* = undefined;
     }
 };
@@ -53,9 +57,10 @@ pub const OwnedRenderableCells = struct {
 pub const OwnedClusters = struct {
     allocator: std.mem.Allocator,
     clusters: []contract.CellCluster,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedClusters) void {
-        self.allocator.free(self.clusters);
+        if (self.owned) self.allocator.free(self.clusters);
         self.* = undefined;
     }
 };

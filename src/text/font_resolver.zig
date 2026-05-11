@@ -25,11 +25,34 @@ pub const OwnedResolvedRuns = struct {
     runs: []contract.ResolvedRun,
     missing: []contract.MissingGlyph,
     sprite_routes: []SpriteRouteHit,
+    owned: bool = true,
 
     pub fn deinit(self: *OwnedResolvedRuns) void {
-        self.allocator.free(self.runs);
-        self.allocator.free(self.missing);
-        self.allocator.free(self.sprite_routes);
+        if (self.owned) {
+            self.allocator.free(self.runs);
+            self.allocator.free(self.missing);
+            self.allocator.free(self.sprite_routes);
+        }
+        self.* = undefined;
+    }
+};
+
+pub const ResolvedClusterFace = struct {
+    cluster_index: u32,
+    face_id: contract.FontFaceId,
+};
+
+pub const OwnedResolvedClusterFaces = struct {
+    allocator: std.mem.Allocator,
+    faces: []ResolvedClusterFace,
+    missing: []contract.MissingGlyph,
+    owned: bool = true,
+
+    pub fn deinit(self: *OwnedResolvedClusterFaces) void {
+        if (self.owned) {
+            self.allocator.free(self.faces);
+            self.allocator.free(self.missing);
+        }
         self.* = undefined;
     }
 };
@@ -107,6 +130,40 @@ pub fn resolveClusters(
         .runs = try runs.toOwnedSlice(allocator),
         .missing = try missing_list.toOwnedSlice(allocator),
         .sprite_routes = try sprite_routes.toOwnedSlice(allocator),
+    };
+}
+
+pub fn resolveClusterFaces(
+    allocator: std.mem.Allocator,
+    session: font_session.FontSession,
+    clusters: []const contract.CellCluster,
+    text_cache: contract.LineTextCache,
+) !OwnedResolvedClusterFaces {
+    var faces = std.ArrayList(ResolvedClusterFace).empty;
+    errdefer faces.deinit(allocator);
+    var missing_list = std.ArrayList(contract.MissingGlyph).empty;
+    errdefer missing_list.deinit(allocator);
+    var resolve_memo = std.AutoHashMap(ResolveMemoKey, ResolveMemoValue).init(allocator);
+    defer resolve_memo.deinit();
+
+    for (clusters, 0..) |cluster, idx| {
+        const text = textForCluster(text_cache, cluster);
+        const face = (try resolveFaceMemoized(&resolve_memo, session, cluster, text)) orelse {
+            try missing_list.append(allocator, .{
+                .codepoint = cluster.first_cp,
+                .style = cluster.style,
+                .presentation = cluster.presentation,
+                .reason = .no_fallback_face,
+            });
+            continue;
+        };
+        try faces.append(allocator, .{ .cluster_index = @intCast(idx), .face_id = face.id });
+    }
+
+    return .{
+        .allocator = allocator,
+        .faces = try faces.toOwnedSlice(allocator),
+        .missing = try missing_list.toOwnedSlice(allocator),
     };
 }
 
