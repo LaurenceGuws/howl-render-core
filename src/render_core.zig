@@ -227,6 +227,10 @@ pub const RenderCore = struct {
             return self.surface_owner.beginSynchronousRender();
         }
 
+        pub fn hasPendingPublication(self: *const RenderRuntime) bool {
+            return self.pending_publication;
+        }
+
         pub fn publishPrepared(self: *RenderRuntime, prepared: frame_pipeline.PreparedFrame) u64 {
             std.debug.assert(prepared.token.geometry_epoch == self.geometry_epoch);
             return self.surface_owner.publishPrepared(prepared);
