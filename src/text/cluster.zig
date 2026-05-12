@@ -75,11 +75,11 @@ pub const OwnedRuns = struct {
     }
 };
 
-pub const LegacySparseCells = struct {
+pub const SparseCells = struct {
     text_cache: OwnedLineTextCache,
     renderable: OwnedRenderableCells,
 
-    pub fn deinit(self: *LegacySparseCells) void {
+    pub fn deinit(self: *SparseCells) void {
         self.renderable.deinit();
         self.text_cache.deinit();
         self.* = undefined;
@@ -145,7 +145,7 @@ pub fn buildSparseCellsWithDamage(
     cells: []const types.CellInput,
     grid_metrics: contract.GridMetrics,
     damage: scene_mod.DamageInput,
-) !LegacySparseCells {
+) !SparseCells {
     const skip_clean_rows = canSkipCleanRows(damage, grid_metrics);
     var renderable = try allocator.alloc(contract.RenderableCell, cells.len);
     errdefer allocator.free(renderable);

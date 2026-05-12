@@ -109,18 +109,6 @@ pub const Engine = struct {
         self.atlas.next_slot = 0;
     }
 
-    pub fn prepareScene(_: *Engine, req: PrepareSceneRequest) PrepareSceneResult {
-        return .{ .scene = .{
-            .cells = req.cells,
-            .clear_draws = &.{},
-            .background_draws = &.{},
-            .sprite_draws = &.{},
-            .decoration_draws = &.{},
-            .cursor_draws = &.{},
-            .missing = &.{},
-        } };
-    }
-
     pub fn analyzeCells(self: *Engine, cells: []const types.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
         return self.analyzeCellsGrid(cells, .{ .cols = @intCast(@max(cells.len, 1)) }, face_id);
     }
@@ -154,29 +142,15 @@ pub const Engine = struct {
         var visible_count: usize = 0;
         for (cells, 0..) |cell, idx| {
             if (cell.continuation or cell.empty) continue;
-            if (cell.underline and cell.underline_style == .curly) return null;
-            const span = inferredCellSpan(cells, idx);
-            if (!includeDirectSpan(damage, grid_metrics, @intCast(idx), span)) continue;
-            if (!isDirectNormalCodepoint(cell.codepoint)) return null;
+            const renderable = rawRenderableCell(cell, idx, cells);
+            if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
+            const codepoints = [_]u32{cell.codepoint};
+            const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &codepoints };
+            if (text_lane.classifyRenderableCell(renderable, text).lane != .normal) return null;
             visible_count += 1;
         }
 
-        try self.normal_renderable.ensureTotalCapacity(self.allocator, visible_count);
-        try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, visible_count);
-        try self.normal_background_draws.ensureTotalCapacity(self.allocator, cells.len);
-        try self.normal_clear_draws.ensureTotalCapacity(self.allocator, @as(usize, grid_metrics.rows));
-        try self.normal_decoration_draws.ensureTotalCapacity(self.allocator, cells.len * 2);
-        try self.normal_cursor_draws.ensureTotalCapacity(self.allocator, 4);
-        try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, visible_count);
-        try self.normal_missing.ensureTotalCapacity(self.allocator, visible_count);
-        self.normal_renderable.clearRetainingCapacity();
-        self.normal_missing.clearRetainingCapacity();
-        self.normal_sprite_draws.clearRetainingCapacity();
-        self.normal_background_draws.clearRetainingCapacity();
-        self.normal_clear_draws.clearRetainingCapacity();
-        self.normal_decoration_draws.clearRetainingCapacity();
-        self.normal_cursor_draws.clearRetainingCapacity();
-        self.normal_raster_reqs.clearRetainingCapacity();
+        try initDirectNormalBuffers(self, visible_count, cells.len, grid_metrics.rows);
 
         var lane_report = text_lane.LaneReport{};
         var row: u16 = 0;
@@ -191,66 +165,19 @@ pub const Engine = struct {
                     col += 1;
                     continue;
                 }
-                const span = inferredCellSpan(cells, idx);
-                if (!includeDirectSpan(damage, grid_metrics, @intCast(idx), span)) {
-                    col += span;
+                const renderable = rawRenderableCell(cell, idx, cells);
+                if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) {
+                    col += renderable.cell_span;
                     continue;
                 }
-                const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &.{cell.codepoint} };
-                const renderable = contract.RenderableCell{
-                    .text_id = .{ .value = 0 },
-                    .first_cell = @intCast(idx),
-                    .cell_span = span,
-                    .style = .regular,
-                    .presentation = .any,
-                    .fg = cell.fg,
-                    .bg = cell.bg,
-                    .underline_color = cell.underline_color,
-                    .underline_style = switch (cell.underline_style) {
-                        .straight => .straight,
-                        .double => .double,
-                        .curly => .curly,
-                        .dotted => .dotted,
-                        .dashed => .dashed,
-                    },
-                    .underline = cell.underline,
-                    .strikethrough = cell.strikethrough,
-                };
-                const choice = text_lane.classifyRenderableCell(renderable, text);
-                if (choice.lane != .normal) return null;
-                self.normal_renderable.appendAssumeCapacity(renderable);
+                const codepoints = [_]u32{cell.codepoint};
+                const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &codepoints };
+                std.debug.assert(text_lane.classifyRenderableCell(renderable, text).lane == .normal);
                 lane_report.visible_cells += 1;
                 lane_report.normal_cells += 1;
-                lane_report.normal_clusters += 1;
-
-                if (cell.codepoint != 0 and cell.codepoint != '\t') {
-                    const face = session.findStyle(.regular, .any, text) orelse session.primary();
-                    const lookup = self.glyph_lookup.lookupGlyph(face.id, cell.codepoint, session.metrics);
-                    const key = sprite_key.hashGlyphLocal(face.id, lookup.glyph_id, span, session.metrics);
-                    const residency = self.atlas.ensureDetailed(key, false);
-                    if (residency.created) {
-                        self.normal_raster_reqs.appendAssumeCapacity(.{
-                            .face_id = face.id.value,
-                            .glyph_id = lookup.glyph_id,
-                            .atlas_key = key.value,
-                            .cell_metrics = session.metrics,
-                            .cell_span = span,
-                        });
-                    }
-                    self.normal_sprite_draws.appendAssumeCapacity(.{
-                        .sprite = residency.position,
-                        .x_px = @as(i32, @intCast((@as(u32, @intCast(col))) * @as(u32, session.metrics.cell_w_px))),
-                        .y_px = @as(i32, @intCast((@as(u32, row)) * @as(u32, session.metrics.cell_h_px))),
-                        .width_px = @intCast(@as(u32, @max(span, 1)) * @as(u32, session.metrics.cell_w_px)),
-                        .height_px = session.metrics.cell_h_px,
-                        .placement = .{ .advance_px = @max(lookup.advance_px, @as(f32, @floatFromInt(@as(u32, @max(span, 1)) * @as(u32, session.metrics.cell_w_px)))) },
-                        .color = cell.fg,
-                        .first_cell = @intCast(idx),
-                        .cell_span = span,
-                    });
-                    lane_report.direct_normal_draws += 1;
-                }
-                col += span;
+                if (!blankText(text)) lane_report.normal_clusters += 1;
+                try appendDirectNormalRenderable(self, renderable, text, grid_metrics, session, &lane_report);
+                col += renderable.cell_span;
             }
         }
 
@@ -259,37 +186,14 @@ pub const Engine = struct {
         appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
         appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
 
-        var outputs: []rasterizer.RasterSpriteOutput = &.{};
-        var outputs_owned = false;
-        if (self.normal_raster_reqs.items.len > 0) {
-            lane_report.direct_normal_raster_misses = self.normal_raster_reqs.items.len;
-            outputs = try self.allocator.alloc(rasterizer.RasterSpriteOutput, self.normal_raster_reqs.items.len);
-            outputs_owned = true;
-            var filled: usize = 0;
-            errdefer {
-                for (outputs[0..filled]) |*out| out.deinit();
-                self.allocator.free(outputs);
-            }
-            for (self.normal_raster_reqs.items, 0..) |req, idx| {
-                var raster = try self.glyph_raster.rasterize(self.allocator, req);
-                outputs[idx] = .{
-                    .allocator = raster.allocator,
-                    .key = .{ .value = req.atlas_key },
-                    .width_px = raster.width_px,
-                    .height_px = raster.height_px,
-                    .pixels = raster.alpha_mask,
-                };
-                raster.alpha_mask = &.{};
-                filled += 1;
-            }
-        }
+        const direct = try finishDirectNormalScene(self, damage, &lane_report);
 
         lane_report.assertValid();
         self.counters.cell_texts += lane_report.visible_cells;
         self.counters.clusters += lane_report.normal_clusters;
         self.counters.sprite_cache_misses += @intCast(self.normal_raster_reqs.items.len);
         self.counters.sprite_cache_hits += @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len);
-        self.counters.rasterized_sprites += @intCast(outputs.len);
+        self.counters.rasterized_sprites += @intCast(direct.outputs.len);
 
         return .{
             .text_cache = .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
@@ -312,17 +216,15 @@ pub const Engine = struct {
                 .raster_requests = &.{},
                 .missing = self.normal_missing.items,
             }, .owned = false },
-            .raster_plan = .{ .allocator = self.allocator, .outputs = outputs, .owned = outputs_owned },
+            .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .counters = .{
                 .cell_texts = lane_report.visible_cells,
                 .clusters = lane_report.normal_clusters,
                 .glyph_groups = 0,
                 .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
                 .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
-                .rasterized_sprites = @intCast(outputs.len),
+                .rasterized_sprites = @intCast(direct.outputs.len),
             },
-            .direct_glyphs = &.{},
-            .owns_direct_glyphs = false,
             .lane_report = lane_report,
             .timings = .{},
         };
@@ -363,78 +265,8 @@ pub const Engine = struct {
         var clusters = try cluster.extractClustersWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), grid_metrics, options.scene.damage);
         timings.clusters_us = elapsedUs(clusters_start_ns);
         errdefer clusters.deinit();
-        var lane_report = text_lane.LaneReport.init(owned_text_cache.view(), owned_renderable.cells, clusters.clusters);
-        if (try self.analyzePreparedSplit(owned_text_cache, owned_renderable, clusters, grid_metrics, session, options, lane_report, timings)) |analysis| {
-            return analysis;
-        }
-        const resolve_start_ns = monotonicNs();
-        var runs = try font_resolver.resolveClusters(self.allocator, session, clusters.clusters, owned_text_cache.view(), grid_metrics);
-        timings.resolve_us = elapsedUs(resolve_start_ns);
-        errdefer runs.deinit();
-        for (runs.runs) |run| lane_report.recordLegacyResolvedRun(owned_text_cache.view(), clusters.clusters, run);
-        const shape_start_ns = monotonicNs();
-        var shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs.runs, owned_text_cache.view(), clusters.clusters, session.metrics);
-        timings.shape_us = elapsedUs(shape_start_ns);
-        errdefer shaped_runs.deinit();
-        for (shaped_runs.runs) |run| lane_report.recordLegacyShapedRun(owned_text_cache.view(), clusters.clusters, run.run);
-        const group_start_ns = monotonicNs();
-        var font_groups = try grouping.groupShapedRuns(self.allocator, shaped_runs.runs, clusters.clusters, session.metrics);
-        errdefer font_groups.deinit();
-        var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, runs.sprite_routes, clusters.clusters, session.metrics);
-        errdefer sprite_groups.deinit();
-        var groups = try grouping.concatGroups(self.allocator, font_groups.groups, sprite_groups.groups);
-        timings.group_us = elapsedUs(group_start_ns);
-        errdefer groups.deinit();
-        for (groups.groups) |group| lane_report.recordLegacyGroup(owned_text_cache.view(), owned_renderable.cells, group);
-        const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, owned_renderable.cells, groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
-        timings.scene_us = elapsedUs(scene_start_ns);
-        errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), owned_renderable.cells, draw);
-        lane_report.assertValid();
-        const raster_start_ns = monotonicNs();
-        var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
-        timings.raster_us = elapsedUs(raster_start_ns);
-        errdefer raster_plan.deinit();
-        var counters = pipeline.TextEngineCounters{
-            .cell_texts = owned_text_cache.texts.len,
-            .clusters = clusters.clusters.len,
-            .resolved_runs = runs.runs.len,
-            .shaped_runs = shaped_runs.runs.len,
-            .glyph_groups = groups.groups.len,
-            .sprite_cache_misses = @intCast(scene.scene.raster_requests.len),
-            .sprite_cache_hits = @intCast(scene.scene.sprite_draws.len - scene.scene.raster_requests.len),
-            .rasterized_sprites = @intCast(raster_plan.outputs.len),
-            .missing_glyphs = runs.missing.len,
-        };
-        for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
-        self.counters.cell_texts += counters.cell_texts;
-        self.counters.clusters += counters.clusters;
-        self.counters.resolved_runs += counters.resolved_runs;
-        self.counters.shaped_runs += counters.shaped_runs;
-        self.counters.shaped_glyphs += counters.shaped_glyphs;
-        self.counters.glyph_groups += counters.glyph_groups;
-        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
-        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
-        self.counters.rasterized_sprites += counters.rasterized_sprites;
-        self.counters.missing_glyphs += counters.missing_glyphs;
-
-        return .{
-            .text_cache = owned_text_cache,
-            .renderable = owned_renderable,
-            .clusters = clusters,
-            .runs = runs,
-            .shaped_runs = shaped_runs,
-            .font_groups = font_groups,
-            .sprite_groups = sprite_groups,
-            .groups = groups,
-            .scene = scene,
-            .raster_plan = raster_plan,
-            .counters = counters,
-            .direct_glyphs = try self.allocator.alloc(contract.GlyphInstance, 0),
-            .lane_report = lane_report,
-            .timings = timings,
-        };
+        const lane_report = text_lane.LaneReport.init(owned_text_cache.view(), owned_renderable.cells, clusters.clusters);
+        return self.analyzePreparedLanes(owned_text_cache, owned_renderable, clusters, grid_metrics, session, options, lane_report, timings);
     }
 
     fn analyzeDirectNormalTextInputs(
@@ -453,7 +285,7 @@ pub const Engine = struct {
             if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
             const text = inputCellText(input);
             const choice = text_lane.classifyRenderableCell(renderable, text);
-            if (choice.lane != .normal or !directNormalSupported(renderable)) return null;
+            if (choice.lane != .normal) return null;
             visible_count += 1;
             lane_report.visible_cells += 1;
             lane_report.normal_cells += 1;
@@ -512,14 +344,12 @@ pub const Engine = struct {
             }, .owned = false },
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .counters = counters,
-            .direct_glyphs = &.{},
-            .owns_direct_glyphs = false,
             .lane_report = lane_report,
             .timings = .{},
         };
     }
 
-    fn analyzePreparedSplit(
+    fn analyzePreparedLanes(
         self: *Engine,
         owned_text_cache: cluster.OwnedLineTextCache,
         owned_renderable: cluster.OwnedRenderableCells,
@@ -529,12 +359,10 @@ pub const Engine = struct {
         options: AnalysisOptions,
         lane_report: text_lane.LaneReport,
         initial_timings: PrepareTimings,
-    ) !?OwnedTextAnalysis {
-        if (lane_report.normal_cells == 0) return null;
-
+    ) !OwnedTextAnalysis {
         var final_lane_report = lane_report;
-        const direct = try buildDirectNormalPrepared(self, owned_renderable.cells, owned_text_cache.view(), grid_metrics, session, options, &final_lane_report) orelse return null;
         var timings = initial_timings;
+        const direct = try buildDirectNormalPrepared(self, owned_renderable.cells, owned_text_cache.view(), grid_metrics, session, options, &final_lane_report);
 
         if (final_lane_report.complex_cells == 0) {
             final_lane_report.assertValid();
@@ -576,65 +404,43 @@ pub const Engine = struct {
                 }, .owned = false },
                 .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
                 .counters = counters,
-                .direct_glyphs = &.{},
-                .owns_direct_glyphs = false,
                 .lane_report = final_lane_report,
                 .timings = timings,
             };
         }
 
-        const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-        var complex_cell_count: usize = 0;
-        for (owned_renderable.cells) |cell| {
-            if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-            if (text_lane.classifyRenderableCell(cell, textForRenderableCell(owned_text_cache.view(), cell)).lane == .complex) complex_cell_count += 1;
-        }
-        const complex_cells = try self.allocator.alloc(contract.RenderableCell, complex_cell_count);
-        defer self.allocator.free(complex_cells);
-        var complex_cell_idx: usize = 0;
-        for (owned_renderable.cells) |cell| {
-            if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-            if (text_lane.classifyRenderableCell(cell, textForRenderableCell(owned_text_cache.view(), cell)).lane != .complex) continue;
-            complex_cells[complex_cell_idx] = cell;
-            complex_cell_idx += 1;
-        }
-
-        const complex_clusters = try self.allocator.alloc(contract.CellCluster, final_lane_report.complex_clusters);
-        defer self.allocator.free(complex_clusters);
-        var complex_cluster_idx: usize = 0;
-        for (clusters.clusters) |cluster_value| {
-            if (text_lane.classifyCluster(cluster_value, textForCluster(owned_text_cache.view(), cluster_value)).lane != .complex) continue;
-            complex_clusters[complex_cluster_idx] = cluster_value;
-            complex_cluster_idx += 1;
-        }
+        var complex = try selectComplexPrepared(self.allocator, owned_renderable.cells, owned_text_cache.view(), clusters.clusters, grid_metrics, DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px));
+        defer complex.deinit();
+        std.debug.assert(complex.cells.len == final_lane_report.complex_cells);
+        std.debug.assert(complex.clusters.len == final_lane_report.complex_clusters);
 
         const resolve_start_ns = monotonicNs();
-        var runs = try font_resolver.resolveClusters(self.allocator, session, complex_clusters, owned_text_cache.view(), grid_metrics);
+        var runs = try font_resolver.resolveClusters(self.allocator, session, complex.clusters, owned_text_cache.view(), grid_metrics);
         timings.resolve_us = elapsedUs(resolve_start_ns);
         errdefer runs.deinit();
-        for (runs.runs) |run| final_lane_report.recordLegacyResolvedRun(owned_text_cache.view(), complex_clusters, run);
+        for (runs.runs) |run| final_lane_report.recordLegacyResolvedRunWithCells(owned_text_cache.view(), complex.cells, complex.clusters, run);
 
         const shape_start_ns = monotonicNs();
-        var shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs.runs, owned_text_cache.view(), complex_clusters, session.metrics);
+        var shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs.runs, owned_text_cache.view(), complex.clusters, session.metrics);
         timings.shape_us = elapsedUs(shape_start_ns);
         errdefer shaped_runs.deinit();
-        for (shaped_runs.runs) |run| final_lane_report.recordLegacyShapedRun(owned_text_cache.view(), complex_clusters, run.run);
+        for (shaped_runs.runs) |run| final_lane_report.recordLegacyShapedRunWithCells(owned_text_cache.view(), complex.cells, complex.clusters, run.run);
 
         const group_start_ns = monotonicNs();
-        var font_groups = try grouping.groupShapedRuns(self.allocator, shaped_runs.runs, complex_clusters, session.metrics);
+        var font_groups = try grouping.groupShapedRuns(self.allocator, shaped_runs.runs, complex.clusters, session.metrics);
         errdefer font_groups.deinit();
-        var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, runs.sprite_routes, complex_clusters, session.metrics);
+        var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, runs.sprite_routes, complex.clusters, session.metrics);
         errdefer sprite_groups.deinit();
         var groups = try grouping.concatGroups(self.allocator, font_groups.groups, sprite_groups.groups);
         timings.group_us = elapsedUs(group_start_ns);
         errdefer groups.deinit();
-        for (groups.groups) |group| final_lane_report.recordLegacyGroup(owned_text_cache.view(), complex_cells, group);
+        for (groups.groups) |group| final_lane_report.recordLegacyGroup(owned_text_cache.view(), complex.cells, group);
 
         const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex_cells, groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex.cells, groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
         timings.scene_us = elapsedUs(scene_start_ns);
         errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), complex_cells, draw);
+        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), complex.cells, draw);
 
         const raster_start_ns = monotonicNs();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
@@ -709,8 +515,6 @@ pub const Engine = struct {
             .scene = scene,
             .raster_plan = merged_raster_plan,
             .counters = counters,
-            .direct_glyphs = &.{},
-            .owns_direct_glyphs = false,
             .lane_report = final_lane_report,
             .timings = timings,
         };
@@ -729,13 +533,10 @@ pub const OwnedTextAnalysis = struct {
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
     counters: pipeline.TextEngineCounters = .{},
-    direct_glyphs: []contract.GlyphInstance,
-    owns_direct_glyphs: bool = true,
     lane_report: text_lane.LaneReport = .{},
     timings: PrepareTimings = .{},
 
     pub fn deinit(self: *OwnedTextAnalysis) void {
-        const allocator = self.groups.allocator;
         self.raster_plan.deinit();
         self.scene.deinit();
         self.groups.deinit();
@@ -746,7 +547,6 @@ pub const OwnedTextAnalysis = struct {
         self.clusters.deinit();
         self.renderable.deinit();
         self.text_cache.deinit();
-        if (self.owns_direct_glyphs) allocator.free(self.direct_glyphs);
         self.* = undefined;
     }
 };
@@ -757,6 +557,18 @@ const DirectNormalBuild = struct {
     outputs_owned: bool = false,
 };
 
+const ComplexPrepared = struct {
+    allocator: std.mem.Allocator,
+    cells: []contract.RenderableCell,
+    clusters: []contract.CellCluster,
+
+    fn deinit(self: *ComplexPrepared) void {
+        self.allocator.free(self.cells);
+        self.allocator.free(self.clusters);
+        self.* = undefined;
+    }
+};
+
 fn buildDirectNormalPrepared(
     self: *Engine,
     cells: []const contract.RenderableCell,
@@ -765,7 +577,7 @@ fn buildDirectNormalPrepared(
     session: font_session.FontSession,
     options: AnalysisOptions,
     lane_report: *text_lane.LaneReport,
-) !?DirectNormalBuild {
+) !DirectNormalBuild {
     const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
     var visible_count: usize = 0;
     for (cells) |cell| {
@@ -773,7 +585,6 @@ fn buildDirectNormalPrepared(
         if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
         const text = textForRenderableCell(text_cache, cell);
         if (text_lane.classifyRenderableCell(cell, text).lane == .complex) continue;
-        if (!directNormalSupported(cell)) return null;
         visible_count += 1;
     }
 
@@ -790,18 +601,62 @@ fn buildDirectNormalPrepared(
     appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
     appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
     appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-    return try finishDirectNormalScene(self, damage, lane_report);
+    return finishDirectNormalScene(self, damage, lane_report);
+}
+
+fn selectComplexPrepared(
+    allocator: std.mem.Allocator,
+    cells: []const contract.RenderableCell,
+    text_cache: contract.LineTextCache,
+    clusters: []const contract.CellCluster,
+    grid_metrics: contract.GridMetrics,
+    damage: DirectDamage,
+) !ComplexPrepared {
+    var complex_cell_count: usize = 0;
+    for (cells) |cell| {
+        if (cell.continuation) continue;
+        if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (text_lane.classifyRenderableCell(cell, textForRenderableCell(text_cache, cell)).lane == .complex) complex_cell_count += 1;
+    }
+
+    const complex_cells = try allocator.alloc(contract.RenderableCell, complex_cell_count);
+    errdefer allocator.free(complex_cells);
+    var complex_cell_idx: usize = 0;
+    for (cells) |cell| {
+        if (cell.continuation) continue;
+        if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (text_lane.classifyRenderableCell(cell, textForRenderableCell(text_cache, cell)).lane != .complex) continue;
+        complex_cells[complex_cell_idx] = cell;
+        complex_cell_idx += 1;
+    }
+
+    var complex_cluster_count: usize = 0;
+    for (clusters) |cluster_value| {
+        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(text_cache, cluster_value)).lane == .complex) complex_cluster_count += 1;
+    }
+
+    const complex_clusters = try allocator.alloc(contract.CellCluster, complex_cluster_count);
+    errdefer allocator.free(complex_clusters);
+    var complex_cluster_idx: usize = 0;
+    for (clusters) |cluster_value| {
+        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(text_cache, cluster_value)).lane != .complex) continue;
+        complex_clusters[complex_cluster_idx] = cluster_value;
+        complex_cluster_idx += 1;
+    }
+
+    return .{ .allocator = allocator, .cells = complex_cells, .clusters = complex_clusters };
 }
 
 fn initDirectNormalBuffers(self: *Engine, visible_count: usize, cell_count: usize, rows: u16) !void {
-    try self.normal_renderable.ensureTotalCapacity(self.allocator, visible_count);
-    try self.normal_missing.ensureTotalCapacity(self.allocator, visible_count);
-    try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, visible_count);
+    std.debug.assert(cell_count >= visible_count);
+    try self.normal_renderable.ensureTotalCapacity(self.allocator, cell_count);
+    try self.normal_missing.ensureTotalCapacity(self.allocator, cell_count);
+    try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, cell_count);
     try self.normal_background_draws.ensureTotalCapacity(self.allocator, cell_count);
     try self.normal_clear_draws.ensureTotalCapacity(self.allocator, @as(usize, rows));
     try self.normal_decoration_draws.ensureTotalCapacity(self.allocator, cell_count * 2);
     try self.normal_cursor_draws.ensureTotalCapacity(self.allocator, 4);
-    try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, visible_count);
+    try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, cell_count);
     self.normal_renderable.clearRetainingCapacity();
     self.normal_missing.clearRetainingCapacity();
     self.normal_sprite_draws.clearRetainingCapacity();
@@ -892,12 +747,30 @@ fn finishDirectNormalScene(self: *Engine, damage: DirectDamage, lane_report: *te
     return .{ .damage = damage, .outputs = outputs, .outputs_owned = outputs_owned };
 }
 
-fn directNormalSupported(cell: contract.RenderableCell) bool {
-    return !(cell.underline and cell.underline_style == .curly);
-}
-
 fn resolveDirectNormalFace(session: font_session.FontSession, cell: contract.RenderableCell, text: contract.CellText) ?font_session.FontFaceRecord {
     return session.findStyle(cell.style, cell.presentation, text) orelse session.findFallback(cell.style, cell.presentation, text);
+}
+
+fn rawRenderableCell(cell: types.CellInput, idx: usize, cells: []const types.CellInput) contract.RenderableCell {
+    return .{
+        .text_id = .{ .value = 0 },
+        .first_cell = @intCast(idx),
+        .cell_span = inferredCellSpan(cells, idx),
+        .style = .regular,
+        .presentation = .any,
+        .fg = cell.fg,
+        .bg = cell.bg,
+        .underline_color = cell.underline_color,
+        .underline_style = switch (cell.underline_style) {
+            .straight => .straight,
+            .double => .double,
+            .curly => .curly,
+            .dotted => .dotted,
+            .dashed => .dashed,
+        },
+        .underline = cell.underline,
+        .strikethrough = cell.strikethrough,
+    };
 }
 
 fn inputRenderableCell(input: cluster.CellTextInput, idx: usize, inputs: []const cluster.CellTextInput) contract.RenderableCell {
@@ -1056,18 +929,6 @@ fn inferredCellSpan(cells: []const types.CellInput, idx: usize) u8 {
         span += 1;
     }
     return span;
-}
-
-fn isDirectNormalCodepoint(cp: u21) bool {
-    return text_lane.classifyRenderableCell(.{
-        .text_id = .{ .value = 0 },
-        .first_cell = 0,
-        .cell_span = 1,
-        .style = .regular,
-        .presentation = .any,
-        .fg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-    }, .{ .id = .{ .value = 0 }, .first_cp = cp, .codepoints = &.{cp} }).lane == .normal;
 }
 
 fn appendDirectBackgrounds(
@@ -1244,37 +1105,6 @@ fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
 pub const AnalysisOptions = struct {
     scene: scene_mod.BuildOptions = .{},
 };
-
-pub const PrepareSceneRequest = struct {
-    cells: []const contract.RenderableCell,
-    cell_metrics: contract.CellMetrics,
-    font_metrics: contract.FontMetrics,
-};
-
-pub const PrepareSceneResult = struct {
-    scene: contract.TextScene,
-};
-
-test "text engine skeleton preserves input cells" {
-    var engine = Engine.init(std.testing.allocator);
-    defer engine.deinit();
-    const cell = contract.RenderableCell{
-        .text_id = .{ .value = 1 },
-        .first_cell = 0,
-        .cell_span = 1,
-        .style = .regular,
-        .presentation = .text,
-        .fg = .{ .r = 1, .g = 2, .b = 3, .a = 255 },
-        .bg = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    };
-    const result = engine.prepareScene(.{
-        .cells = &.{cell},
-        .cell_metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
-        .font_metrics = .{ .ascent_px = 10, .descent_px = 3, .line_gap_px = 1, .underline_pos_px = 12, .underline_thickness_px = 1, .strikethrough_pos_px = 6, .strikethrough_thickness_px = 1 },
-    });
-    try std.testing.expectEqual(@as(usize, 1), result.scene.cells.len);
-    try std.testing.expectEqual(@as(usize, 0), result.scene.sprite_draws.len);
-}
 
 test "text engine analyzes cell inputs into clusters and runs" {
     var engine = Engine.init(std.testing.allocator);
@@ -1534,6 +1364,75 @@ test "text engine keeps mixed cell text normals out of legacy path" {
     try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
     try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.resolved_clusters.complex);
     try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.shaped_clusters.complex);
+}
+
+test "text engine marks curly underline cells complex before shaping" {
+    var engine = try Engine.initCapacity(std.testing.allocator, 16);
+    defer engine.deinit();
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]types.CellInput{
+        .{ .codepoint = 'a', .fg = white, .bg = black },
+        .{ .codepoint = 'b', .fg = white, .bg = black, .underline = true, .underline_style = .curly },
+    };
+    var analysis = try engine.analyzeCellsGrid(&cells, .{ .cols = 2, .rows = 1 }, .{ .value = 1 });
+    defer analysis.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.normal_cells);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_cells);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_curly_underline_cells);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.direct_normal_draws);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.resolved_clusters.complex);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.shaped_clusters.complex);
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.grouped_groups.complex);
+    try std.testing.expectEqual(@as(usize, 2), analysis.lane_report.legacy.scene_sprite_draws.complex);
+}
+
+test "text engine keeps icon codepoints out of the normal lane" {
+    const Stub = struct {
+        fn shape(_: *anyopaque, allocator: std.mem.Allocator, run: contract.ResolvedRun, text_cache: contract.LineTextCache, clusters: []const contract.CellCluster, cell_metrics: contract.CellMetrics) anyerror!shape_run.OwnedShapedRun {
+            _ = text_cache;
+            _ = cell_metrics;
+            std.debug.assert(clusters.len >= 1);
+            const glyphs = try allocator.alloc(contract.GlyphInstance, 1);
+            glyphs[0] = .{
+                .face_id = run.run.font.face_id,
+                .glyph_id = clusters[0].first_cp,
+                .cluster_index = 0,
+                .x_advance_px = 16,
+            };
+            return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
+        }
+    };
+
+    var engine = try Engine.initWithShaper(std.testing.allocator, 16, .{ .ctx = undefined, .shape_run = Stub.shape });
+    defer engine.deinit();
+    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const icon = [_]u32{0xf101};
+    const blank = [_]u32{' '};
+    const ascii = [_]u32{'a'};
+    const inputs = [_]cluster.CellTextInput{
+        .{ .codepoints = &icon, .fg = white, .bg = black },
+        .{ .codepoints = &blank, .fg = white, .bg = black },
+        .{ .codepoints = &ascii, .fg = white, .bg = black },
+    };
+    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 3, .rows = 1 }, .{ .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } });
+    defer analysis.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_icon_cells);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
+    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
+    try std.testing.expectEqual(@as(usize, 1), analysis.groups.groups.len);
+    try std.testing.expectEqual(contract.GlyphGroupKind.icon, analysis.groups.groups[0].kind);
+    try std.testing.expectEqual(@as(u16, 16), analysis.scene.scene.sprite_draws[0].width_px);
+    try std.testing.expectEqual(@as(u8, 2), analysis.scene.scene.sprite_draws[0].cell_span);
 }
 
 test "text engine uses ft hb source coverage for fallback" {

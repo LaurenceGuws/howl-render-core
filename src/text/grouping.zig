@@ -8,6 +8,7 @@ const font_resolver = @import("font_resolver.zig");
 const metrics = @import("metrics.zig");
 const shape_run = @import("shape_run.zig");
 const sprite_key = @import("sprite_key.zig");
+const symbol_map = @import("symbol_map.zig");
 
 pub const OwnedGlyphGroups = struct {
     allocator: std.mem.Allocator,
@@ -160,7 +161,7 @@ fn classifyFontGroup(cluster: contract.CellCluster, glyphs: []const contract.Gly
     if (cluster.presentation == .emoji) return .emoji;
     if (cell_span > 1) return .ligature;
     if (glyphs.len > 1) return .ligature;
-    if (isIconCodepoint(cluster.first_cp)) return .icon;
+    if (symbol_map.isIconCodepoint(cluster.first_cp)) return .icon;
     return .normal;
 }
 
@@ -212,14 +213,6 @@ fn spriteRouteCellSpan(route: contract.SpecialSpriteRoute, clusters: []const con
 
 fn isPowerlineFollower(cluster: contract.CellCluster) bool {
     return cluster.first_cp == ' ' or cluster.first_cp == 0;
-}
-
-fn isIconCodepoint(cp: u32) bool {
-    return (cp >= 0xe000 and cp <= 0xf8ff) or
-        (cp >= 0x2700 and cp <= 0x27bf) or
-        (cp >= 0x1f100 and cp <= 0x1f1ff) or
-        (cp >= 0xf0000 and cp <= 0xffffd) or
-        (cp >= 0x100000 and cp <= 0x10fffd);
 }
 
 test "group shaped run creates one group per glyph cluster" {

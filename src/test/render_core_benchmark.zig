@@ -23,6 +23,10 @@ const RunObservation = struct {
     alloc_count: usize,
     alloc_bytes: usize,
     peak_live_bytes: usize,
+    resolve_us: u64,
+    shape_us: u64,
+    group_us: u64,
+    scene_us: u64,
 };
 
 const WorkloadResult = struct {
@@ -35,10 +39,11 @@ const WorkloadResult = struct {
     complex_multi_codepoint_cells: usize,
     complex_emoji_cells: usize,
     complex_special_sprite_cells: usize,
+    complex_icon_cells: usize,
+    complex_curly_underline_cells: usize,
     normal_clusters: usize,
     complex_clusters: usize,
     direct_normal_draws: usize,
-    direct_normal_raster_misses: usize,
     legacy_resolved_normal_clusters: usize,
     legacy_resolved_complex_clusters: usize,
     legacy_shaped_normal_clusters: usize,
@@ -51,17 +56,34 @@ const WorkloadResult = struct {
     frame_stayed_out_of_legacy_path: bool,
     dirty_cells_per_run: usize,
     runs: usize,
-    median_ns: u64,
-    p95_ns: u64,
-    median_alloc_count: usize,
-    median_alloc_bytes: usize,
-    median_peak_live_bytes: usize,
-    median_fills: usize,
-    median_glyphs: usize,
-    median_uploads: usize,
+    cold_ns: u64,
+    cold_resolve_us: u64,
+    cold_shape_us: u64,
+    cold_group_us: u64,
+    cold_scene_us: u64,
+    cold_alloc_count: usize,
+    cold_alloc_bytes: usize,
+    cold_peak_live_bytes: usize,
+    cold_fills: usize,
+    cold_glyphs: usize,
+    cold_uploads: usize,
+    cold_direct_normal_raster_misses: usize,
+    warm_median_ns: u64,
+    warm_p95_ns: u64,
+    warm_median_resolve_us: u64,
+    warm_median_shape_us: u64,
+    warm_median_group_us: u64,
+    warm_median_scene_us: u64,
+    warm_median_alloc_count: usize,
+    warm_median_alloc_bytes: usize,
+    warm_median_peak_live_bytes: usize,
+    warm_median_fills: usize,
+    warm_median_glyphs: usize,
+    warm_median_uploads: usize,
+    warm_direct_normal_raster_misses: usize,
 
     fn dirtyCellsPerSecond(self: WorkloadResult) f64 {
-        const median_seconds = @as(f64, @floatFromInt(self.median_ns)) / 1_000_000_000.0;
+        const median_seconds = @as(f64, @floatFromInt(self.warm_median_ns)) / 1_000_000_000.0;
         if (median_seconds <= 0) return 0;
         return @as(f64, @floatFromInt(self.dirty_cells_per_run)) / median_seconds;
     }
@@ -449,6 +471,60 @@ fn buildCellTextMixedWorkload(allocator: std.mem.Allocator) !Workload {
     };
 }
 
+fn buildCurlyUnderlineMixedWorkload(allocator: std.mem.Allocator) !Workload {
+    const rows: u16 = 18;
+    const cols: u16 = 64;
+    const bg = rgba(12, 16, 20);
+    const fg = rgba(234, 238, 242);
+    const accent = rgba(255, 180, 120);
+    const cells = try initCells(allocator, rows, cols, bg);
+    const dirty = try initDirtyAll(allocator, rows, cols);
+    for (cells, 0..) |*cell, idx| {
+        const curly = idx % 3 == 1;
+        cell.* = .{
+            .codepoint = if (curly) 'u' else 'n',
+            .fg = if (curly) accent else fg,
+            .bg = bg,
+            .underline = curly,
+            .underline_style = if (curly) .curly else .straight,
+        };
+    }
+    return .{
+        .name = "curly_underline_mixed",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = cells.len,
+        .input = .{ .cells = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
+fn buildIconPuaMixedWorkload(allocator: std.mem.Allocator) !Workload {
+    const rows: u16 = 12;
+    const cols: u16 = 48;
+    const bg = rgba(14, 16, 22);
+    const fg = rgba(236, 239, 243);
+    const accent = rgba(255, 196, 96);
+    const cells = try initCells(allocator, rows, cols, bg);
+    const dirty = try initDirtyAll(allocator, rows, cols);
+    for (cells, 0..) |*cell, idx| {
+        const icon = idx % 4 == 1;
+        cell.* = .{
+            .codepoint = if (icon) 0xf101 else 'n',
+            .fg = if (icon) accent else fg,
+            .bg = bg,
+        };
+    }
+    return .{
+        .name = "icon_pua_mixed",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = cells.len,
+        .input = .{ .cells = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
 fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, runs: usize) !WorkloadResult {
     const observations = try allocator.alloc(RunObservation, runs);
     defer allocator.free(observations);
@@ -480,24 +556,39 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     var engine = render.Core.TextEngine.init(counting.allocator());
     defer engine.deinit();
 
-    {
-        var warm = switch (workload.input) {
-            .cells => |cells| try engine.analyzeCellsWithSessionOptions(
-                cells,
-                workload.grid,
-                session,
-                analysis_options,
-            ),
-            .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
-                cells,
-                workload.grid,
-                session,
-                analysis_options,
-            ),
-        };
-        for (warm.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
-        warm.deinit();
-    }
+    counting.resetWindow();
+    const cold_start = nowNs(io);
+    var cold = switch (workload.input) {
+        .cells => |cells| try engine.analyzeCellsWithSessionOptions(
+            cells,
+            workload.grid,
+            session,
+            analysis_options,
+        ),
+        .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
+            cells,
+            workload.grid,
+            session,
+            analysis_options,
+        ),
+    };
+    const cold_end = nowNs(io);
+    const cold_lane_report = cold.lane_report;
+    const cold_observation = RunObservation{
+        .ns = cold_end - cold_start,
+        .alloc_count = counting.window_alloc_count,
+        .alloc_bytes = counting.window_alloc_bytes,
+        .peak_live_bytes = counting.window_peak_live_bytes,
+        .resolve_us = cold.timings.resolve_us,
+        .shape_us = cold.timings.shape_us,
+        .group_us = cold.timings.group_us,
+        .scene_us = cold.timings.scene_us,
+    };
+    const cold_fills = cold.scene.scene.background_draws.len + cold.scene.scene.decoration_draws.len + cold.scene.scene.cursor_draws.len;
+    const cold_glyphs = cold.scene.scene.sprite_draws.len;
+    const cold_uploads = cold.raster_plan.outputs.len;
+    for (cold.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
+    cold.deinit();
 
     var i: usize = 0;
     while (i < runs) : (i += 1) {
@@ -524,12 +615,17 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
             std.debug.assert(std.meta.eql(existing, run_lane_report));
         } else {
             lane_report = run_lane_report;
+            assertSameLaneCounts(cold_lane_report, run_lane_report);
         }
         observations[i] = .{
             .ns = end - start,
             .alloc_count = counting.window_alloc_count,
             .alloc_bytes = counting.window_alloc_bytes,
             .peak_live_bytes = counting.window_peak_live_bytes,
+            .resolve_us = analysis.timings.resolve_us,
+            .shape_us = analysis.timings.shape_us,
+            .group_us = analysis.timings.group_us,
+            .scene_us = analysis.timings.scene_us,
         };
         for (analysis.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
         fill_values[i] = analysis.scene.scene.background_draws.len + analysis.scene.scene.decoration_draws.len + analysis.scene.scene.cursor_draws.len;
@@ -545,15 +641,42 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     defer allocator.free(alloc_bytes_values);
     const peak_live_values = try allocator.alloc(usize, runs);
     defer allocator.free(peak_live_values);
+    const resolve_values = try allocator.alloc(u64, runs);
+    defer allocator.free(resolve_values);
+    const shape_values = try allocator.alloc(u64, runs);
+    defer allocator.free(shape_values);
+    const group_values = try allocator.alloc(u64, runs);
+    defer allocator.free(group_values);
+    const scene_values = try allocator.alloc(u64, runs);
+    defer allocator.free(scene_values);
 
     for (observations, 0..) |obs, idx| {
         ns_values[idx] = obs.ns;
         alloc_count_values[idx] = obs.alloc_count;
         alloc_bytes_values[idx] = obs.alloc_bytes;
         peak_live_values[idx] = obs.peak_live_bytes;
+        resolve_values[idx] = obs.resolve_us;
+        shape_values[idx] = obs.shape_us;
+        group_values[idx] = obs.group_us;
+        scene_values[idx] = obs.scene_us;
     }
 
     const final_lane_report = lane_report orelse LaneReport{};
+    assertSameLaneCounts(cold_lane_report, final_lane_report);
+    const warm_median_ns = medianU64(ns_values);
+    const warm_p95_ns = p95U64(ns_values);
+    const warm_median_resolve_us = medianU64(resolve_values);
+    const warm_median_shape_us = medianU64(shape_values);
+    const warm_median_group_us = medianU64(group_values);
+    const warm_median_scene_us = medianU64(scene_values);
+    const warm_median_alloc_count = medianUsize(alloc_count_values);
+    const warm_median_alloc_bytes = medianUsize(alloc_bytes_values);
+    const warm_median_peak_live_bytes = medianUsize(peak_live_values);
+    const warm_median_fills = medianUsize(fill_values);
+    const warm_median_glyphs = medianUsize(glyph_values);
+    const warm_median_uploads = medianUsize(upload_values);
+    std.debug.assert(cold_uploads >= warm_median_uploads);
+    std.debug.assert(cold_lane_report.direct_normal_raster_misses >= final_lane_report.direct_normal_raster_misses);
 
     return .{
         .name = workload.name,
@@ -565,10 +688,11 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .complex_multi_codepoint_cells = final_lane_report.complex_multi_codepoint_cells,
         .complex_emoji_cells = final_lane_report.complex_emoji_cells,
         .complex_special_sprite_cells = final_lane_report.complex_special_sprite_cells,
+        .complex_icon_cells = final_lane_report.complex_icon_cells,
+        .complex_curly_underline_cells = final_lane_report.complex_curly_underline_cells,
         .normal_clusters = final_lane_report.normal_clusters,
         .complex_clusters = final_lane_report.complex_clusters,
         .direct_normal_draws = final_lane_report.direct_normal_draws,
-        .direct_normal_raster_misses = final_lane_report.direct_normal_raster_misses,
         .legacy_resolved_normal_clusters = final_lane_report.legacy.resolved_clusters.normal,
         .legacy_resolved_complex_clusters = final_lane_report.legacy.resolved_clusters.complex,
         .legacy_shaped_normal_clusters = final_lane_report.legacy.shaped_clusters.normal,
@@ -581,15 +705,54 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .frame_stayed_out_of_legacy_path = final_lane_report.frameStayedOutOfLegacyPath(),
         .dirty_cells_per_run = workload.dirty_cells_per_run,
         .runs = runs,
-        .median_ns = medianU64(ns_values),
-        .p95_ns = p95U64(ns_values),
-        .median_alloc_count = medianUsize(alloc_count_values),
-        .median_alloc_bytes = medianUsize(alloc_bytes_values),
-        .median_peak_live_bytes = medianUsize(peak_live_values),
-        .median_fills = medianUsize(fill_values),
-        .median_glyphs = medianUsize(glyph_values),
-        .median_uploads = medianUsize(upload_values),
+        .cold_ns = cold_observation.ns,
+        .cold_resolve_us = cold_observation.resolve_us,
+        .cold_shape_us = cold_observation.shape_us,
+        .cold_group_us = cold_observation.group_us,
+        .cold_scene_us = cold_observation.scene_us,
+        .cold_alloc_count = cold_observation.alloc_count,
+        .cold_alloc_bytes = cold_observation.alloc_bytes,
+        .cold_peak_live_bytes = cold_observation.peak_live_bytes,
+        .cold_fills = cold_fills,
+        .cold_glyphs = cold_glyphs,
+        .cold_uploads = cold_uploads,
+        .cold_direct_normal_raster_misses = cold_lane_report.direct_normal_raster_misses,
+        .warm_median_ns = warm_median_ns,
+        .warm_p95_ns = warm_p95_ns,
+        .warm_median_resolve_us = warm_median_resolve_us,
+        .warm_median_shape_us = warm_median_shape_us,
+        .warm_median_group_us = warm_median_group_us,
+        .warm_median_scene_us = warm_median_scene_us,
+        .warm_median_alloc_count = warm_median_alloc_count,
+        .warm_median_alloc_bytes = warm_median_alloc_bytes,
+        .warm_median_peak_live_bytes = warm_median_peak_live_bytes,
+        .warm_median_fills = warm_median_fills,
+        .warm_median_glyphs = warm_median_glyphs,
+        .warm_median_uploads = warm_median_uploads,
+        .warm_direct_normal_raster_misses = final_lane_report.direct_normal_raster_misses,
     };
+}
+
+fn assertSameLaneCounts(expected: LaneReport, actual: LaneReport) void {
+    std.debug.assert(expected.visible_cells == actual.visible_cells);
+    std.debug.assert(expected.normal_cells == actual.normal_cells);
+    std.debug.assert(expected.complex_cells == actual.complex_cells);
+    std.debug.assert(expected.complex_multi_codepoint_cells == actual.complex_multi_codepoint_cells);
+    std.debug.assert(expected.complex_emoji_cells == actual.complex_emoji_cells);
+    std.debug.assert(expected.complex_special_sprite_cells == actual.complex_special_sprite_cells);
+    std.debug.assert(expected.complex_icon_cells == actual.complex_icon_cells);
+    std.debug.assert(expected.complex_curly_underline_cells == actual.complex_curly_underline_cells);
+    std.debug.assert(expected.normal_clusters == actual.normal_clusters);
+    std.debug.assert(expected.complex_clusters == actual.complex_clusters);
+    std.debug.assert(expected.direct_normal_draws == actual.direct_normal_draws);
+    std.debug.assert(expected.legacy.resolved_clusters.normal == actual.legacy.resolved_clusters.normal);
+    std.debug.assert(expected.legacy.resolved_clusters.complex == actual.legacy.resolved_clusters.complex);
+    std.debug.assert(expected.legacy.shaped_clusters.normal == actual.legacy.shaped_clusters.normal);
+    std.debug.assert(expected.legacy.shaped_clusters.complex == actual.legacy.shaped_clusters.complex);
+    std.debug.assert(expected.legacy.grouped_groups.normal == actual.legacy.grouped_groups.normal);
+    std.debug.assert(expected.legacy.grouped_groups.complex == actual.legacy.grouped_groups.complex);
+    std.debug.assert(expected.legacy.scene_sprite_draws.normal == actual.legacy.scene_sprite_draws.normal);
+    std.debug.assert(expected.legacy.scene_sprite_draws.complex == actual.legacy.scene_sprite_draws.complex);
 }
 
 fn parseArgs(argv: []const [:0]const u8) !Options {
@@ -617,8 +780,9 @@ fn parseArgs(argv: []const [:0]const u8) !Options {
 }
 
 fn printTextResult(result: WorkloadResult) void {
-    const median_ms = @as(f64, @floatFromInt(result.median_ns)) / 1_000_000.0;
-    const p95_ms = @as(f64, @floatFromInt(result.p95_ns)) / 1_000_000.0;
+    const cold_ms = @as(f64, @floatFromInt(result.cold_ns)) / 1_000_000.0;
+    const warm_median_ms = @as(f64, @floatFromInt(result.warm_median_ns)) / 1_000_000.0;
+    const warm_p95_ms = @as(f64, @floatFromInt(result.warm_p95_ns)) / 1_000_000.0;
     std.debug.print("workload={s}\n", .{result.name});
     std.debug.print("grid_cols={d}\n", .{result.grid_cols});
     std.debug.print("grid_rows={d}\n", .{result.grid_rows});
@@ -628,10 +792,13 @@ fn printTextResult(result: WorkloadResult) void {
     std.debug.print("complex_multi_codepoint_cells={d}\n", .{result.complex_multi_codepoint_cells});
     std.debug.print("complex_emoji_cells={d}\n", .{result.complex_emoji_cells});
     std.debug.print("complex_special_sprite_cells={d}\n", .{result.complex_special_sprite_cells});
+    std.debug.print("complex_icon_cells={d}\n", .{result.complex_icon_cells});
+    std.debug.print("complex_curly_underline_cells={d}\n", .{result.complex_curly_underline_cells});
     std.debug.print("normal_clusters={d}\n", .{result.normal_clusters});
     std.debug.print("complex_clusters={d}\n", .{result.complex_clusters});
     std.debug.print("direct_normal_draws={d}\n", .{result.direct_normal_draws});
-    std.debug.print("direct_normal_raster_misses={d}\n", .{result.direct_normal_raster_misses});
+    std.debug.print("cold_direct_normal_raster_misses={d}\n", .{result.cold_direct_normal_raster_misses});
+    std.debug.print("warm_direct_normal_raster_misses={d}\n", .{result.warm_direct_normal_raster_misses});
     std.debug.print("legacy_resolved_normal_clusters={d}\n", .{result.legacy_resolved_normal_clusters});
     std.debug.print("legacy_resolved_complex_clusters={d}\n", .{result.legacy_resolved_complex_clusters});
     std.debug.print("legacy_shaped_normal_clusters={d}\n", .{result.legacy_shaped_normal_clusters});
@@ -644,21 +811,36 @@ fn printTextResult(result: WorkloadResult) void {
     std.debug.print("frame_stayed_out_of_legacy_path={}\n", .{result.frame_stayed_out_of_legacy_path});
     std.debug.print("runs={d}\n", .{result.runs});
     std.debug.print("dirty_cells_per_run={d}\n", .{result.dirty_cells_per_run});
-    std.debug.print("median_ms={d:.3}\n", .{median_ms});
-    std.debug.print("p95_ms={d:.3}\n", .{p95_ms});
+    std.debug.print("cold_ms={d:.3}\n", .{cold_ms});
+    std.debug.print("cold_resolve_us={d}\n", .{result.cold_resolve_us});
+    std.debug.print("cold_shape_us={d}\n", .{result.cold_shape_us});
+    std.debug.print("cold_group_us={d}\n", .{result.cold_group_us});
+    std.debug.print("cold_scene_us={d}\n", .{result.cold_scene_us});
+    std.debug.print("cold_alloc_count={d}\n", .{result.cold_alloc_count});
+    std.debug.print("cold_alloc_bytes={d}\n", .{result.cold_alloc_bytes});
+    std.debug.print("cold_peak_live_bytes={d}\n", .{result.cold_peak_live_bytes});
+    std.debug.print("cold_fills={d}\n", .{result.cold_fills});
+    std.debug.print("cold_glyphs={d}\n", .{result.cold_glyphs});
+    std.debug.print("cold_uploads={d}\n", .{result.cold_uploads});
+    std.debug.print("warm_median_ms={d:.3}\n", .{warm_median_ms});
+    std.debug.print("warm_p95_ms={d:.3}\n", .{warm_p95_ms});
+    std.debug.print("warm_median_resolve_us={d}\n", .{result.warm_median_resolve_us});
+    std.debug.print("warm_median_shape_us={d}\n", .{result.warm_median_shape_us});
+    std.debug.print("warm_median_group_us={d}\n", .{result.warm_median_group_us});
+    std.debug.print("warm_median_scene_us={d}\n", .{result.warm_median_scene_us});
     std.debug.print("dirty_cells_per_second={d:.0}\n", .{result.dirtyCellsPerSecond()});
-    std.debug.print("median_alloc_count={d}\n", .{result.median_alloc_count});
-    std.debug.print("median_alloc_bytes={d}\n", .{result.median_alloc_bytes});
-    std.debug.print("median_peak_live_bytes={d}\n", .{result.median_peak_live_bytes});
-    std.debug.print("median_fills={d}\n", .{result.median_fills});
-    std.debug.print("median_glyphs={d}\n", .{result.median_glyphs});
-    std.debug.print("median_uploads={d}\n", .{result.median_uploads});
+    std.debug.print("warm_median_alloc_count={d}\n", .{result.warm_median_alloc_count});
+    std.debug.print("warm_median_alloc_bytes={d}\n", .{result.warm_median_alloc_bytes});
+    std.debug.print("warm_median_peak_live_bytes={d}\n", .{result.warm_median_peak_live_bytes});
+    std.debug.print("warm_median_fills={d}\n", .{result.warm_median_fills});
+    std.debug.print("warm_median_glyphs={d}\n", .{result.warm_median_glyphs});
+    std.debug.print("warm_median_uploads={d}\n", .{result.warm_median_uploads});
     std.debug.print("---\n", .{});
 }
 
 fn printNdjsonResult(result: WorkloadResult) void {
     std.debug.print(
-        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"direct_normal_raster_misses\":{d},\"legacy_resolved_normal_clusters\":{d},\"legacy_resolved_complex_clusters\":{d},\"legacy_shaped_normal_clusters\":{d},\"legacy_shaped_complex_clusters\":{d},\"legacy_grouped_normal_groups\":{d},\"legacy_grouped_complex_groups\":{d},",
+        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"complex_icon_cells\":{d},\"complex_curly_underline_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"cold_direct_normal_raster_misses\":{d},\"warm_direct_normal_raster_misses\":{d},\"legacy_resolved_normal_clusters\":{d},\"legacy_resolved_complex_clusters\":{d},\"legacy_shaped_normal_clusters\":{d},\"legacy_shaped_complex_clusters\":{d},\"legacy_grouped_normal_groups\":{d},\"legacy_grouped_complex_groups\":{d},",
         .{
             result.name,
             result.grid_cols,
@@ -669,10 +851,13 @@ fn printNdjsonResult(result: WorkloadResult) void {
             result.complex_multi_codepoint_cells,
             result.complex_emoji_cells,
             result.complex_special_sprite_cells,
+            result.complex_icon_cells,
+            result.complex_curly_underline_cells,
             result.normal_clusters,
             result.complex_clusters,
             result.direct_normal_draws,
-            result.direct_normal_raster_misses,
+            result.cold_direct_normal_raster_misses,
+            result.warm_direct_normal_raster_misses,
             result.legacy_resolved_normal_clusters,
             result.legacy_resolved_complex_clusters,
             result.legacy_shaped_normal_clusters,
@@ -682,7 +867,7 @@ fn printNdjsonResult(result: WorkloadResult) void {
         },
     );
     std.debug.print(
-        "\"legacy_scene_normal_sprite_draws\":{d},\"legacy_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_legacy_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"median_ns\":{d},\"p95_ns\":{d},\"dirty_cells_per_second\":{d:.0},\"median_alloc_count\":{d},\"median_alloc_bytes\":{d},\"median_peak_live_bytes\":{d},\"median_fills\":{d},\"median_glyphs\":{d},\"median_uploads\":{d}}}\n",
+        "\"legacy_scene_normal_sprite_draws\":{d},\"legacy_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_legacy_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"cold_ns\":{d},\"cold_resolve_us\":{d},\"cold_shape_us\":{d},\"cold_group_us\":{d},\"cold_scene_us\":{d},\"cold_alloc_count\":{d},\"cold_alloc_bytes\":{d},\"cold_peak_live_bytes\":{d},\"cold_fills\":{d},\"cold_glyphs\":{d},\"cold_uploads\":{d},\"warm_median_ns\":{d},\"warm_p95_ns\":{d},\"warm_median_resolve_us\":{d},\"warm_median_shape_us\":{d},\"warm_median_group_us\":{d},\"warm_median_scene_us\":{d},\"dirty_cells_per_second\":{d:.0},\"warm_median_alloc_count\":{d},\"warm_median_alloc_bytes\":{d},\"warm_median_peak_live_bytes\":{d},\"warm_median_fills\":{d},\"warm_median_glyphs\":{d},\"warm_median_uploads\":{d}}}\n",
         .{
             result.legacy_scene_normal_sprite_draws,
             result.legacy_scene_complex_sprite_draws,
@@ -690,15 +875,30 @@ fn printNdjsonResult(result: WorkloadResult) void {
             result.frame_stayed_out_of_legacy_path,
             result.runs,
             result.dirty_cells_per_run,
-            result.median_ns,
-            result.p95_ns,
+            result.cold_ns,
+            result.cold_resolve_us,
+            result.cold_shape_us,
+            result.cold_group_us,
+            result.cold_scene_us,
+            result.cold_alloc_count,
+            result.cold_alloc_bytes,
+            result.cold_peak_live_bytes,
+            result.cold_fills,
+            result.cold_glyphs,
+            result.cold_uploads,
+            result.warm_median_ns,
+            result.warm_p95_ns,
+            result.warm_median_resolve_us,
+            result.warm_median_shape_us,
+            result.warm_median_group_us,
+            result.warm_median_scene_us,
             result.dirtyCellsPerSecond(),
-            result.median_alloc_count,
-            result.median_alloc_bytes,
-            result.median_peak_live_bytes,
-            result.median_fills,
-            result.median_glyphs,
-            result.median_uploads,
+            result.warm_median_alloc_count,
+            result.warm_median_alloc_bytes,
+            result.warm_median_peak_live_bytes,
+            result.warm_median_fills,
+            result.warm_median_glyphs,
+            result.warm_median_uploads,
         },
     );
 }
@@ -716,6 +916,8 @@ pub fn main(init: std.process.Init) !void {
         try buildMixedBoxWorkload(arena),
         try buildWideDirtySpansWorkload(arena),
         try buildCellTextMixedWorkload(arena),
+        try buildCurlyUnderlineMixedWorkload(arena),
+        try buildIconPuaMixedWorkload(arena),
         try buildComplexTextWorkload(arena),
     };
 

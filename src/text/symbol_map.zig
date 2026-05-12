@@ -15,6 +15,14 @@ pub fn builtinRoute(cp: u32) ?contract.SpecialSpriteRoute {
     return null;
 }
 
+pub fn isIconCodepoint(cp: u32) bool {
+    return (cp >= 0xe000 and cp <= 0xf8ff) or
+        (cp >= 0x2700 and cp <= 0x27bf) or
+        (cp >= 0x1f100 and cp <= 0x1f1ff) or
+        (cp >= 0xf0000 and cp <= 0xffffd) or
+        (cp >= 0x100000 and cp <= 0x10fffd);
+}
+
 test "builtin route classifies box drawing" {
     try @import("std").testing.expectEqual(contract.SpecialSpriteRoute.box, builtinRoute(0x2500).?);
 }
@@ -26,4 +34,10 @@ test "builtin route classifies octant symbols" {
 
 test "builtin route skips unsupported generated legacy symbols" {
     try @import("std").testing.expectEqual(@as(?contract.SpecialSpriteRoute, null), builtinRoute(0x1fb70));
+}
+
+test "icon codepoint classification stays explicit" {
+    try @import("std").testing.expect(isIconCodepoint(0xf101));
+    try @import("std").testing.expect(!isIconCodepoint('A'));
+    try @import("std").testing.expectEqual(@as(?contract.SpecialSpriteRoute, null), builtinRoute(0xf101));
 }
