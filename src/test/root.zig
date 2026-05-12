@@ -12,8 +12,6 @@ test "renderer package surface remains available" {
     _ = root.Core.FramePixels;
     _ = root.Core.SurfaceFrameData;
     _ = root.Core.FrameSnapshot;
-    _ = root.Core.PrepareMetrics;
-    _ = root.Core.RenderMetrics;
     _ = root.Core.FramePipeline;
     _ = root.Core.FrameQueue;
     _ = root.Core.ResolveResult;
