@@ -8,6 +8,7 @@ const frame_input = @import("frame_input.zig");
 const frame_pipeline = @import("frame_pipeline.zig");
 const frame_queue = @import("frame_queue.zig");
 const frame_snapshot = @import("frame_snapshot.zig");
+const frame_metrics = @import("frame_metrics.zig");
 const surface = @import("surface.zig");
 const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
@@ -49,6 +50,9 @@ pub const RenderCore = struct {
     pub const FrameSnapshotDirty = frame_snapshot.Dirty;
     pub const FrameSnapshotDamage = frame_snapshot.Damage;
     pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
+    pub const PrepareMetrics = frame_metrics.PrepareMetrics;
+    pub const RenderMetrics = frame_metrics.RenderMetrics;
+    pub const Metrics = FrameQueue.TerminalSurface.Metrics;
     pub const SourceReceipt = struct {
         published: bool,
         queued: bool,
@@ -114,6 +118,7 @@ pub const RenderCore = struct {
         }
     };
     pub const RenderRuntime = struct {
+        pub const Metrics = RenderCore.Metrics;
         allocator: std.mem.Allocator,
         surface_owner: FrameQueue.TerminalSurface = .{},
         render_px: types.PixelSize = .{ .width = 0, .height = 0 },
@@ -239,6 +244,14 @@ pub const RenderCore = struct {
                 .font_size_px = self.font_size_px,
                 .epoch = self.geometry_epoch,
             };
+        }
+
+        pub fn takeMetrics(self: *RenderRuntime) RenderCore.Metrics {
+            return self.surface_owner.takeMetrics();
+        }
+
+        pub fn resetMetrics(self: *RenderRuntime) void {
+            self.surface_owner.resetMetrics();
         }
 
         fn classifySource(self: *const RenderRuntime, source: SourceView) frame_pipeline.DamageKind {
@@ -630,4 +643,96 @@ test "render runtime owns source publication and retained-frame queue" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     try std.testing.expect(!same_geometry.changed);
+}
+
+test "render runtime metrics stay owned by render core" {
+    var runtime = RenderCore.RenderRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+    var snapshot = try RenderCore.FrameSnapshot.init(std.testing.allocator, 2, 2);
+    defer snapshot.deinit(std.testing.allocator);
+    snapshot.clearDirty();
+
+    const empty_metrics = runtime.takeMetrics();
+    try std.testing.expectEqual(@as(u64, 0), empty_metrics.snapshot_publishes);
+    try std.testing.expectEqual(@as(u64, 0), empty_metrics.prepare_requests);
+    try std.testing.expectEqual(@as(u64, 0), empty_metrics.submit_valid);
+
+    const geometry_receipt = runtime.syncGeometry(.{
+        .render_px = .{ .width = 16, .height = 32 },
+        .grid_px = .{ .width = 16, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    try std.testing.expect(geometry_receipt.changed);
+    try std.testing.expectEqual(@as(u64, 1), geometry_receipt.geometry_epoch);
+
+    const source = RenderCore.SourceView{
+        .snapshot = &snapshot,
+        .cols = 2,
+        .rows = 2,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .hover_link_id = 0,
+        .hover_underline_style = .straight,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+    };
+    const receipt = runtime.acceptSource(source);
+    try std.testing.expect(receipt.published);
+    try std.testing.expect(receipt.queued);
+    const request = runtime.prepare() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u64, 1), request.token.snapshot_seq);
+    _ = runtime.publishPrepared(.{
+        .token = request.token,
+        .required_base_seq = request.token.damage_base_seq,
+        .required_target_epoch = request.known_target_epoch,
+    });
+    switch (runtime.submit()) {
+        .submit => |prepared| runtime.acceptSubmitted(.{
+            .token = prepared.token,
+            .target_epoch = prepared.required_target_epoch,
+            .content_valid = true,
+        }),
+        else => return error.TestUnexpectedResult,
+    }
+
+    const positive = runtime.takeMetrics();
+    try std.testing.expect(positive.snapshot_publishes > 0);
+    try std.testing.expect(positive.prepare_requests > 0);
+    try std.testing.expect(positive.prepare_takes > 0);
+    try std.testing.expect(positive.submit_takes > 0);
+
+    runtime.resetMetrics();
+    const reset = runtime.takeMetrics();
+    try std.testing.expectEqual(@as(u64, 0), reset.snapshot_publishes);
+    try std.testing.expectEqual(@as(u64, 0), reset.prepare_requests);
+
+    var stale = source;
+    stale.snapshot_seq = 2;
+    stale.scrollback_count = 1;
+    stale.scrollback_offset = 1;
+    const stale_receipt = runtime.acceptSource(stale);
+    try std.testing.expect(stale_receipt.published);
+    try std.testing.expect(stale_receipt.queued);
+    const stale_request = runtime.prepare() orelse return error.TestUnexpectedResult;
+    _ = runtime.publishPrepared(.{
+        .token = .{
+            .snapshot_seq = stale_request.token.snapshot_seq,
+            .dirty_epoch = stale_request.token.dirty_epoch,
+            .geometry_epoch = stale_request.token.geometry_epoch,
+            .damage_base_seq = stale_request.token.damage_base_seq,
+            .damage_kind = stale_request.token.damage_kind,
+        },
+        .required_base_seq = stale_request.token.damage_base_seq,
+        .required_target_epoch = stale_request.known_target_epoch + 1,
+    });
+    switch (runtime.submit()) {
+        .needs_full_prepare => {},
+        else => return error.TestUnexpectedResult,
+    }
+
+    const rejected = runtime.takeMetrics();
+    try std.testing.expect(rejected.submit_rejected > 0);
+    try std.testing.expect(rejected.full_prepare_requests > 0);
 }
