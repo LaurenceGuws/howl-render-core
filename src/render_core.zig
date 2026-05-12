@@ -168,6 +168,10 @@ pub const RenderCore = struct {
                 if (self.publication) |*publication| {
                     publication.copyFrom(self.allocator, source, damage_kind) catch @panic("render publication allocation failed");
                 }
+                std.debug.assert(self.publication != null);
+                std.debug.assert(self.publication.?.snapshot.cols == source.cols);
+                std.debug.assert(self.publication.?.snapshot.rows == source.rows);
+                std.debug.assert(self.publication.?.damage_kind == damage_kind);
                 self.pending_publication = true;
             }
             return .{
@@ -213,6 +217,9 @@ pub const RenderCore = struct {
         pub fn prepare(self: *RenderRuntime) ?frame_pipeline.RenderRequest {
             if (self.pending_publication) {
                 const publication = self.publication orelse return null;
+                std.debug.assert(publication.snapshot.cols == publication.cols);
+                std.debug.assert(publication.snapshot.rows == publication.rows);
+                std.debug.assert(publication.damage_kind != .none);
                 const token = self.makeTokenFromPublication(publication);
                 _ = self.surface_owner.publishSnapshot(token, .opportunistic);
                 self.pending_publication = false;
@@ -221,6 +228,7 @@ pub const RenderCore = struct {
         }
 
         pub fn publishPrepared(self: *RenderRuntime, prepared: frame_pipeline.PreparedFrame) u64 {
+            std.debug.assert(prepared.token.geometry_epoch == self.geometry_epoch);
             return self.surface_owner.publishPrepared(prepared);
         }
 
@@ -229,6 +237,7 @@ pub const RenderCore = struct {
         }
 
         pub fn acceptSubmitted(self: *RenderRuntime, frame: frame_pipeline.SubmittedFrame) void {
+            std.debug.assert(frame.token.geometry_epoch == self.geometry_epoch);
             self.surface_owner.acceptSubmitted(frame);
         }
 
@@ -272,6 +281,9 @@ pub const RenderCore = struct {
         }
 
         fn makeTokenFromPublication(self: *const RenderRuntime, publication: Publication) frame_pipeline.SnapshotToken {
+            std.debug.assert(publication.snapshot.cols == publication.cols);
+            std.debug.assert(publication.snapshot.rows == publication.rows);
+            std.debug.assert(publication.damage_kind != .none);
             return .{
                 .snapshot_seq = publication.snapshot_seq,
                 .dirty_epoch = publication.snapshot_seq,

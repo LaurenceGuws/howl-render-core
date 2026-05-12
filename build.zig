@@ -157,6 +157,7 @@ pub fn build(b: *std.Build) void {
     const ffi_build_step = b.step("ffi:build", "Build the howl-render-core C FFI library");
     ffi_build_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
     b.installArtifact(ffi_lib);
+    b.installFile("include/howl_render.h", "include/howl_render.h");
 
     const benchmark_mod = b.createModule(.{
         .root_source_file = b.path("src/test/render_core_benchmark.zig"),
