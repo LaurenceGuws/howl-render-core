@@ -498,30 +498,20 @@ pub const Backend = struct {
         const input_us = elapsedUs(input_start_ns);
         defer input.deinit();
         if (!self.target_content_valid) {
+            // Scroll/partial damage needs a retained target base. If the target content is
+            // invalid, the backend must escalate this frame to full redraw.
             if (self.text_engine) |*engine| engine.clearAtlas();
             self.clearAtlasCache();
             input.options.scene.damage.full = true;
             input.options.scene.damage.scroll_up_rows = 0;
         }
-        var retry_after_atlas_growth = true;
-        while (true) {
-            var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
-            errdefer analysis.deinit();
-            const old_atlas_w = self.atlas_cell_w;
-            const old_atlas_h = self.atlas_cell_h;
-            const atlas_start_ns = monotonicNs();
-            try self.ensureAtlasStorageForRasterOutputs(analysis.raster_plan.outputs);
-            analysis.timings.atlas_us += elapsedUs(atlas_start_ns);
-            const atlas_grew = self.atlas_cell_w != old_atlas_w or self.atlas_cell_h != old_atlas_h;
-            if (retry_after_atlas_growth and atlas_grew) {
-                analysis.deinit();
-                if (self.text_engine) |*engine| engine.clearAtlas();
-                retry_after_atlas_growth = false;
-                continue;
-            }
-            analysis.timings.input_us = input_us;
-            return analysis;
-        }
+        var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
+        errdefer analysis.deinit();
+        const atlas_start_ns = monotonicNs();
+        try self.ensureAtlasStorageForRasterOutputs(analysis.raster_plan.outputs);
+        analysis.timings.atlas_us += elapsedUs(atlas_start_ns);
+        analysis.timings.input_us = input_us;
+        return analysis;
     }
 
     pub fn submitPreparedTextScene(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {

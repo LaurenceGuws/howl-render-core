@@ -15,6 +15,7 @@ pub fn uploadTextSceneRaster(
 ) !usize {
     try ensureAtlasStorageForRasterOutputs(self, outputs);
     if (hasCurrentContext()) try ensureAtlasTexture(self);
+    if (hasCurrentContext()) uploadSceneResidentSlots(self, scene);
     var committed: usize = 0;
     for (outputs) |output| {
         const slot = findSceneSpriteSlot(scene, output.key) orelse continue;
@@ -63,58 +64,23 @@ pub fn ensureAtlasStorageForRasterOutputs(
 pub fn ensureAtlasStorageSized(self: anytype, need_w: u16, need_h: u16) !void {
     const need_stride: usize = @as(usize, need_w) * @as(usize, need_h);
     if (self.atlas_pixels.len != 0 and self.atlas_cell_w == need_w and self.atlas_cell_h == need_h) return;
-    if (self.atlas_pixels.len > 0) {
-        std.heap.c_allocator.free(self.atlas_pixels);
-        self.atlas_pixels = &.{};
-    }
-    if (self.atlas_slot_codepoint.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_codepoint);
-        self.atlas_slot_codepoint = &.{};
-    }
-    if (self.atlas_slot_face_id.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_face_id);
-        self.atlas_slot_face_id = &.{};
-    }
-    if (self.atlas_slot_glyph_id.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_glyph_id);
-        self.atlas_slot_glyph_id = &.{};
-    }
-    if (self.atlas_slot_sprite_key.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_sprite_key);
-        self.atlas_slot_sprite_key = &.{};
-    }
-    if (self.atlas_slot_width.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_width);
-        self.atlas_slot_width = &.{};
-    }
-    if (self.atlas_slot_height.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_height);
-        self.atlas_slot_height = &.{};
-    }
-    if (self.atlas_slot_draw_x.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_draw_x);
-        self.atlas_slot_draw_x = &.{};
-    }
-    if (self.atlas_slot_draw_y.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_draw_y);
-        self.atlas_slot_draw_y = &.{};
-    }
-    if (self.atlas_slot_draw_w.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_draw_w);
-        self.atlas_slot_draw_w = &.{};
-    }
-    if (self.atlas_slot_draw_h.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_draw_h);
-        self.atlas_slot_draw_h = &.{};
-    }
-    if (self.atlas_slot_has_alpha.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_has_alpha);
-        self.atlas_slot_has_alpha = &.{};
-    }
-    if (self.atlas_slot_gpu_uploaded.len > 0) {
-        std.heap.c_allocator.free(self.atlas_slot_gpu_uploaded);
-        self.atlas_slot_gpu_uploaded = &.{};
-    }
+    const old_pixels = self.atlas_pixels;
+    const old_slot_codepoint = self.atlas_slot_codepoint;
+    const old_slot_face_id = self.atlas_slot_face_id;
+    const old_slot_glyph_id = self.atlas_slot_glyph_id;
+    const old_slot_sprite_key = self.atlas_slot_sprite_key;
+    const old_slot_width = self.atlas_slot_width;
+    const old_slot_height = self.atlas_slot_height;
+    const old_slot_draw_x = self.atlas_slot_draw_x;
+    const old_slot_draw_y = self.atlas_slot_draw_y;
+    const old_slot_draw_w = self.atlas_slot_draw_w;
+    const old_slot_draw_h = self.atlas_slot_draw_h;
+    const old_slot_has_alpha = self.atlas_slot_has_alpha;
+    const old_slot_gpu_uploaded = self.atlas_slot_gpu_uploaded;
+    const old_cell_w = self.atlas_cell_w;
+    const old_cell_h = self.atlas_cell_h;
+    const old_stride = self.atlas_slot_stride;
+    const old_next_slot = self.atlas_next_slot;
     const max_slots = self.capabilities().max_atlas_slots;
     self.atlas_pixels = try std.heap.c_allocator.alloc(u8, need_stride * @as(usize, max_slots));
     @memset(self.atlas_pixels, 0);
@@ -145,13 +111,142 @@ pub fn ensureAtlasStorageSized(self: anytype, need_w: u16, need_h: u16) !void {
     self.atlas_cell_w = need_w;
     self.atlas_cell_h = need_h;
     self.atlas_slot_stride = need_stride;
-    self.atlas_next_slot = 0;
+    self.atlas_next_slot = old_next_slot;
+
+    preserveAtlasCache(
+        self,
+        old_pixels,
+        old_slot_codepoint,
+        old_slot_face_id,
+        old_slot_glyph_id,
+        old_slot_sprite_key,
+        old_slot_width,
+        old_slot_height,
+        old_slot_draw_x,
+        old_slot_draw_y,
+        old_slot_draw_w,
+        old_slot_draw_h,
+        old_slot_has_alpha,
+        old_cell_w,
+        old_cell_h,
+        old_stride,
+    );
+
+    freeOldAtlasStorage(
+        old_pixels,
+        old_slot_codepoint,
+        old_slot_face_id,
+        old_slot_glyph_id,
+        old_slot_sprite_key,
+        old_slot_width,
+        old_slot_height,
+        old_slot_draw_x,
+        old_slot_draw_y,
+        old_slot_draw_w,
+        old_slot_draw_h,
+        old_slot_has_alpha,
+        old_slot_gpu_uploaded,
+    );
     if (self.atlas_texture != 0 and hasCurrentContext()) {
         c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
         self.atlas_texture = 0;
     }
     self.atlas_tex_width = 0;
     self.atlas_tex_height = 0;
+}
+
+fn preserveAtlasCache(
+    self: anytype,
+    old_pixels: []u8,
+    old_slot_codepoint: []u21,
+    old_slot_face_id: []u32,
+    old_slot_glyph_id: []u32,
+    old_slot_sprite_key: []u64,
+    old_slot_width: []u16,
+    old_slot_height: []u16,
+    old_slot_draw_x: []u16,
+    old_slot_draw_y: []u16,
+    old_slot_draw_w: []u16,
+    old_slot_draw_h: []u16,
+    old_slot_has_alpha: []bool,
+    old_cell_w: u16,
+    old_cell_h: u16,
+    old_stride: usize,
+) void {
+    if (old_pixels.len == 0) return;
+    const slot_count = @min(self.atlas_slot_sprite_key.len, old_slot_sprite_key.len);
+    if (slot_count == 0) return;
+    std.mem.copyForwards(u21, self.atlas_slot_codepoint[0..@min(self.atlas_slot_codepoint.len, old_slot_codepoint.len)], old_slot_codepoint[0..@min(self.atlas_slot_codepoint.len, old_slot_codepoint.len)]);
+    std.mem.copyForwards(u32, self.atlas_slot_face_id[0..@min(self.atlas_slot_face_id.len, old_slot_face_id.len)], old_slot_face_id[0..@min(self.atlas_slot_face_id.len, old_slot_face_id.len)]);
+    std.mem.copyForwards(u32, self.atlas_slot_glyph_id[0..@min(self.atlas_slot_glyph_id.len, old_slot_glyph_id.len)], old_slot_glyph_id[0..@min(self.atlas_slot_glyph_id.len, old_slot_glyph_id.len)]);
+    std.mem.copyForwards(u64, self.atlas_slot_sprite_key[0..slot_count], old_slot_sprite_key[0..slot_count]);
+    std.mem.copyForwards(u16, self.atlas_slot_width[0..@min(self.atlas_slot_width.len, old_slot_width.len)], old_slot_width[0..@min(self.atlas_slot_width.len, old_slot_width.len)]);
+    std.mem.copyForwards(u16, self.atlas_slot_height[0..@min(self.atlas_slot_height.len, old_slot_height.len)], old_slot_height[0..@min(self.atlas_slot_height.len, old_slot_height.len)]);
+    std.mem.copyForwards(u16, self.atlas_slot_draw_x[0..@min(self.atlas_slot_draw_x.len, old_slot_draw_x.len)], old_slot_draw_x[0..@min(self.atlas_slot_draw_x.len, old_slot_draw_x.len)]);
+    std.mem.copyForwards(u16, self.atlas_slot_draw_y[0..@min(self.atlas_slot_draw_y.len, old_slot_draw_y.len)], old_slot_draw_y[0..@min(self.atlas_slot_draw_y.len, old_slot_draw_y.len)]);
+    std.mem.copyForwards(u16, self.atlas_slot_draw_w[0..@min(self.atlas_slot_draw_w.len, old_slot_draw_w.len)], old_slot_draw_w[0..@min(self.atlas_slot_draw_w.len, old_slot_draw_w.len)]);
+    std.mem.copyForwards(u16, self.atlas_slot_draw_h[0..@min(self.atlas_slot_draw_h.len, old_slot_draw_h.len)], old_slot_draw_h[0..@min(self.atlas_slot_draw_h.len, old_slot_draw_h.len)]);
+    std.mem.copyForwards(bool, self.atlas_slot_has_alpha[0..@min(self.atlas_slot_has_alpha.len, old_slot_has_alpha.len)], old_slot_has_alpha[0..@min(self.atlas_slot_has_alpha.len, old_slot_has_alpha.len)]);
+
+    const copy_w = @min(old_cell_w, self.atlas_cell_w);
+    const copy_h = @min(old_cell_h, self.atlas_cell_h);
+    if (copy_w == 0 or copy_h == 0) return;
+    for (0..slot_count) |slot_idx| {
+        const old_off = slot_idx * old_stride;
+        const new_off = slot_idx * self.atlas_slot_stride;
+        if (old_off + old_stride > old_pixels.len or new_off + self.atlas_slot_stride > self.atlas_pixels.len) break;
+        const src = old_pixels[old_off .. old_off + old_stride];
+        const dst = self.atlas_pixels[new_off .. new_off + self.atlas_slot_stride];
+        for (0..copy_h) |yy| {
+            const src_off = yy * @as(usize, old_cell_w);
+            const dst_off = yy * @as(usize, self.atlas_cell_w);
+            @memcpy(dst[dst_off .. dst_off + copy_w], src[src_off .. src_off + copy_w]);
+        }
+    }
+}
+
+fn freeOldAtlasStorage(
+    old_pixels: []u8,
+    old_slot_codepoint: []u21,
+    old_slot_face_id: []u32,
+    old_slot_glyph_id: []u32,
+    old_slot_sprite_key: []u64,
+    old_slot_width: []u16,
+    old_slot_height: []u16,
+    old_slot_draw_x: []u16,
+    old_slot_draw_y: []u16,
+    old_slot_draw_w: []u16,
+    old_slot_draw_h: []u16,
+    old_slot_has_alpha: []bool,
+    old_slot_gpu_uploaded: []bool,
+) void {
+    if (old_pixels.len > 0) std.heap.c_allocator.free(old_pixels);
+    if (old_slot_codepoint.len > 0) std.heap.c_allocator.free(old_slot_codepoint);
+    if (old_slot_face_id.len > 0) std.heap.c_allocator.free(old_slot_face_id);
+    if (old_slot_glyph_id.len > 0) std.heap.c_allocator.free(old_slot_glyph_id);
+    if (old_slot_sprite_key.len > 0) std.heap.c_allocator.free(old_slot_sprite_key);
+    if (old_slot_width.len > 0) std.heap.c_allocator.free(old_slot_width);
+    if (old_slot_height.len > 0) std.heap.c_allocator.free(old_slot_height);
+    if (old_slot_draw_x.len > 0) std.heap.c_allocator.free(old_slot_draw_x);
+    if (old_slot_draw_y.len > 0) std.heap.c_allocator.free(old_slot_draw_y);
+    if (old_slot_draw_w.len > 0) std.heap.c_allocator.free(old_slot_draw_w);
+    if (old_slot_draw_h.len > 0) std.heap.c_allocator.free(old_slot_draw_h);
+    if (old_slot_has_alpha.len > 0) std.heap.c_allocator.free(old_slot_has_alpha);
+    if (old_slot_gpu_uploaded.len > 0) std.heap.c_allocator.free(old_slot_gpu_uploaded);
+}
+
+fn uploadSceneResidentSlots(self: anytype, scene: render_core.TextScene) void {
+    for (scene.sprite_draws) |draw| {
+        const slot = draw.sprite.slot;
+        if (slotGpuUploaded(self, slot)) continue;
+        if (!slotMatchesSprite(self, slot, draw.sprite.key)) continue;
+        _ = uploadAtlasSlot(self, slot);
+    }
+}
+
+fn slotMatchesSprite(self: anytype, slot: u32, key: render_core.SpriteKey) bool {
+    const slot_idx = @as(usize, slot);
+    return slot_idx < self.atlas_slot_sprite_key.len and self.atlas_slot_sprite_key[slot_idx] == key.value;
 }
 
 pub fn ensureAtlasTexture(self: anytype) !void {

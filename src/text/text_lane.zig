@@ -254,15 +254,24 @@ fn textForCluster(text_cache: contract.LineTextCache, cluster: contract.CellClus
 }
 
 fn cellForFirstCell(cells: []const contract.RenderableCell, first_cell: u32) contract.RenderableCell {
-    for (cells) |cell| {
-        if (cell.first_cell == first_cell) return cell;
-    }
-    unreachable;
+    return renderableCellForFirstCell(cells, first_cell) orelse unreachable;
 }
 
 fn renderableCellForFirstCell(cells: []const contract.RenderableCell, first_cell: u32) ?contract.RenderableCell {
-    for (cells) |cell| {
-        if (cell.first_cell == first_cell) return cell;
+    var lo: usize = 0;
+    var hi: usize = cells.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const cell = cells[mid];
+        if (cell.first_cell < first_cell) {
+            lo = mid + 1;
+            continue;
+        }
+        if (cell.first_cell > first_cell) {
+            hi = mid;
+            continue;
+        }
+        return cell;
     }
     return null;
 }
