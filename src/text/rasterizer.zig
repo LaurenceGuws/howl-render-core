@@ -48,7 +48,7 @@ pub fn alphaBounds(pixels: []const u8, width_px: u16, height_px: u16) SpriteBoun
     var max_y: u16 = 0;
     var seen = false;
     for (0..height_px) |yy| {
-        const row = yy * @as(usize, width_px);
+        const row = pixelRowOffset(width_px, @intCast(yy));
         for (0..width_px) |xx| {
             if (row + xx >= pixels.len or pixels[row + xx] == 0) continue;
             const x: u16 = @intCast(xx);
@@ -252,6 +252,10 @@ const BoxLines = struct {
 };
 
 fn lineSpec(cp: u32) ?BoxLines {
+    return lineSpecLight(cp) orelse lineSpecHeavy(cp) orelse lineSpecDouble(cp) orelse lineSpecHalf(cp);
+}
+
+fn lineSpecLight(cp: u32) ?BoxLines {
     return switch (cp) {
         0x2500 => .{ .left = .light, .right = .light },
         0x2501 => .{ .left = .heavy, .right = .heavy },
@@ -297,6 +301,12 @@ fn lineSpec(cp: u32) ?BoxLines {
         0x2531 => .{ .right = .light, .left = .heavy, .down = .heavy },
         0x2532 => .{ .left = .light, .right = .heavy, .down = .heavy },
         0x2533 => .{ .down = .heavy, .left = .heavy, .right = .heavy },
+        else => null,
+    };
+}
+
+fn lineSpecHeavy(cp: u32) ?BoxLines {
+    return switch (cp) {
         0x2534 => .{ .up = .light, .left = .light, .right = .light },
         0x2535 => .{ .left = .heavy, .right = .light, .up = .light },
         0x2536 => .{ .right = .heavy, .left = .light, .up = .light },
@@ -321,6 +331,12 @@ fn lineSpec(cp: u32) ?BoxLines {
         0x2549 => .{ .right = .light, .left = .heavy, .up = .heavy, .down = .heavy },
         0x254a => .{ .left = .light, .right = .heavy, .up = .heavy, .down = .heavy },
         0x254b => .{ .up = .heavy, .down = .heavy, .left = .heavy, .right = .heavy },
+        else => null,
+    };
+}
+
+fn lineSpecDouble(cp: u32) ?BoxLines {
+    return switch (cp) {
         0x2550 => .{ .left = .double, .right = .double },
         0x2551 => .{ .up = .double, .down = .double },
         0x2552 => .{ .down = .light, .right = .double },
@@ -350,6 +366,12 @@ fn lineSpec(cp: u32) ?BoxLines {
         0x256a => .{ .up = .light, .down = .light, .left = .double, .right = .double },
         0x256b => .{ .up = .double, .down = .double, .left = .light, .right = .light },
         0x256c => .{ .up = .double, .down = .double, .left = .double, .right = .double },
+        else => null,
+    };
+}
+
+fn lineSpecHalf(cp: u32) ?BoxLines {
+    return switch (cp) {
         0x2574 => .{ .left = .light },
         0x2575 => .{ .up = .light },
         0x2576 => .{ .right = .light },
@@ -524,7 +546,7 @@ fn rasterizeRoundedCorner(pixels: []u8, width: u16, height: u16, corner: Rounded
             const inner = -half_stroke - dist;
             const alpha = smoothStep(-edge_aa, edge_aa, outer) - smoothStep(-edge_aa, edge_aa, inner);
             if (alpha <= 0.0) continue;
-            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
+            const idx = pixelOffset(width, x, y);
             pixels[idx] = @max(pixels[idx], @as(u8, @intFromFloat(@round(std.math.clamp(alpha, 0.0, 1.0) * 255.0))));
         }
     }
@@ -546,12 +568,12 @@ fn snapRoundedCornerConnections(pixels: []u8, width: u16, height: u16, corner: R
 
     var y: u16 = 0;
     while (y < height) : (y += 1) {
-        pixels[@as(usize, y) * @as(usize, width) + @as(usize, h_x)] = if (y >= h_range.start and y < h_range.end) 255 else 0;
+        pixels[pixelOffset(width, h_x, y)] = if (y >= h_range.start and y < h_range.end) 255 else 0;
     }
 
     var x: u16 = 0;
     while (x < width) : (x += 1) {
-        pixels[@as(usize, v_y) * @as(usize, width) + @as(usize, x)] = if (x >= v_range.start and x < v_range.end) 255 else 0;
+        pixels[pixelOffset(width, x, v_y)] = if (x >= v_range.start and x < v_range.end) 255 else 0;
     }
 }
 
@@ -605,14 +627,14 @@ fn fourthRange(size: u16, which: u8) Range {
 
     var thicknesses = [_]u16{thickness} ** 4;
     var extra = size - block;
-    const order = [_]usize{ 1, 2, 3, 0 };
+    const order = [_]u8{ 1, 2, 3, 0 };
     for (order) |idx| {
         if (extra == 0) break;
         thicknesses[idx] += 1;
         extra -= 1;
     }
     var pos: u16 = 0;
-    var idx: usize = 0;
+    var idx: u8 = 0;
     while (idx < which) : (idx += 1) pos += thicknesses[idx];
     return .{ .start = pos, .end = pos + thicknesses[which] };
 }
@@ -732,14 +754,14 @@ fn eighthRange(size: u16, which: u16) Range {
 
     var thicknesses = [_]u16{thickness} ** 8;
     var extra = size - block;
-    const order = [_]usize{ 3, 4, 2, 5, 6, 1, 7, 0 };
+    const order = [_]u8{ 3, 4, 2, 5, 6, 1, 7, 0 };
     for (order) |idx| {
         if (extra == 0) break;
         thicknesses[idx] += 1;
         extra -= 1;
     }
     var pos: u16 = 0;
-    var idx: usize = 0;
+    var idx: u16 = 0;
     while (idx < which) : (idx += 1) pos += thicknesses[idx];
     return .{ .start = pos, .end = pos + thicknesses[which] };
 }
@@ -784,7 +806,7 @@ fn rasterizePowerlineTriangle(pixels: []u8, width: u16, height: u16, left: bool,
         var x: u16 = 0;
         while (x < width) : (x += 1) {
             const coverage = supersampledTriangleCoverage(x, y, .{ .x1 = x1, .x2 = x2, .y_mid = y_mid, .height = height, .inverted = inverted });
-            if (coverage != 0) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = coverage;
+            if (coverage != 0) pixels[pixelOffset(width, x, y)] = coverage;
         }
     }
 }
@@ -833,7 +855,7 @@ fn rasterizePowerlineFilledD(pixels: []u8, width: u16, height: u16, left: bool) 
         var x: u16 = 0;
         while (x < width) : (x += 1) {
             const coverage = supersampledFilledDCoverage(x, y, .{ .cb = cb, .width = width, .left = left });
-            if (coverage != 0) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = coverage;
+            if (coverage != 0) pixels[pixelOffset(width, x, y)] = coverage;
         }
     }
 }
@@ -931,7 +953,7 @@ fn drawCubicStrokeAlpha(pixels: []u8, width: u16, height: u16, cb: CubicBezier, 
             const px = @as(f64, @floatFromInt(if (left) x else width - 1 - x)) + 0.5;
             const py = @as(f64, @floatFromInt(y)) + 0.5 - y_offset;
             var min_d2 = std.math.floatMax(f64);
-            var i: usize = 0;
+            var i: u16 = 0;
             while (i <= samples) : (i += 1) {
                 const t = @as(f64, @floatFromInt(i)) / @as(f64, @floatFromInt(samples));
                 const sx = bezierX(cb, t);
@@ -942,7 +964,7 @@ fn drawCubicStrokeAlpha(pixels: []u8, width: u16, height: u16, cb: CubicBezier, 
             }
             const coverage = std.math.clamp(half - @sqrt(min_d2) + 0.5, 0.0, 1.0);
             if (coverage <= 0) continue;
-            pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = @intFromFloat(@round(coverage * 255.0));
+            pixels[pixelOffset(width, x, y)] = @intFromFloat(@round(coverage * 255.0));
         }
     }
 }
@@ -977,7 +999,7 @@ fn rasterizePowerlineCornerTriangle(pixels: []u8, width: u16, height: u16, corne
                 .bottom_left => yf >= diag_down,
                 .bottom_right => yf >= diag_up,
             };
-            if (inside) pixels[@as(usize, y) * @as(usize, width) + @as(usize, x)] = 255;
+            if (inside) pixels[pixelOffset(width, x, y)] = 255;
         }
     }
 }
@@ -999,7 +1021,7 @@ fn drawLineAlpha(pixels: []u8, width: u16, height: u16, x1: f64, y1: f64, x2: f6
             const dist = @sqrt((px - cx) * (px - cx) + (py - cy) * (py - cy));
             const coverage = std.math.clamp(half - dist + 0.5, 0.0, 1.0);
             if (coverage <= 0) continue;
-            const idx = @as(usize, y) * @as(usize, width) + @as(usize, x);
+            const idx = pixelOffset(width, x, y);
             pixels[idx] = @max(pixels[idx], @as(u8, @intFromFloat(@round(coverage * 255.0))));
         }
     }
@@ -1039,7 +1061,7 @@ fn drawBrailleDotAlpha(pixels: []u8, width: u16, height: u16, x0: u16, y0: u16, 
     const h = @min(dot, height - y0);
     if (w == 0 or h == 0) return;
     if (w == 1 and h == 1) {
-        pixels[@as(usize, y0) * @as(usize, width) + @as(usize, x0)] = 255;
+        pixels[pixelOffset(width, x0, y0)] = 255;
         return;
     }
 
@@ -1066,7 +1088,7 @@ fn drawBrailleDotAlpha(pixels: []u8, width: u16, height: u16, x0: u16, y0: u16, 
             }
             const alpha: u8 = @intCast((hits * 255 + (factor * factor / 2)) / (factor * factor));
             if (alpha == 0) continue;
-            const idx = @as(usize, y0 + y) * @as(usize, width) + @as(usize, x0 + x);
+            const idx = pixelOffset(width, x0 + x, y0 + y);
             pixels[idx] = @max(pixels[idx], alpha);
         }
     }
@@ -1136,7 +1158,7 @@ fn fillRectAlpha(pixels: []u8, stride: u16, x: u16, y: u16, width: u16, height: 
     while (yy < y + height) : (yy += 1) {
         var xx = x;
         while (xx < x + width) : (xx += 1) {
-            pixels[@as(usize, yy) * @as(usize, stride) + @as(usize, xx)] = alpha;
+            pixels[pixelOffset(stride, xx, yy)] = alpha;
         }
     }
 }
@@ -1149,12 +1171,12 @@ fn addAlpha(pixels: []u8, width: u16, height: u16, x: u16, position: u16, y_offs
     if (alpha == 0) return;
     const raw_y = @as(i32, @intCast(position)) + y_offset;
     const y_clamped = std.math.clamp(raw_y, 0, @as(i32, @intCast(height - 1)));
-    const idx = @as(usize, @intCast(y_clamped)) * @as(usize, width) + @as(usize, x);
+    const idx = pixelOffset(width, x, @intCast(y_clamped));
     pixels[idx] = @intCast(@min(@as(u16, pixels[idx]) + @as(u16, alpha), 255));
 }
 
 pub fn placeholderRaster(allocator: std.mem.Allocator, req: contract.SpriteRasterRequest) !RasterSpriteOutput {
-    const bytes = @as(usize, req.width_px) * @as(usize, req.height_px);
+    const bytes = pixelCount(req.width_px, req.height_px);
     const pixels = try allocator.alloc(u8, bytes);
     @memset(pixels, 0);
     if (req.kind == .undercurl) rasterizeUndercurlAlpha(pixels, req.width_px, req.height_px, req.decoration);
@@ -1180,7 +1202,7 @@ pub fn rasterizeRequestsWithRasterizer(allocator: std.mem.Allocator, raster: Ras
     const outputs = try allocator.alloc(RasterSpriteOutput, requests.len);
     errdefer allocator.free(outputs);
 
-    var initialized: usize = 0;
+    var initialized: u32 = 0;
     errdefer {
         for (outputs[0..initialized]) |*out| out.deinit();
     }
@@ -1191,6 +1213,18 @@ pub fn rasterizeRequestsWithRasterizer(allocator: std.mem.Allocator, raster: Ras
     }
 
     return .{ .allocator = allocator, .outputs = outputs };
+}
+
+fn pixelRowOffset(width: u16, y: u16) usize {
+    return @as(usize, width) * @as(usize, y);
+}
+
+fn pixelOffset(width: u16, x: u16, y: u16) usize {
+    return pixelRowOffset(width, y) + x;
+}
+
+fn pixelCount(width: u16, height: u16) usize {
+    return @as(usize, width) * @as(usize, height);
 }
 
 test "raster request preserves group key and dimensions" {

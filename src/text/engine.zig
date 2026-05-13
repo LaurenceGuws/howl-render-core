@@ -127,10 +127,10 @@ pub const Engine = struct {
         options: AnalysisOptions,
     ) !?OwnedTextAnalysis {
         const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-        var visible_count: usize = 0;
+        var visible_count: u32 = 0;
         for (cells, 0..) |cell, idx| {
             if (cell.continuation or cell.empty) continue;
-            const renderable = rawRenderableCell(cell, idx, cells);
+            const renderable = rawRenderableCell(cell, @intCast(idx), cells);
             if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
             const codepoints = [_]u32{cell.codepoint};
             const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &codepoints };
@@ -138,7 +138,7 @@ pub const Engine = struct {
             visible_count += 1;
         }
 
-        try initDirectNormalBuffers(self, visible_count, cells.len, grid_metrics.rows);
+        try initDirectNormalBuffers(self, visible_count, @intCast(cells.len), grid_metrics.rows);
 
         var lane_report = text_lane.LaneReport{};
         var row: u16 = 0;
@@ -146,14 +146,14 @@ pub const Engine = struct {
             if (!directRowDirty(damage, row)) continue;
             var col: u16 = 0;
             while (col < grid_metrics.cols) {
-                const idx = @as(usize, row) * @as(usize, grid_metrics.cols) + @as(usize, col);
+                const idx = gridCellOffset(row, col, grid_metrics.cols);
                 if (idx >= cells.len) break;
-                const cell = cells[idx];
+                const cell = cells[@intCast(idx)];
                 if (cell.continuation or cell.empty) {
                     col += 1;
                     continue;
                 }
-                const renderable = rawRenderableCell(cell, idx, cells);
+                const renderable = rawRenderableCell(cell, @intCast(idx), cells);
                 if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) {
                     col += renderable.cell_span;
                     continue;
@@ -173,49 +173,8 @@ pub const Engine = struct {
         appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
         appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
         appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-
         const direct = try finishDirectNormalScene(self, damage, &lane_report);
-
-        lane_report.assertValid();
-        self.counters.cell_texts += lane_report.visible_cells;
-        self.counters.clusters += lane_report.normal_clusters;
-        self.counters.sprite_cache_misses += @intCast(self.normal_raster_reqs.items.len);
-        self.counters.sprite_cache_hits += @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len);
-        self.counters.rasterized_sprites += @intCast(direct.outputs.len);
-
-        return .{
-            .text_cache = .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
-            .renderable = .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
-            .clusters = .{ .allocator = self.allocator, .clusters = &.{}, .owned = false },
-            .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
-            .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
-            .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .scene = .{ .allocator = self.allocator, .scene = .{
-                .cells = self.normal_renderable.items,
-                .full_redraw = damage.full,
-                .scroll_up_px = damage.scroll_up_px,
-                .clear_draws = self.normal_clear_draws.items,
-                .background_draws = self.normal_background_draws.items,
-                .sprite_draws = self.normal_sprite_draws.items,
-                .decoration_draws = self.normal_decoration_draws.items,
-                .cursor_draws = self.normal_cursor_draws.items,
-                .raster_requests = &.{},
-                .missing = self.normal_missing.items,
-            }, .owned = false },
-            .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
-            .counters = .{
-                .cell_texts = lane_report.visible_cells,
-                .clusters = lane_report.normal_clusters,
-                .glyph_groups = 0,
-                .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
-                .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
-                .rasterized_sprites = @intCast(direct.outputs.len),
-            },
-            .lane_report = lane_report,
-            .timings = .{},
-        };
+        return self.finishDirectNormalAnalysis(damage, lane_report, direct, .{});
     }
 
     pub fn analyzeCellTextInputsOptions(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
@@ -413,10 +372,10 @@ pub const Engine = struct {
     ) !?OwnedTextAnalysis {
         const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
         var lane_report = text_lane.LaneReport{};
-        var visible_count: usize = 0;
+        var visible_count: u32 = 0;
         for (inputs, 0..) |input, idx| {
             if (input.continuation) continue;
-            const renderable = inputRenderableCell(input, idx, inputs);
+            const renderable = inputRenderableCell(input, @intCast(idx), inputs);
             if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
             const text = inputCellText(input);
             const choice = text_lane.classifyRenderableCell(renderable, text);
@@ -427,10 +386,10 @@ pub const Engine = struct {
             if (!blankText(text)) lane_report.normal_clusters += 1;
         }
 
-        try initDirectNormalBuffers(self, visible_count, inputs.len, grid_metrics.rows);
+        try initDirectNormalBuffers(self, visible_count, @intCast(inputs.len), grid_metrics.rows);
         for (inputs, 0..) |input, idx| {
             if (input.continuation) continue;
-            const renderable = inputRenderableCell(input, idx, inputs);
+            const renderable = inputRenderableCell(input, @intCast(idx), inputs);
             if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
             try appendDirectNormalRenderable(self, renderable, inputCellText(input), grid_metrics, session, &lane_report);
         }
@@ -438,12 +397,22 @@ pub const Engine = struct {
         appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
         appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
         appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-
         const direct = try finishDirectNormalScene(self, damage, &lane_report);
-        lane_report.assertValid();
+        return self.finishDirectNormalAnalysis(damage, lane_report, direct, .{});
+    }
+
+    fn finishDirectNormalAnalysis(
+        self: *Engine,
+        damage: DirectDamage,
+        lane_report: text_lane.LaneReport,
+        direct: DirectNormalBuild,
+        timings: PrepareTimings,
+    ) OwnedTextAnalysis {
+        var final_lane_report = lane_report;
+        final_lane_report.assertValid();
         const counters = pipeline.TextEngineCounters{
-            .cell_texts = lane_report.visible_cells,
-            .clusters = lane_report.normal_clusters,
+            .cell_texts = final_lane_report.visible_cells,
+            .clusters = final_lane_report.normal_clusters,
             .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
             .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
             .rasterized_sprites = @intCast(direct.outputs.len),
@@ -455,7 +424,6 @@ pub const Engine = struct {
         self.counters.sprite_cache_misses += counters.sprite_cache_misses;
         self.counters.rasterized_sprites += counters.rasterized_sprites;
         self.counters.missing_glyphs += counters.missing_glyphs;
-
         return .{
             .text_cache = .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
             .renderable = .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
@@ -467,8 +435,8 @@ pub const Engine = struct {
             .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
             .scene = .{ .allocator = self.allocator, .scene = .{
                 .cells = self.normal_renderable.items,
-                .full_redraw = direct.damage.full,
-                .scroll_up_px = direct.damage.scroll_up_px,
+                .full_redraw = damage.full,
+                .scroll_up_px = damage.scroll_up_px,
                 .clear_draws = self.normal_clear_draws.items,
                 .background_draws = self.normal_background_draws.items,
                 .sprite_draws = self.normal_sprite_draws.items,
@@ -479,8 +447,8 @@ pub const Engine = struct {
             }, .owned = false },
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .counters = counters,
-            .lane_report = lane_report,
-            .timings = .{},
+            .lane_report = final_lane_report,
+            .timings = timings,
         };
     }
 
@@ -532,7 +500,7 @@ fn buildDirectNormalPrepared(
     lane_report: *text_lane.LaneReport,
 ) !DirectNormalBuild {
     const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-    var visible_count: usize = 0;
+    var visible_count: u32 = 0;
     for (cells) |cell| {
         if (cell.continuation) continue;
         if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
@@ -541,7 +509,7 @@ fn buildDirectNormalPrepared(
         visible_count += 1;
     }
 
-    try initDirectNormalBuffers(self, visible_count, cells.len, grid_metrics.rows);
+    try initDirectNormalBuffers(self, visible_count, @intCast(cells.len), grid_metrics.rows);
     for (cells) |cell| {
         if (cell.continuation) continue;
         if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
@@ -557,16 +525,16 @@ fn buildDirectNormalPrepared(
     return finishDirectNormalScene(self, damage, lane_report);
 }
 
-fn initDirectNormalBuffers(self: *Engine, visible_count: usize, cell_count: usize, rows: u16) !void {
+fn initDirectNormalBuffers(self: *Engine, visible_count: u32, cell_count: u32, rows: u16) !void {
     std.debug.assert(cell_count >= visible_count);
-    try self.normal_renderable.ensureTotalCapacity(self.allocator, cell_count);
-    try self.normal_missing.ensureTotalCapacity(self.allocator, cell_count);
-    try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, cell_count);
-    try self.normal_background_draws.ensureTotalCapacity(self.allocator, cell_count);
-    try self.normal_clear_draws.ensureTotalCapacity(self.allocator, @as(usize, rows));
-    try self.normal_decoration_draws.ensureTotalCapacity(self.allocator, cell_count * 2);
+    try self.normal_renderable.ensureTotalCapacity(self.allocator, @intCast(cell_count));
+    try self.normal_missing.ensureTotalCapacity(self.allocator, @intCast(cell_count));
+    try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count));
+    try self.normal_background_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count));
+    try self.normal_clear_draws.ensureTotalCapacity(self.allocator, @intCast(rows));
+    try self.normal_decoration_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count * 2));
     try self.normal_cursor_draws.ensureTotalCapacity(self.allocator, 4);
-    try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, cell_count);
+    try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, @intCast(cell_count));
     self.normal_renderable.clearRetainingCapacity();
     self.normal_missing.clearRetainingCapacity();
     self.normal_sprite_draws.clearRetainingCapacity();
@@ -661,10 +629,10 @@ fn resolveDirectNormalFace(session: font_session.FontSession, cell: contract.Ren
     return session.findStyle(cell.style, cell.presentation, text) orelse session.findFallback(cell.style, cell.presentation, text);
 }
 
-fn rawRenderableCell(cell: types.CellInput, idx: usize, cells: []const types.CellInput) contract.RenderableCell {
+fn rawRenderableCell(cell: types.CellInput, idx: u32, cells: []const types.CellInput) contract.RenderableCell {
     return .{
         .text_id = .{ .value = 0 },
-        .first_cell = @intCast(idx),
+        .first_cell = idx,
         .cell_span = inferredCellSpan(cells, idx),
         .style = .regular,
         .presentation = .any,
@@ -683,11 +651,11 @@ fn rawRenderableCell(cell: types.CellInput, idx: usize, cells: []const types.Cel
     };
 }
 
-fn inputRenderableCell(input: cluster.CellTextInput, idx: usize, inputs: []const cluster.CellTextInput) contract.RenderableCell {
+fn inputRenderableCell(input: cluster.CellTextInput, idx: u32, inputs: []const cluster.CellTextInput) contract.RenderableCell {
     const cps = normalizedInputCodepoints(input.codepoints);
     return .{
         .text_id = .{ .value = 0 },
-        .first_cell = @intCast(idx),
+        .first_cell = idx,
         .cell_span = @max(@max(input.cell_span, 1), inferredInputCellSpan(inputs, idx)),
         .style = input.style,
         .presentation = cluster.detectPresentation(cps, input.presentation),
@@ -729,10 +697,13 @@ fn blankText(text: contract.CellText) bool {
     return true;
 }
 
-fn inferredInputCellSpan(inputs: []const cluster.CellTextInput, idx: usize) u8 {
-    var span: usize = 1;
-    while (idx + span < inputs.len and inputs[idx + span].continuation) : (span += 1) {}
-    return @intCast(@min(span, std.math.maxInt(u8)));
+fn inferredInputCellSpan(inputs: []const cluster.CellTextInput, idx: u32) u8 {
+    var span: u8 = 1;
+    for (inputs[@intCast(idx + 1)..]) |input| {
+        if (!input.continuation or span == std.math.maxInt(u8)) break;
+        span += 1;
+    }
+    return span;
 }
 
 fn cloneSlice(comptime T: type, allocator: std.mem.Allocator, src: []const T) ![]T {
@@ -815,8 +786,7 @@ const DirectDamage = struct {
 
 fn directRowDirty(damage: DirectDamage, row: u16) bool {
     if (damage.full) return true;
-    const idx = @as(usize, row);
-    return idx < damage.dirty_rows.len and damage.dirty_rows[idx];
+    return @as(usize, row) < damage.dirty_rows.len and damage.dirty_rows[@intCast(row)];
 }
 
 fn includeDirectSpan(damage: DirectDamage, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
@@ -824,21 +794,24 @@ fn includeDirectSpan(damage: DirectDamage, grid_metrics: contract.GridMetrics, f
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     const row = @as(u16, @intCast(first_cell / cols));
     if (!directRowDirty(damage, row)) return false;
-    const idx = @as(usize, row);
     const start_col = @as(u16, @intCast(first_cell % cols));
     const end_col = start_col +| (@max(cell_span, 1) - 1);
-    const dirty_start = damage.dirty_cols_start[idx];
-    const dirty_end = damage.dirty_cols_end[idx];
+    const dirty_start = damage.dirty_cols_start[@intCast(row)];
+    const dirty_end = damage.dirty_cols_end[@intCast(row)];
     return !(end_col < dirty_start or start_col > dirty_end);
 }
 
-fn inferredCellSpan(cells: []const types.CellInput, idx: usize) u8 {
+fn inferredCellSpan(cells: []const types.CellInput, idx: u32) u8 {
     var span: u8 = 1;
-    var next = idx + 1;
-    while (next < cells.len and cells[next].continuation and span < std.math.maxInt(u8)) : (next += 1) {
+    for (cells[@intCast(idx + 1)..]) |cell| {
+        if (!cell.continuation or span == std.math.maxInt(u8)) break;
         span += 1;
     }
     return span;
+}
+
+fn gridCellOffset(row: u16, col: u16, cols: u16) u32 {
+    return @as(u32, row) * @as(u32, cols) + @as(u32, col);
 }
 
 fn appendDirectBackgrounds(

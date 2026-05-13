@@ -27,8 +27,8 @@ const primary_face_id: u32 = provider_mod.primary_face_id;
 
 const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
 
-fn fallbackFaceId(index: usize) u32 {
-    return @intCast(index + 2);
+fn fallbackFaceId(index: u32) u32 {
+    return index + 2;
 }
 
 fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
@@ -140,7 +140,7 @@ pub const Backend = struct {
     target_fbo: u32 = 0,
     surface_epoch: u64 = 1,
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
-    fallback_font_paths_len: usize = 0,
+    fallback_font_paths_len: u8 = 0,
     atlas_pixels: []u8 = &.{},
     atlas_cell_w: u16 = 0,
     atlas_cell_h: u16 = 0,
@@ -288,11 +288,10 @@ pub const Backend = struct {
     }
 
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
-        const n = @min(paths.len, MaxFallbackFonts);
+        const n: u8 = @intCast(@min(paths.len, MaxFallbackFonts));
         self.fallback_font_paths_len = n;
-        var i: usize = 0;
-        while (i < n) : (i += 1) self.fallback_font_paths[i] = paths[i];
-        while (i < MaxFallbackFonts) : (i += 1) self.fallback_font_paths[i] = null;
+        for (0..n) |i| self.fallback_font_paths[i] = paths[i];
+        for (@as(usize, n)..MaxFallbackFonts) |i| self.fallback_font_paths[i] = null;
         self.resetLoadedFace();
         self.clearAtlasCache();
     }
@@ -342,7 +341,7 @@ pub const Backend = struct {
             faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
             len += 1;
         }
-        var i: usize = 0;
+        var i: u8 = 0;
         while (i < self.fallback_font_paths_len and len < faces.len) : (i += 1) {
             if (self.fallback_font_paths[i] == null) continue;
             faces[len] = .{ .id = .{ .value = fallbackFaceId(i) }, .role = .fallback, .coverage = .all };
@@ -551,7 +550,7 @@ pub const Backend = struct {
             return cellMetricsFromFace(self.ft_face.?, self.config.font_size_px);
         }
         if (self.ft_lib) |lib| {
-            var i: usize = 0;
+            var i: u8 = 0;
             while (i < self.fallback_font_paths_len) : (i += 1) {
                 const font_path = self.fallback_font_paths[i] orelse continue;
                 var face: FtFace = undefined;
@@ -591,7 +590,7 @@ pub const Backend = struct {
         }
         if (!self.ensureFreeTypeLibrary()) return false;
 
-        var i: usize = 0;
+        var i: u8 = 0;
         while (i < self.fallback_font_paths_len) : (i += 1) {
             if (self.fallback_font_paths[i] == null) continue;
             if (self.ensureFallbackFace(i) != null) {
@@ -625,8 +624,7 @@ pub const Backend = struct {
     }
 
     fn resetFallbackFaces(self: *Backend) void {
-        var i: usize = 0;
-        while (i < MaxFallbackFonts) : (i += 1) {
+        for (0..MaxFallbackFonts) |i| {
             if (self.fallback_hb_fonts[i] != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(self.fallback_hb_fonts[i].?);
                 self.fallback_hb_fonts[i] = null;
@@ -667,11 +665,12 @@ pub const Backend = struct {
         return true;
     }
 
-    fn ensureFallbackFace(self: *Backend, fallback_index: usize) ?FtFace {
+    fn ensureFallbackFace(self: *Backend, fallback_index: u32) ?FtFace {
         if (fallback_index >= self.fallback_font_paths_len) return null;
-        if (self.fallback_faces[fallback_index]) |face| return face;
+        const slot = fallbackSlot(self, fallback_index) orelse return null;
+        if (self.fallback_faces[slot]) |face| return face;
         if (!self.ensureFreeTypeLibrary()) return null;
-        const font_path = self.fallback_font_paths[fallback_index] orelse return null;
+        const font_path = self.fallback_font_paths[slot] orelse return null;
         const lib = self.ft_lib orelse return null;
         var face: FtFace = undefined;
         if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return null;
@@ -679,9 +678,9 @@ pub const Backend = struct {
             _ = c.FT_Done_Face(face);
             return null;
         }
-        self.fallback_faces[fallback_index] = face;
+        self.fallback_faces[slot] = face;
         if (builtin.target.abi != .android) {
-            self.fallback_hb_fonts[fallback_index] = @ptrCast(c.hb_ft_font_create_referenced(face));
+            self.fallback_hb_fonts[slot] = @ptrCast(c.hb_ft_font_create_referenced(face));
         }
         return face;
     }
@@ -709,7 +708,7 @@ pub const Backend = struct {
         }
 
         const lib = self.ft_lib orelse return null;
-        var i: usize = 0;
+        var i: u8 = 0;
         while (i < self.fallback_font_paths_len) : (i += 1) {
             const font_path = self.fallback_font_paths[i] orelse continue;
             var face: FtFace = undefined;
@@ -778,12 +777,12 @@ pub const Backend = struct {
                 const dx_i = placement.x_px + @as(i32, @intCast(xx));
                 const dy_i = placement.y_px + @as(i32, @intCast(yy));
                 if (dx_i < 0 or dy_i < 0) continue;
-                const dx: usize = @intCast(dx_i);
-                const dy: usize = @intCast(dy_i);
+                const dx: u16 = @intCast(dx_i);
+                const dy: u16 = @intCast(dy_i);
                 if (dx >= gw or dy >= gh) continue;
                 const src_y = if (pitch_is_negative) (bh - 1 - yy) else yy;
                 const src_idx = src_y * pitch_abs + xx;
-                const dst_idx = dy * @as(usize, self.atlas_cell_w) + dx;
+                const dst_idx = atlasPixelOffset(self.atlas_cell_w, dx, dy);
                 dst[dst_idx] = bitmap.buffer[src_idx];
                 wrote_any = true;
             }
@@ -829,7 +828,7 @@ fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: re
     const self: *Backend = @ptrCast(@alignCast(ctx));
     const width = @as(u16, @intCast(@as(u32, @max(req.cell_span, 1)) * @as(u32, @max(req.cell_metrics.cell_w_px, 1))));
     const height = @max(req.cell_metrics.cell_h_px, 1);
-    const alpha = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
+    const alpha = try allocator.alloc(u8, atlasPixelCount(width, height));
     errdefer allocator.free(alpha);
     @memset(alpha, 0);
     _ = provider_mod.rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
@@ -970,7 +969,7 @@ fn applyScrollReusePx(backend: *const Backend, surface_px: render.PixelSize, scr
     const height = @as(u32, surface_px.height);
     if (scroll_px == 0 or scroll_px >= height or width == 0) return;
     const preserved_h = height - scroll_px;
-    const bytes = @as(usize, width) * @as(usize, preserved_h) * 4;
+    const bytes = rgbaByteCount(@intCast(width), @intCast(preserved_h));
     const pixels = std.heap.c_allocator.alloc(u8, bytes) catch return;
     defer std.heap.c_allocator.free(pixels);
     c.glPixelStorei(c.GL_PACK_ALIGNMENT, 1);
@@ -1001,7 +1000,7 @@ fn applyScrollReusePx(backend: *const Backend, surface_px: render.PixelSize, scr
 
 fn drawSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: render.TextSpriteDraw) void {
     if (backend.atlas_pixels.len == 0) return;
-    const slot = @as(usize, draw.sprite.slot);
+    const slot = atlasSlotIndex(draw.sprite.slot);
     if (slot >= backend.atlas_slot_width.len or slot >= backend.atlas_slot_height.len) return;
     if (slot >= backend.atlas_slot_draw_x.len or slot >= backend.atlas_slot_draw_y.len or slot >= backend.atlas_slot_draw_w.len or slot >= backend.atlas_slot_draw_h.len) return;
     const slot_index = slot * backend.atlas_slot_stride;
@@ -1014,16 +1013,37 @@ fn drawSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: ren
     if (gw == 0 or gh == 0) return;
     for (0..gh) |yy| {
         for (0..gw) |xx| {
-            const src_x = @as(usize, draw_x) + xx;
-            const src_y = @as(usize, draw_y) + yy;
-            const idx = src_y * @as(usize, backend.atlas_cell_w) + src_x;
+            const src_x: u16 = draw_x + @as(u16, @intCast(xx));
+            const src_y: u16 = draw_y + @as(u16, @intCast(yy));
+            const idx = atlasPixelOffset(backend.atlas_cell_w, src_x, src_y);
             const alpha = src[idx];
             if (alpha == 0) continue;
             var color = draw.color;
             color.a = @intCast((@as(u16, color.a) * @as(u16, alpha)) / 255);
-            drawRect(surface, draw.x_px + @as(i32, @intCast(src_x)), draw.y_px + @as(i32, @intCast(src_y)), 1, 1, color);
+            drawRect(surface, draw.x_px + @as(i32, src_x), draw.y_px + @as(i32, src_y), 1, 1, color);
         }
     }
+}
+
+fn fallbackSlot(self: *Backend, fallback_index: u32) ?usize {
+    if (fallback_index >= self.fallback_font_paths_len) return null;
+    return @intCast(fallback_index);
+}
+
+fn atlasSlotIndex(slot: u32) usize {
+    return @intCast(slot);
+}
+
+fn atlasPixelOffset(width: u16, x: u16, y: u16) usize {
+    return @as(usize, y) * @as(usize, width) + x;
+}
+
+fn atlasPixelCount(width: u16, height: u16) usize {
+    return @as(usize, width) * @as(usize, height);
+}
+
+fn rgbaByteCount(width: u16, height: u16) usize {
+    return atlasPixelCount(width, height) * 4;
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {

@@ -65,8 +65,8 @@ const QuadVertex = extern struct {
     a: u8,
 };
 
-fn fallbackFaceId(index: usize) u32 {
-    return @intCast(index + 2);
+fn fallbackFaceId(index: u32) u32 {
+    return index + 2;
 }
 
 fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
@@ -230,7 +230,7 @@ pub const Backend = struct {
     shape_run_cache: shared_text_cache.ShapeRunCache,
     glyph_cell_cache: shared_text_cache.GlyphCellCache,
     fallback_font_paths: [MaxFallbackFonts]?[:0]const u8 = [_]?[:0]const u8{null} ** MaxFallbackFonts,
-    fallback_font_paths_len: usize = 0,
+    fallback_font_paths_len: u8 = 0,
 
     /// Initialize a backend instance from shared backend config.
     pub fn init(config: render.BackendConfig) Backend {
@@ -248,78 +248,9 @@ pub const Backend = struct {
             engine.deinit();
             self.text_engine = null;
         }
-        if (self.atlas_pixels.len > 0) {
-            std.heap.c_allocator.free(self.atlas_pixels);
-            self.atlas_pixels = &.{};
-        }
-        if (self.atlas_slot_codepoint.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_codepoint);
-            self.atlas_slot_codepoint = &.{};
-        }
-        if (self.atlas_slot_face_id.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_face_id);
-            self.atlas_slot_face_id = &.{};
-        }
-        if (self.atlas_slot_glyph_id.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_glyph_id);
-            self.atlas_slot_glyph_id = &.{};
-        }
-        if (self.atlas_slot_sprite_key.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
-            self.atlas_slot_sprite_key = &.{};
-        }
-        if (self.atlas_slot_width.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_width);
-            self.atlas_slot_width = &.{};
-        }
-        if (self.atlas_slot_height.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_height);
-            self.atlas_slot_height = &.{};
-        }
-        if (self.atlas_slot_draw_x.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_x);
-            self.atlas_slot_draw_x = &.{};
-        }
-        if (self.atlas_slot_draw_y.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_y);
-            self.atlas_slot_draw_y = &.{};
-        }
-        if (self.atlas_slot_draw_w.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_w);
-            self.atlas_slot_draw_w = &.{};
-        }
-        if (self.atlas_slot_draw_h.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_h);
-            self.atlas_slot_draw_h = &.{};
-        }
-        if (self.atlas_slot_has_alpha.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
-            self.atlas_slot_has_alpha = &.{};
-        }
-        if (self.atlas_slot_gpu_uploaded.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_gpu_uploaded);
-            self.atlas_slot_gpu_uploaded = &.{};
-        }
-        if (self.fill_vertices.len > 0) {
-            std.heap.c_allocator.free(self.fill_vertices);
-            self.fill_vertices = &.{};
-        }
-        if (self.glyph_vertices.len > 0) {
-            std.heap.c_allocator.free(self.glyph_vertices);
-            self.glyph_vertices = &.{};
-        }
-        if (self.text_vertices.len > 0) {
-            std.heap.c_allocator.free(self.text_vertices);
-            self.text_vertices = &.{};
-        }
-        if (self.text_shader_program != 0 and hasCurrentContext()) {
-            c.glDeleteProgram(self.text_shader_program);
-            self.text_shader_program = 0;
-        }
-        if (self.fallback_fill_vertices.len > 0) {
-            std.heap.c_allocator.free(self.fallback_fill_vertices);
-            self.fallback_fill_vertices = &.{};
-        }
+        self.deinitAtlasStorage();
+        self.deinitVertexBuffers();
+        self.deinitShaderObjects();
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
         self.face_text_cache.deinit();
@@ -328,22 +259,7 @@ pub const Backend = struct {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
         }
-        if (self.atlas_texture != 0 and hasCurrentContext()) {
-            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
-            self.atlas_texture = 0;
-        }
-        if (self.scroll_scratch_texture != 0 and hasCurrentContext()) {
-            c.glDeleteTextures(1, @ptrCast(&self.scroll_scratch_texture));
-            self.scroll_scratch_texture = 0;
-        }
-        if (self.target_fbo != 0 and hasCurrentContext()) {
-            c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
-            self.target_fbo = 0;
-        }
-        if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            var texture = self.target_texture.?;
-            c.glDeleteTextures(1, @ptrCast(&texture));
-        }
+        self.deinitTargetObjects();
         self.target_texture = null;
         self.owns_target_texture = false;
         self.target_content_valid = false;
@@ -391,11 +307,10 @@ pub const Backend = struct {
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
         self.lockFontAnalysis();
         defer self.unlockFontAnalysis();
-        const n = @min(paths.len, MaxFallbackFonts);
+        const n: u8 = @intCast(@min(paths.len, MaxFallbackFonts));
         self.fallback_font_paths_len = n;
-        var i: usize = 0;
-        while (i < n) : (i += 1) self.fallback_font_paths[i] = paths[i];
-        while (i < MaxFallbackFonts) : (i += 1) self.fallback_font_paths[i] = null;
+        for (0..n) |i| self.fallback_font_paths[i] = paths[i];
+        for (@as(usize, n)..MaxFallbackFonts) |i| self.fallback_font_paths[i] = null;
         self.resetLoadedFace();
         self.clearAtlasCache();
     }
@@ -447,7 +362,7 @@ pub const Backend = struct {
             faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
             len += 1;
         }
-        var i: usize = 0;
+        var i: u8 = 0;
         while (i < self.fallback_font_paths_len and len < faces.len) : (i += 1) {
             if (self.fallback_font_paths[i] == null) continue;
             faces[len] = .{ .id = .{ .value = fallbackFaceId(i) }, .role = .fallback, .coverage = .all };
@@ -597,7 +512,7 @@ pub const Backend = struct {
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {
-        const idx = @as(usize, slot);
+        const idx = atlasSlotIndex(slot);
         if (idx >= self.atlas_slot_codepoint.len) return false;
         if (idx >= self.atlas_slot_face_id.len or idx >= self.atlas_slot_glyph_id.len) return false;
         return self.atlas_slot_codepoint[idx] == key.codepoint and
@@ -608,8 +523,7 @@ pub const Backend = struct {
     }
 
     fn findCachedSlot(self: *const Backend, key: ResolvedGlyphKey, width: u16, height: u16) ?u32 {
-        var idx: usize = 0;
-        while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
+        for (self.atlas_slot_codepoint, 0..) |_, idx| {
             if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
             if (!self.slotCached(@intCast(idx), key, width, height)) continue;
             return @intCast(idx);
@@ -618,10 +532,9 @@ pub const Backend = struct {
     }
 
     fn findCachedSlotForDraw(self: *const Backend, codepoint: u21, width: u16, height: u16) ?u32 {
-        var idx: usize = 0;
-        while (idx < self.atlas_slot_codepoint.len) : (idx += 1) {
+        for (self.atlas_slot_codepoint, 0..) |slot_codepoint, idx| {
             if (self.atlas_slot_width[idx] == 0 or self.atlas_slot_height[idx] == 0) continue;
-            if (self.atlas_slot_codepoint[idx] != codepoint) continue;
+            if (slot_codepoint != codepoint) continue;
             if (self.atlas_slot_width[idx] != width or self.atlas_slot_height[idx] != height) continue;
             return @intCast(idx);
         }
@@ -629,9 +542,8 @@ pub const Backend = struct {
     }
 
     fn allocateSlot(self: *Backend) ?u32 {
-        var idx: usize = 0;
-        while (idx < self.atlas_slot_width.len) : (idx += 1) {
-            if (self.atlas_slot_width[idx] == 0 and self.atlas_slot_height[idx] == 0) {
+        for (self.atlas_slot_width, 0..) |slot_width, idx| {
+            if (slot_width == 0 and self.atlas_slot_height[idx] == 0) {
                 return @intCast(idx);
             }
         }
@@ -642,7 +554,7 @@ pub const Backend = struct {
     }
 
     fn markSlotCached(self: *Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) void {
-        const idx = @as(usize, slot);
+        const idx = atlasSlotIndex(slot);
         if (idx >= self.atlas_slot_codepoint.len) return;
         self.atlas_slot_codepoint[idx] = key.codepoint;
         if (idx < self.atlas_slot_face_id.len) self.atlas_slot_face_id[idx] = key.face_id;
@@ -653,7 +565,7 @@ pub const Backend = struct {
 
     fn rasterizeSlot(self: *Backend, slot: u32, codepoint: u21, width: u16, height: u16) ResolvedGlyphKey {
         if (self.atlas_pixels.len == 0) return missingGlyphKey(codepoint);
-        const slot_index = @as(usize, slot) * self.atlas_slot_stride;
+        const slot_index = atlasSlotIndex(slot) * self.atlas_slot_stride;
         const dst = self.atlas_pixels[slot_index .. slot_index + self.atlas_slot_stride];
         @memset(dst, 0);
         const gw = @min(width, self.atlas_cell_w);
@@ -669,11 +581,11 @@ pub const Backend = struct {
     }
 
     fn markSlotAlpha(self: *Backend, slot: u32, pixels: []const u8, gw: u16, gh: u16) void {
-        const slot_idx = @as(usize, slot);
+        const slot_idx = atlasSlotIndex(slot);
         if (slot_idx >= self.atlas_slot_has_alpha.len) return;
         for (0..gh) |yy| {
             for (0..gw) |xx| {
-                if (pixels[yy * @as(usize, self.atlas_cell_w) + xx] != 0) {
+                if (pixels[atlasPixelOffset(self.atlas_cell_w, @intCast(xx), @intCast(yy))] != 0) {
                     self.atlas_slot_has_alpha[slot_idx] = true;
                     return;
                 }
@@ -724,8 +636,7 @@ pub const Backend = struct {
     }
 
     fn resetFallbackFaces(self: *Backend) void {
-        var i: usize = 0;
-        while (i < MaxFallbackFonts) : (i += 1) {
+        for (0..MaxFallbackFonts) |i| {
             if (self.fallback_hb_fonts[i] != null and builtin.target.abi != .android) {
                 c.hb_font_destroy(@ptrCast(self.fallback_hb_fonts[i].?));
                 self.fallback_hb_fonts[i] = null;
@@ -737,7 +648,7 @@ pub const Backend = struct {
         }
     }
 
-    fn ensureFallbackFace(self: *Backend, fallback_index: usize) ?FtFace {
+    fn ensureFallbackFace(self: *Backend, fallback_index: u32) ?FtFace {
         return provider_mod.ensureFallbackFace(self, fallback_index);
     }
 
@@ -764,7 +675,7 @@ pub const Backend = struct {
         }
 
         const lib = self.ft_lib orelse return null;
-        var i: usize = 0;
+        var i: u8 = 0;
         while (i < self.fallback_font_paths_len) : (i += 1) {
             const font_path = self.fallback_font_paths[i] orelse continue;
             var face: FtFace = undefined;
@@ -909,7 +820,70 @@ pub const Backend = struct {
     fn endTargetPass(_: *Backend) void {
         c.glBindFramebufferEXT(c.GL_FRAMEBUFFER_EXT, 0);
     }
+
+    fn deinitAtlasStorage(self: *Backend) void {
+        freeOwnedSlice(u8, &self.atlas_pixels);
+        freeOwnedSlice(u21, &self.atlas_slot_codepoint);
+        freeOwnedSlice(u32, &self.atlas_slot_face_id);
+        freeOwnedSlice(u32, &self.atlas_slot_glyph_id);
+        freeOwnedSlice(u64, &self.atlas_slot_sprite_key);
+        freeOwnedSlice(u16, &self.atlas_slot_width);
+        freeOwnedSlice(u16, &self.atlas_slot_height);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_x);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_y);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_w);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_h);
+        freeOwnedSlice(bool, &self.atlas_slot_has_alpha);
+        freeOwnedSlice(bool, &self.atlas_slot_gpu_uploaded);
+    }
+
+    fn deinitVertexBuffers(self: *Backend) void {
+        freeOwnedSlice(QuadVertex, &self.fill_vertices);
+        freeOwnedSlice(QuadVertex, &self.glyph_vertices);
+        freeOwnedSlice(TexturedVertex, &self.text_vertices);
+        freeOwnedSlice(QuadVertex, &self.fallback_fill_vertices);
+    }
+
+    fn deinitShaderObjects(self: *Backend) void {
+        if (self.text_shader_program != 0 and hasCurrentContext()) {
+            c.glDeleteProgram(self.text_shader_program);
+            self.text_shader_program = 0;
+        }
+    }
+
+    fn deinitTargetObjects(self: *Backend) void {
+        if (self.atlas_texture != 0 and hasCurrentContext()) {
+            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+            self.atlas_texture = 0;
+        }
+        if (self.scroll_scratch_texture != 0 and hasCurrentContext()) {
+            c.glDeleteTextures(1, @ptrCast(&self.scroll_scratch_texture));
+            self.scroll_scratch_texture = 0;
+        }
+        if (self.target_fbo != 0 and hasCurrentContext()) {
+            c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
+            self.target_fbo = 0;
+        }
+        if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
+            var texture = self.target_texture.?;
+            c.glDeleteTextures(1, @ptrCast(&texture));
+        }
+    }
 };
+
+fn freeOwnedSlice(comptime T: type, buffer: *[]T) void {
+    if (buffer.*.len == 0) return;
+    std.heap.c_allocator.free(buffer.*);
+    buffer.* = &.{};
+}
+
+fn atlasSlotIndex(slot: u32) usize {
+    return @intCast(slot);
+}
+
+fn atlasPixelOffset(width: u16, x: u16, y: u16) usize {
+    return @as(usize, y) * @as(usize, width) + x;
+}
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
     if (builtin.target.abi == .android) return c.FT_Get_Char_Index(face, codepoint);
