@@ -1,6 +1,6 @@
-# Special Glyph Audit
+# Special Glyph Reference
 
-`covered` means Howl routes and rasterizes the glyph through generated-special handling. `exact math` means Howl copied Kitty's actual geometry/math closely enough to call it exact, not just visually similar.
+`covered` means `howl-render` routes the glyph through generated-special handling and produces a sprite today. `exact math` means the generated geometry matches the local Kitty reference closely enough to treat it as the same construction, not just a similar picture.
 
 | Kitty Glyphs | Family | Covered | Exact Math |
 |---|---:|---:|---:|
@@ -45,18 +45,18 @@
 | `🭰...🭵`, `🭶...🭻` | eight-bars ranges | false | false |
 | `U+1CD00..U+1CDE5`, `🯦🯧` | octants | true | true |
 
-## Key Findings
+## Current Notes
 
-- Howl covers the common terminal families: box drawing, block elements, braille, sextants, octants, and main Powerline glyphs.
-- Howl does not cover a large Kitty-only surface area: progress bars, spinners, smooth mosaics, half triangles, shade variants, eight-bars, mid-lines, and private-use UI glyphs.
-- Howl routes `U+1FB00..U+1FBAE` as legacy computing, but the rasterizer only actually handles sextants `U+1FB00..U+1FB3B`; other routed glyphs can still fall through as unsupported.
-- Box drawing is not exact Kitty math. It is closer after the connector fix, but still uses Howl/Ghostty-style generic composition rather than Kitty's full helper dispatch.
-- Shades are intentionally not Kitty exact: `░▒▓` are uniform alpha masks for btop TTY graph quality.
-- Braille is not Kitty exact: it follows Ghostty-style robust dot placement and anti-aliasing.
+- `howl-render` covers the common terminal families: box drawing, block elements, braille, sextants, octants, and the main Powerline separators.
+- `howl-render` does not cover the larger Kitty-only generated surface: progress bars, spinners, smooth mosaics, half triangles, shade variants, eight-bars, mid-lines, and private-use UI glyphs.
+- `U+1FB00..U+1FBAE` still routes through the legacy-computing classifier, but the rasterizer only handles sextants `U+1FB00..U+1FB3B` today. The rest remain unsupported.
+- Box drawing is functional but not a full Kitty math port.
+- `░▒▓` remain intentional uniform alpha masks.
+- Braille remains an owner-local raster path, not a Kitty geometry port.
 - The strongest exact ports are sextants, octant mask mapping, quadrants, and eighth-block distribution.
 
 ## References
 
 - Kitty source: `/home/home/personal/zide/dev_references/terminals/kitty/kitty/decorations.c`
-- Howl rasterizer: `src/text/rasterizer.zig`
-- Howl built-in route map: `src/text/symbol_map.zig`
+- `howl-render` rasterizer: `src/text/rasterizer.zig`
+- `howl-render` symbol routing: `src/text/symbol_map.zig`
