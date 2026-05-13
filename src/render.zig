@@ -1,5 +1,5 @@
-//! Responsibility: provide a single render-core owner surface.
-//! Ownership: render-core orchestration API.
+//! Responsibility: provide a single render owner surface.
+//! Ownership: render orchestration API.
 //! Reason: keep hosts/backends on one coherent entrypoint.
 
 const std = @import("std");
@@ -14,7 +14,7 @@ const text_contract = @import("text_contract.zig");
 const text_pipeline = @import("text_pipeline.zig");
 const text = @import("text.zig");
 
-pub const RenderCore = struct {
+pub const Render = struct {
     pub const BackendConfig = types.BackendConfig;
     pub const BackendCapability = types.BackendCapability;
     pub const PixelSize = types.PixelSize;
@@ -67,7 +67,7 @@ pub const RenderCore = struct {
         cell_px: types.CellSize,
         geometry_epoch: u64,
     };
-    // Render-core retains only render-relevant publication state; title and output proof stay out of damage policy.
+    // render retains only render-relevant publication state; title and output proof stay out of damage policy.
     pub const Publication = struct {
         snapshot: FrameSnapshot = .{},
         cols: u16 = 0,
@@ -118,7 +118,7 @@ pub const RenderCore = struct {
         }
     };
     pub const RenderRuntime = struct {
-        pub const Metrics = RenderCore.Metrics;
+        pub const Metrics = Render.Metrics;
         allocator: std.mem.Allocator,
         surface_owner: FrameQueue.TerminalSurface = .{},
         render_px: types.PixelSize = .{ .width = 0, .height = 0 },
@@ -259,7 +259,7 @@ pub const RenderCore = struct {
             };
         }
 
-        pub fn takeMetrics(self: *RenderRuntime) RenderCore.Metrics {
+        pub fn takeMetrics(self: *RenderRuntime) Render.Metrics {
             return self.surface_owner.takeMetrics();
         }
 
@@ -417,7 +417,7 @@ pub const RenderCore = struct {
     config: types.BackendConfig,
     capability: types.BackendCapability,
 
-    pub fn init(config: BackendConfig, capability: BackendCapability) RenderCore {
+    pub fn init(config: BackendConfig, capability: BackendCapability) Render {
         return .{
             .config = config,
             .capability = capability,
@@ -426,7 +426,7 @@ pub const RenderCore = struct {
 
     /// Canonical active-path frame-to-text input conversion.
     pub fn vtStateToTextSceneInput(
-        _: *const RenderCore,
+        _: *const Render,
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedTextSceneInput {
@@ -434,7 +434,7 @@ pub const RenderCore = struct {
     }
 
     pub fn vtStateToFrameTextInput(
-        _: *const RenderCore,
+        _: *const Render,
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedFrameTextInput {
@@ -442,7 +442,7 @@ pub const RenderCore = struct {
     }
 
     pub fn buildFrameTextInput(
-        self: *const RenderCore,
+        self: *const Render,
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedFrameTextInput {
@@ -468,14 +468,14 @@ pub const RenderCore = struct {
 };
 
 pub const geometry = struct {
-    pub const deriveGridSize = RenderCore.deriveGridSize;
-    pub const deriveGridForFrame = RenderCore.deriveGridForFrame;
+    pub const deriveGridSize = Render.deriveGridSize;
+    pub const deriveGridForFrame = Render.deriveGridForFrame;
 };
 
 test "render runtime owns source publication and retained-frame queue" {
-    var runtime = RenderCore.RenderRuntime.init(std.testing.allocator);
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
-    var snapshot = try RenderCore.FrameSnapshot.init(std.testing.allocator, 2, 3);
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 3);
     defer snapshot.deinit(std.testing.allocator);
     for (snapshot.cells.items, 0..) |*cell, idx| cell.codepoint = @intCast('a' + idx);
 
@@ -493,7 +493,7 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expectEqual(@as(u16, 16), query.cell_px.height);
     try std.testing.expectEqual(@as(u64, 1), query.epoch);
 
-    const clean_source = RenderCore.SourceView{
+    const clean_source = Render.SourceView{
         .snapshot = &snapshot,
         .cols = 3,
         .rows = 2,
@@ -524,7 +524,7 @@ test "render runtime owns source publication and retained-frame queue" {
     });
     try std.testing.expect(runtime.prepare() == null);
 
-    const duplicate_source = RenderCore.SourceView{
+    const duplicate_source = Render.SourceView{
         .snapshot = &snapshot,
         .cols = 3,
         .rows = 2,
@@ -661,10 +661,10 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expect(!same_geometry.changed);
 }
 
-test "render runtime metrics stay owned by render core" {
-    var runtime = RenderCore.RenderRuntime.init(std.testing.allocator);
+test "render runtime metrics stay owned by render" {
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
-    var snapshot = try RenderCore.FrameSnapshot.init(std.testing.allocator, 2, 2);
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 2);
     defer snapshot.deinit(std.testing.allocator);
     snapshot.clearDirty();
 
@@ -681,7 +681,7 @@ test "render runtime metrics stay owned by render core" {
     try std.testing.expect(geometry_receipt.changed);
     try std.testing.expectEqual(@as(u64, 1), geometry_receipt.geometry_epoch);
 
-    const source = RenderCore.SourceView{
+    const source = Render.SourceView{
         .snapshot = &snapshot,
         .cols = 2,
         .rows = 2,

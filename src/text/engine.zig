@@ -1,5 +1,5 @@
 //! Responsibility: orchestrate the mature terminal text pipeline.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: keep text semantics out of backend draw/upload code.
 
 const std = @import("std");

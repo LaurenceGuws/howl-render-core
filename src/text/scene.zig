@@ -1,5 +1,5 @@
 //! Responsibility: build renderer-neutral text scenes.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: separate text decisions from backend draw submission.
 
 const std = @import("std");

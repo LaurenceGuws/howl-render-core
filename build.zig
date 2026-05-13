@@ -49,7 +49,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     mod.addImport("howl_render", mod);
-    mod.addImport("howl_render_core", mod);
     mod.addImport("render_options", module_options.createModule());
     mod.linkLibrary(freetype_lib);
     mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
@@ -81,7 +80,6 @@ pub fn build(b: *std.Build) void {
         .optimize = perf_optimize,
     });
     perf_mod.addImport("howl_render", perf_mod);
-    perf_mod.addImport("howl_render_core", perf_mod);
     perf_mod.addImport("render_options", perf_options.createModule());
     perf_mod.linkLibrary(perf_freetype_lib);
     perf_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
@@ -104,32 +102,32 @@ pub fn build(b: *std.Build) void {
         run_mod_tests.has_side_effects = true;
     }
 
-    const core_mod = b.addModule("howl_render_core_pure", .{
-        .root_source_file = b.path("src/render_core.zig"),
+    const render_mod = b.addModule("howl_render_pure", .{
+        .root_source_file = b.path("src/render.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const core_tests = b.addTest(.{
-        .name = "test-core",
-        .root_module = core_mod,
+    const render_tests = b.addTest(.{
+        .name = "test-render",
+        .root_module = render_mod,
         .filters = b.args orelse &.{},
     });
-    core_tests.use_llvm = true;
-    const run_core_tests = b.addRunArtifact(core_tests);
+    render_tests.use_llvm = true;
+    const run_render_tests = b.addRunArtifact(render_tests);
     if (b.args != null) {
-        run_core_tests.has_side_effects = true;
+        run_render_tests.has_side_effects = true;
     }
 
     const test_step = b.step("test", "Run all tests");
-    const test_core_step = b.step("test:core", "Run pure render-core tests");
-    const test_core_build_step = b.step("test:core:build", "Build pure render-core tests");
+    const test_render_step = b.step("test:render", "Run pure render tests");
+    const test_render_build_step = b.step("test:render:build", "Build pure render tests");
     const test_unit_step = b.step("test:unit", "Run unit tests");
     const test_unit_build_step = b.step("test:unit:build", "Build unit tests");
-    test_core_build_step.dependOn(&b.addInstallArtifact(core_tests, .{}).step);
-    test_core_step.dependOn(&run_core_tests.step);
+    test_render_build_step.dependOn(&b.addInstallArtifact(render_tests, .{}).step);
+    test_render_step.dependOn(&run_render_tests.step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(test_core_step);
+    test_step.dependOn(test_render_step);
     test_step.dependOn(test_unit_step);
 
     const ffi_mod = b.createModule(.{
@@ -138,7 +136,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ffi_mod.addImport("howl_render", ffi_mod);
-    ffi_mod.addImport("howl_render_core", ffi_mod);
     ffi_mod.addImport("render_options", ffi_options.createModule());
     ffi_mod.linkLibrary(freetype_lib);
     ffi_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
@@ -154,13 +151,13 @@ pub fn build(b: *std.Build) void {
         .linkage = .dynamic,
         .root_module = ffi_mod,
     });
-    const ffi_build_step = b.step("ffi:build", "Build the howl-render-core C FFI library");
+    const ffi_build_step = b.step("ffi:build", "Build the howl-render C FFI library");
     ffi_build_step.dependOn(&b.addInstallArtifact(ffi_lib, .{}).step);
     b.installArtifact(ffi_lib);
     b.installFile("include/howl_render.h", "include/howl_render.h");
 
     const benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/render_core_benchmark.zig"),
+        .root_source_file = b.path("src/test/render_benchmark.zig"),
         .target = target,
         .optimize = perf_optimize,
     });
@@ -177,12 +174,12 @@ pub fn build(b: *std.Build) void {
     }
 
     const benchmark_exe = b.addExecutable(.{
-        .name = "render_core_benchmark",
+        .name = "render_benchmark",
         .root_module = benchmark_mod,
     });
     benchmark_exe.use_llvm = true;
     const run_benchmark = b.addRunArtifact(benchmark_exe);
     if (b.args) |args| run_benchmark.addArgs(args);
-    const benchmark_step = b.step("render-core-benchmark", "Run render-core benchmark suite");
+    const benchmark_step = b.step("render-benchmark", "Run render benchmark suite");
     benchmark_step.dependOn(&run_benchmark.step);
 }

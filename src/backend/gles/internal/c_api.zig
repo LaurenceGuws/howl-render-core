@@ -1,6 +1,6 @@
 //! Responsibility: expose C types used by the OpenGL ES backend.
 //! Ownership: OpenGL ES backend internals own native header selection.
-//! Reason: keeps platform C imports out of render-core public contracts.
+//! Reason: keeps platform C imports out of render public contracts.
 
 const builtin = @import("builtin");
 

@@ -1,5 +1,5 @@
 //! Responsibility: define the unified text-engine provider boundary.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: backends should implement one coherent FT/HB provider surface.
 
 const std = @import("std");

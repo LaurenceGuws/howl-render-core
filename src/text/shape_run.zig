@@ -1,5 +1,5 @@
 //! Responsibility: shape resolved text runs.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: make HarfBuzz run shaping the architecture boundary, not backend glue.
 
 const std = @import("std");

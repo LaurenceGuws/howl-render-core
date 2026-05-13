@@ -1,9 +1,9 @@
-//! Responsibility: implement the howl-render-core native ABI surface.
-//! Ownership: render-core geometry, snapshot storage, runtime scheduling, and renderer owner handles.
+//! Responsibility: implement the howl-render native ABI surface.
+//! Ownership: render geometry, snapshot storage, runtime scheduling, and renderer owner handles.
 //! Reason: keep C consumers on the same owner-true render contract as Zig consumers.
 
 const std = @import("std");
-const Core = @import("render_core.zig").RenderCore;
+const Render = @import("render.zig").Render;
 const renderer_mod = @import("renderer.zig").Renderer;
 
 pub const SnapshotHandle = usize;
@@ -237,15 +237,15 @@ comptime {
     std.debug.assert(@sizeOf(FfiCursor) == 6);
 }
 
-fn pixelIn(value: FfiPixelSize) Core.PixelSize {
+fn pixelIn(value: FfiPixelSize) Render.PixelSize {
     return .{ .width = value.width, .height = value.height };
 }
 
-fn cellIn(value: FfiCellSize) Core.CellSize {
+fn cellIn(value: FfiCellSize) Render.CellSize {
     return .{ .width = value.width, .height = value.height };
 }
 
-fn gridOut(value: Core.GridSize) FfiGridSize {
+fn gridOut(value: Render.GridSize) FfiGridSize {
     return .{ .cols = value.cols, .rows = value.rows };
 }
 
@@ -253,7 +253,7 @@ fn boolByte(value: bool) u8 {
     return if (value) 1 else 0;
 }
 
-fn colorIn(value: FfiColor) Core.SurfaceColor {
+fn colorIn(value: FfiColor) Render.SurfaceColor {
     return .{
         .kind = switch (value.kind) {
             0 => .default,
@@ -264,7 +264,7 @@ fn colorIn(value: FfiColor) Core.SurfaceColor {
     };
 }
 
-fn cellValueIn(value: FfiCell) Core.SurfaceCell {
+fn cellValueIn(value: FfiCell) Render.SurfaceCell {
     return .{
         .codepoint = @intCast(value.codepoint),
         .flags = .{ .continuation = value.flags.continuation != 0 },
@@ -287,7 +287,7 @@ fn cellValueIn(value: FfiCell) Core.SurfaceCell {
     };
 }
 
-fn cursorIn(value: FfiCursor) Core.SurfaceCursorInfo {
+fn cursorIn(value: FfiCursor) Render.SurfaceCursorInfo {
     return .{
         .row = value.row,
         .col = value.col,
@@ -301,7 +301,7 @@ fn cursorIn(value: FfiCursor) Core.SurfaceCursorInfo {
     };
 }
 
-fn geometryIn(value: FfiGeometry) Core.Geometry {
+fn geometryIn(value: FfiGeometry) Render.Geometry {
     return .{
         .render_px = pixelIn(value.render_px),
         .grid_px = pixelIn(value.grid_px),
@@ -309,11 +309,11 @@ fn geometryIn(value: FfiGeometry) Core.Geometry {
     };
 }
 
-fn cellInSize(value: FfiCellSize) Core.CellSize {
+fn cellInSize(value: FfiCellSize) Render.CellSize {
     return .{ .width = value.width, .height = value.height };
 }
 
-fn geometryOut(value: Core.GeometryReceipt) FfiGeometryReceipt {
+fn geometryOut(value: Render.GeometryReceipt) FfiGeometryReceipt {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
         .changed = boolByte(value.changed),
@@ -324,7 +324,7 @@ fn geometryOut(value: Core.GeometryReceipt) FfiGeometryReceipt {
     };
 }
 
-fn sourceViewIn(value: FfiSourceView) ?Core.SourceView {
+fn sourceViewIn(value: FfiSourceView) ?Render.SourceView {
     const snapshot = snapshotFromHandle(value.snapshot_handle) orelse return null;
     return .{
         .snapshot = snapshot,
@@ -345,7 +345,7 @@ fn sourceViewIn(value: FfiSourceView) ?Core.SourceView {
     };
 }
 
-fn sourceReceiptOut(value: Core.SourceReceipt) FfiSourceReceipt {
+fn sourceReceiptOut(value: Render.SourceReceipt) FfiSourceReceipt {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
         .published = boolByte(value.published),
@@ -356,7 +356,7 @@ fn sourceReceiptOut(value: Core.SourceReceipt) FfiSourceReceipt {
     };
 }
 
-fn surfaceQueryOut(value: Core.SurfaceQuery) FfiSurfaceQuery {
+fn surfaceQueryOut(value: Render.SurfaceQuery) FfiSurfaceQuery {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
         .render_px = .{ .width = value.render_px.width, .height = value.render_px.height },
@@ -367,7 +367,7 @@ fn surfaceQueryOut(value: Core.SurfaceQuery) FfiSurfaceQuery {
     };
 }
 
-fn metricsOut(value: Core.Metrics) FfiRuntimeMetrics {
+fn metricsOut(value: Render.Metrics) FfiRuntimeMetrics {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
         .snapshot_publishes = value.snapshot_publishes,
@@ -389,7 +389,7 @@ fn metricsOut(value: Core.Metrics) FfiRuntimeMetrics {
     };
 }
 
-fn backendMetricsOut(value: Core.RenderMetrics) FfiBackendMetrics {
+fn backendMetricsOut(value: Render.RenderMetrics) FfiBackendMetrics {
     return .{
         .sync_us = value.sync_us,
         .copy_us = value.copy_us,
@@ -411,11 +411,11 @@ fn backendMetricsOut(value: Core.RenderMetrics) FfiBackendMetrics {
     };
 }
 
-fn surfaceOut(value: Core.SurfaceHandle) FfiSurfaceHandle {
+fn surfaceOut(value: Render.SurfaceHandle) FfiSurfaceHandle {
     return .{ .texture_id = value.texture_id, .width = value.width, .height = value.height, .epoch = value.epoch };
 }
 
-fn underlineStyleIn(value: u8) Core.UnderlineStyle {
+fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     return switch (value) {
         1 => .double,
         2 => .curly,
@@ -425,12 +425,12 @@ fn underlineStyleIn(value: u8) Core.UnderlineStyle {
     };
 }
 
-fn snapshotFromHandle(handle: SnapshotHandle) ?*Core.FrameSnapshot {
+fn snapshotFromHandle(handle: SnapshotHandle) ?*Render.FrameSnapshot {
     if (handle == 0) return null;
     return @ptrFromInt(handle);
 }
 
-fn runtimeFromHandle(handle: RuntimeHandle) ?*Core.RenderRuntime {
+fn runtimeFromHandle(handle: RuntimeHandle) ?*Render.RenderRuntime {
     if (handle == 0) return null;
     return @ptrFromInt(handle);
 }
@@ -441,11 +441,11 @@ fn rendererFromHandle(handle: RendererHandle) ?*RendererOwner {
 }
 
 pub fn deriveGridSize(grid_px: FfiPixelSize, cell_px: FfiCellSize) callconv(.c) FfiGridSize {
-    return gridOut(Core.deriveGridSize(pixelIn(grid_px), cellIn(cell_px)));
+    return gridOut(Render.deriveGridSize(pixelIn(grid_px), cellIn(cell_px)));
 }
 
 pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_px: FfiCellSize) callconv(.c) FfiFrameGridResult {
-    const grid = Core.deriveGridForFrame(pixelIn(render_px), pixelIn(grid_px), cellIn(cell_px)) catch |err| {
+    const grid = Render.deriveGridForFrame(pixelIn(render_px), pixelIn(grid_px), cellIn(cell_px)) catch |err| {
         return .{
             .status = switch (err) {
                 error.InvalidSurfaceSize => -1,
@@ -459,8 +459,8 @@ pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_
 
 pub fn snapshotInit(rows: u16, cols: u16) callconv(.c) SnapshotHandle {
     if (rows == 0 or cols == 0) return 0;
-    const snapshot = std.heap.c_allocator.create(Core.FrameSnapshot) catch return 0;
-    snapshot.* = Core.FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
+    const snapshot = std.heap.c_allocator.create(Render.FrameSnapshot) catch return 0;
+    snapshot.* = Render.FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
         std.heap.c_allocator.destroy(snapshot);
         return 0;
     };
@@ -514,8 +514,8 @@ pub fn snapshotWriteCell(handle: SnapshotHandle, row: u16, col: u16, cell: FfiCe
 }
 
 pub fn runtimeInit() callconv(.c) RuntimeHandle {
-    const runtime = std.heap.c_allocator.create(Core.RenderRuntime) catch return 0;
-    runtime.* = Core.RenderRuntime.init(std.heap.c_allocator);
+    const runtime = std.heap.c_allocator.create(Render.RenderRuntime) catch return 0;
+    runtime.* = Render.RenderRuntime.init(std.heap.c_allocator);
     return @intFromPtr(runtime);
 }
 
@@ -547,7 +547,7 @@ pub fn runtimePublishSnapshot(handle: RuntimeHandle, source: FfiSourceView) call
 }
 
 pub fn runtimeAction(handle: RuntimeHandle) callconv(.c) u8 {
-    const runtime = runtimeFromHandle(handle) orelse return @intFromEnum(Core.FrameQueue.TerminalSurface.Action.idle);
+    const runtime = runtimeFromHandle(handle) orelse return @intFromEnum(Render.FrameQueue.TerminalSurface.Action.idle);
     return @intFromEnum(runtime.surface_owner.nextAction());
 }
 
@@ -739,7 +739,7 @@ test "ffi runtime owner handles geometry and publication" {
     });
     try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), receipt.status);
     try std.testing.expectEqual(@as(u8, 1), receipt.published);
-    try std.testing.expectEqual(@as(u8, @intFromEnum(Core.FrameQueue.TerminalSurface.Action.prepare)), runtimeAction(runtime_handle));
+    try std.testing.expectEqual(@as(u8, @intFromEnum(Render.FrameQueue.TerminalSurface.Action.prepare)), runtimeAction(runtime_handle));
 }
 
 test "ffi runtime owner reports missing handle and invalid geometry" {

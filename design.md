@@ -3,17 +3,17 @@
 Shared rules: [`../../design/design-rules.md`](../../design/design-rules.md)
 
 ## Purpose
-`howl-render-core` owns the backend-neutral rendering contract.
+`howl-render` owns the backend-neutral rendering contract.
 
 It turns render-facing terminal state into validated render batches and shared text-stack contracts.
 
 ## Public Surface
-- `RenderCore`: main render-core owner.
+- `Render`: main render owner.
 - `TextStack`: shared text-stack owner.
 
 ```mermaid
 classDiagram
-    class RenderCore {
+    class Render {
       +init()
       +vtStateToRenderBatch()
       +validateRenderBatch()
@@ -26,14 +26,14 @@ classDiagram
     class BackendConfig
     class BackendCapability
 
-    RenderCore --> RenderBatch
-    RenderCore --> BackendConfig
-    RenderCore --> BackendCapability
-    RenderCore --> TextStack
+    Render --> RenderBatch
+    Render --> BackendConfig
+    Render --> BackendCapability
+    Render --> TextStack
 ```
 
 ## Ownership Rules
-- `RenderCore` owns backend-neutral batch shapes and validation rules.
+- `Render` owns backend-neutral batch shapes and validation rules.
 - `TextStack` owns shared atlas math, line/run/group text vocabulary, fallback policy, metrics policy, and special glyph logic.
 - Backend repos should depend on these contracts, not re-invent them privately.
 - `GlyphQuad` is final GPU submission data. It is not the shaping input model.
@@ -52,7 +52,7 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     participant Backend
-    participant RC as RenderCore
+    participant RC as Render
     participant VT as VtState
     participant TS as TextStack
 
@@ -64,7 +64,7 @@ sequenceDiagram
 ```
 
 ## API Contracts
-- `RenderCore` is a pure owner around render policy inputs.
+- `Render` is a pure owner around render policy inputs.
 - `vtStateToRenderBatch*` allocates owned batch buffers that callers must release.
 - `validateRenderBatch` is the backend-facing contract check before render.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.

@@ -1,5 +1,5 @@
 //! Responsibility: deterministic text pipeline contract types.
-//! Ownership: render-core text API boundary.
+//! Ownership: render text API boundary.
 //! Reason: keep shaping/fallback/metrics vocabulary stable across render variants.
 
 const std = @import("std");

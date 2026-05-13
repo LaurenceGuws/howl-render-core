@@ -25,11 +25,11 @@ Recent bug class to avoid: do not "fix" oversized Nerd Font/icon output by narro
 Howl currently has the beginning of a text contract, but the real implementation is still fundamentally cell/codepoint based.
 
 Already present:
-- `howl-render-core/src/text_contract.zig` defines placeholder contract types such as `TextCluster`, `ShapedRun`, `ShapedGlyph`, `FontMetrics`, and `CellMetrics`.
-- `howl-render-core/src/text_pipeline.zig` defines resolver/shaper/raster operation shapes and counters.
+- `howl-render/src/text_contract.zig` defines placeholder contract types such as `TextCluster`, `ShapedRun`, `ShapedGlyph`, `FontMetrics`, and `CellMetrics`.
+- `howl-render/src/text_pipeline.zig` defines resolver/shaper/raster operation shapes and counters.
 - `RenderGl` and `RenderGles` link FreeType and HarfBuzz and rasterize glyph bitmaps into an atlas.
 - Hosts can configure primary and fallback font paths.
-- Render-core owns some shared special glyph classification and procedural box/block rendering.
+- render owns some shared special glyph classification and procedural box/block rendering.
 
 Important gaps:
 - HarfBuzz is currently used as a single-codepoint glyph-id helper, not as a run shaper.
@@ -78,7 +78,7 @@ Kitty-specific invariants that Howl must preserve:
 - Sprite cache identity must be rendered-result identity: glyph sequence, ligature index, cell count, scale, subscale, multicell row, alignment, face/style/presentation, and procedural route where applicable.
 - Rendered groups may span multiple terminal cells. That span is not a bug; the pipeline must carry it through rasterization, atlas upload, damage expansion, and final draw.
 
-For Howl, copy that shape: keep font quality inside render backends/render-core contracts, but let that engine understand terminal cells deeply enough to render actual glyphs correctly.
+For Howl, copy that shape: keep font quality inside render backends/render contracts, but let that engine understand terminal cells deeply enough to render actual glyphs correctly.
 
 ## Kitty Behaviors That Matter
 From the local kitty reference:
@@ -101,7 +101,7 @@ The redesign boundary is simple:
 The new text stack must be a first-class engine layer, not a thin helper around backend code.
 
 ### Target Pipeline
-1. VT/frame cells enter render-core as terminal-aware cell payloads.
+1. VT/frame cells enter render as terminal-aware cell payloads.
 2. A text engine extracts `CellText` and grapheme clusters from cells.
 3. A font resolver selects primary/style/symbol/fallback faces for compatible runs.
 4. HarfBuzz shapes full runs, not individual codepoints.
@@ -114,9 +114,9 @@ The new text stack must be a first-class engine layer, not a thin helper around 
 This is the essential maturity move.
 
 ## Target Ownership
-Keep Howl boundaries, but move text semantics into a real text engine layer inside render-core.
+Keep Howl boundaries, but move text semantics into a real text engine layer inside render.
 
-`howl-vt-core` owns:
+`howl-vt` owns:
 - cell text semantics: codepoints, width/continuation, grapheme/multicodepoint cell content where terminal semantics require it
 - Unicode width/presentation behavior that affects cursor movement and wrapping
 
@@ -124,7 +124,7 @@ Keep Howl boundaries, but move text semantics into a real text engine layer insi
 - converting VT snapshots into render surface cells
 - no FreeType/HarfBuzz/font discovery logic
 
-`howl-render-core` owns:
+`howl-render` owns:
 - stable text contract types
 - shared resolver order
 - shared line/run/group/sprite data vocabulary
@@ -137,7 +137,7 @@ Keep Howl boundaries, but move text semantics into a real text engine layer insi
 - grouping semantics that map shaped glyphs back to terminal cells
 
 `RenderGl` / `RenderGles` own:
-- FreeType/HarfBuzz/font discovery integration hooks for the render-core text engine
+- FreeType/HarfBuzz/font discovery integration hooks for the render text engine
 - concrete face lifetime wiring where platform/backend specific
 - concrete glyph rasterization backend hooks
 - atlas texture storage, eviction, and upload
@@ -148,7 +148,7 @@ Linux-host owns:
 - no shaping, no fallback decisions, no Unicode text policy
 
 Ghostty boundary guidance applied to Howl:
-- `howl-term` and hosts consume render-core/renderer APIs as embeddable clients; they do not own renderer internals.
+- `howl-term` and hosts consume render/renderer APIs as embeddable clients; they do not own renderer internals.
 - Renderer state and runtime wake/scheduling may be platform-specific, but text correctness must not leak into host UX/runtime code.
 - Native host freedom is allowed only below the outcome boundary. SDL and Android may differ internally, but must prove equivalent font/render behavior.
 - Library-style APIs must expose explicit failure states and counters instead of silent fallback rendering.
@@ -163,7 +163,7 @@ Alacritty throughput guidance applied to Howl:
 ## Required Data Model Upgrade
 Current `SurfaceCell.codepoint` is not enough. Move toward a kitty-like cell text model.
 
-Add render-core vocabulary:
+Add render vocabulary:
 - `CellTextId`: compact reference to one cell's codepoint sequence.
 - `CellText`: one or more Unicode scalar values plus cached first codepoint.
 - `LineTextCache`: per-frame or retained interner for repeated cell text.
@@ -183,7 +183,7 @@ Also add explicit engine output vocabulary:
 Do not try to solve this by adding more fields to `GlyphQuad`. `GlyphQuad` should become the final GPU submission result, not the text decision input.
 
 ## Proposed Module Layout
-Build the mature stack in `howl-render-core/src/text_stack/`.
+Build the mature stack in `howl-render/src/text_stack/`.
 
 New modules:
 - `engine.zig`: orchestrates the full text pipeline.
@@ -219,7 +219,7 @@ Backends must not own:
 - primary text engine orchestration
 - shared metrics policy
 
-If a text behavior matters for correctness, it belongs in render-core text-stack policy, not duplicated in GL and GLES.
+If a text behavior matters for correctness, it belongs in render text-stack policy, not duplicated in GL and GLES.
 
 ## Quality Targets
 This sprint is not just for cold-path performance. It is for raising the architecture and quality floor.
@@ -306,7 +306,7 @@ Metrics contract:
 
 Rules:
 - Derive cell metrics from the selected primary face.
-- Apply user metric adjustments only through one render-core/renderer policy path.
+- Apply user metric adjustments only through one render/renderer policy path.
 - GL and GLES must use the same baseline/origin math.
 - Cursor geometry must be derived from the same `CellMetrics` as glyph placement.
 - Atlas slot dimensions must include any decoration/underline-exclusion row policy explicitly, if adopted.
@@ -377,7 +377,7 @@ Unit/golden test groups:
 - ligature grouping for FiraCode/Cascadia/Iosevka-style behaviors
 - PUA+space powerline multicell behavior
 - procedural box/block/braille/powerline pixel masks
-- GL/GLES contract parity tests using the same render-core fixtures
+- GL/GLES contract parity tests using the same render fixtures
 - pixel/readback proof for wide icon/Nerd Font cases that previously rendered as full-cell blocks
 
 Invalid proof:
@@ -385,7 +385,7 @@ Invalid proof:
 - Replay frame counts, submit rejection counts, and wake metrics do not prove glyph quality.
 
 Valid proof:
-- render-core pixel masks for procedural sprites
+- render pixel masks for procedural sprites
 - atlas alpha/color content for rasterized glyph groups
 - GL/GLES framebuffer or target-texture readback for visual regressions
 - screenshot/manual proof only as a temporary diagnostic, not as the final automated gate
@@ -402,7 +402,7 @@ Manual validation corpus:
 This section is the working checklist for the migration. Update it before moving between slices.
 
 - Slice 0: Architecture Skeleton — mostly complete. The target module layout exists under `src/text_stack/`, public contract/pipeline vocabulary is expanded, and the legacy path still coexists.
-- Slice 1: Cell Text And Run Vocabulary — partially complete. Render-core can intern legacy and rich cell text inputs and produce clusters/runs, and continuation cells now expand base-cell spans for the new text pipeline. VT/render conversion still does not preserve full rich terminal cell text end-to-end.
+- Slice 1: Cell Text And Run Vocabulary — partially complete. render can intern legacy and rich cell text inputs and produce clusters/runs, and continuation cells now expand base-cell spans for the new text pipeline. VT/render conversion still does not preserve full rich terminal cell text end-to-end.
 - Slice 2: Font Session And Resolver — partially complete. Provider-backed sessions and whole-cell validation exist, but style-family faces, symbol-map override faces, discovery fallback, and full resolver order are incomplete.
 - Slice 3: Metrics And Placement Policy — functionally complete for the current architecture slice. Shared 26.6 face-metric to `CellMetrics`/baseline policy exists in `TextStack.Metrics`, GL/GLES cell-size and glyph baseline helpers consume it, shared decoration/cursor geometry helpers exist, bitmap bearing/baseline placement is centralized for GL/GLES raster paths, shaping/grouping/scene contracts carry explicit placement data, the legacy frame-to-batch path preserves underline/strikethrough into shared-geometry decoration fills, and the mature text-scene path now emits explicit decoration draws. Remaining correctness work is now mainly replacing stub placement/shaping with real HarfBuzz outputs in Slice 4.
 - Slice 4: Real HarfBuzz Shaping — in progress. The shaping boundary now carries full `LineTextCache` data, and `RenderGl` has started whole-run HarfBuzz shaping with preserved glyph clusters/offsets/advances. Remaining work is broadening that shaping path across more cases and making grouping consume real HarfBuzz cluster behavior for ligatures, combining marks, and multicell glyphs.
@@ -436,7 +436,7 @@ Tasks:
 - Add deterministic tests for cell text interning and run construction.
 
 Exit criteria:
-- Render-core can express a line of terminal text without collapsing it to one codepoint per draw glyph.
+- render can express a line of terminal text without collapsing it to one codepoint per draw glyph.
 
 ### Slice 2: Font Session And Resolver
 Goal: create a kitty-like font session owner and remove resolver semantics from backend draw code.

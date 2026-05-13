@@ -1,5 +1,5 @@
 //! Responsibility: define the locked normal-vs-complex renderer lane split.
-//! Ownership: render-core lane contract for the default text path.
+//! Ownership: render lane contract for the default text path.
 //! Reason: keep ordinary monospace cells out of vague auto-routing.
 
 const std = @import("std");

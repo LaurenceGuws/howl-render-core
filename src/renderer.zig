@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const render_options = @import("render_options");
-const render_core = @import("render_core.zig").RenderCore;
+const render = @import("render.zig").Render;
 const backend_mod = switch (render_options.render_backend) {
     .gl => @import("backend/gl/backend.zig"),
     .gles => @import("backend/gles/backend.zig"),
@@ -27,8 +27,8 @@ pub const Renderer = struct {
     mutex: ThreadMutex = .{},
 
     pub const FrameLayout = struct {
-        cell_px: render_core.CellSize,
-        grid: render_core.GridSize,
+        cell_px: render.CellSize,
+        grid: render.GridSize,
     };
 
     pub const PreparedTimings = struct {
@@ -91,7 +91,7 @@ pub const Renderer = struct {
     };
 
     pub const Prepared = struct {
-        resolve_before: render_core.ResolveCounters,
+        resolve_before: render.ResolveCounters,
         frame: PreparedFrame,
     };
 
@@ -101,8 +101,8 @@ pub const Renderer = struct {
         geometry_epoch: u64,
         sync_us: u64,
         copy_us: u64,
-        prepare_metrics: render_core.PrepareMetrics,
-        resolve_before: render_core.ResolveCounters,
+        prepare_metrics: render.PrepareMetrics,
+        resolve_before: render.ResolveCounters,
         prepared: PreparedFrame,
 
         pub fn deinit(self: *FrameRecord) void {
@@ -110,14 +110,14 @@ pub const Renderer = struct {
             self.* = undefined;
         }
 
-        pub fn pipelineFrame(self: *const FrameRecord, request: render_core.FramePipeline.RenderRequest) render_core.FramePipeline.PreparedFrame {
-            const damage_kind: render_core.FramePipeline.DamageKind = switch (self.prepared.damageKind()) {
+        pub fn pipelineFrame(self: *const FrameRecord, request: render.FramePipeline.RenderRequest) render.FramePipeline.PreparedFrame {
+            const damage_kind: render.FramePipeline.DamageKind = switch (self.prepared.damageKind()) {
                 .full => .full,
                 .scroll => .scroll,
                 .partial => .partial,
             };
             const damage_base_seq = if (damage_kind == .partial or damage_kind == .scroll) request.token.damage_base_seq else 0;
-            const token = render_core.FramePipeline.SnapshotToken{
+            const token = render.FramePipeline.SnapshotToken{
                 .snapshot_seq = self.render_seq,
                 .dirty_epoch = self.render_dirty_epoch,
                 .geometry_epoch = self.geometry_epoch,
@@ -131,7 +131,7 @@ pub const Renderer = struct {
             };
         }
 
-        pub fn renderMetrics(self: *const FrameRecord, submitted: Submitted, render_us: u64) render_core.RenderMetrics {
+        pub fn renderMetrics(self: *const FrameRecord, submitted: Submitted, render_us: u64) render.RenderMetrics {
             const report = submitted.report;
             const resolve_after = submitted.resolve_after;
             return .{
@@ -155,7 +155,7 @@ pub const Renderer = struct {
             };
         }
 
-        pub fn submittedFrame(self: *const FrameRecord, submitted: Submitted) render_core.FramePipeline.SubmittedFrame {
+        pub fn submittedFrame(self: *const FrameRecord, submitted: Submitted) render.FramePipeline.SubmittedFrame {
             return .{
                 .token = .{
                     .snapshot_seq = self.render_seq,
@@ -173,17 +173,17 @@ pub const Renderer = struct {
 
     pub const Submitted = struct {
         report: SubmittedReport,
-        resolve_after: render_core.ResolveCounters,
-        surface: render_core.SurfaceHandle,
+        resolve_after: render.ResolveCounters,
+        surface: render.SurfaceHandle,
 
-        pub fn damageKind(self: Submitted) render_core.FramePipeline.DamageKind {
+        pub fn damageKind(self: Submitted) render.FramePipeline.DamageKind {
             if (self.report.full_redraw) return .full;
             if (self.report.scroll_up_px > 0) return .scroll;
             return .partial;
         }
     };
 
-    pub fn init(config: render_core.BackendConfig) Renderer {
+    pub fn init(config: render.BackendConfig) Renderer {
         return .{ .backend = backend_mod.Backend.init(config) };
     }
 
@@ -213,9 +213,9 @@ pub const Renderer = struct {
 
     pub fn deriveFrameLayout(
         self: *Renderer,
-        render_px: render_core.PixelSize,
-        grid_px: render_core.PixelSize,
-    ) render_core.FrameGeometryError!FrameLayout {
+        render_px: render.PixelSize,
+        grid_px: render.PixelSize,
+    ) render.FrameGeometryError!FrameLayout {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
         const layout = try self.backend.deriveFrameLayout(render_px, grid_px);
@@ -225,11 +225,11 @@ pub const Renderer = struct {
     pub fn prepareFrame(
         self: *Renderer,
         allocator: std.mem.Allocator,
-        state: render_core.SurfaceFrameData,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
+        state: render.SurfaceFrameData,
+        surface_px: render.PixelSize,
+        cell_px: render.CellSize,
     ) !Prepared {
-        var faces: [32]render_core.Text.FontSession.FontFaceRecord = undefined;
+        var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
         lockMutex(&self.mutex);
         errdefer self.mutex.unlock();
         const resolve_before = self.backend.resolveCounters();
@@ -261,19 +261,19 @@ pub const Renderer = struct {
         };
     }
 
-    pub fn surfaceHandle(self: *Renderer) render_core.SurfaceHandle {
+    pub fn surfaceHandle(self: *Renderer) render.SurfaceHandle {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
         return self.backend.surfaceHandle();
     }
 
-    pub fn resolveCounters(self: *Renderer) render_core.ResolveCounters {
+    pub fn resolveCounters(self: *Renderer) render.ResolveCounters {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
         return self.backend.resolveCounters();
     }
 
-    pub fn lastResolveStage(self: *Renderer) render_core.ResolveStage {
+    pub fn lastResolveStage(self: *Renderer) render.ResolveStage {
         lockMutex(&self.mutex);
         defer self.mutex.unlock();
         return self.backend.lastResolveStage();

@@ -1,5 +1,5 @@
 //! Responsibility: extract terminal cell text clusters.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: preserve grapheme/cell-span semantics before shaping.
 
 const std = @import("std");

@@ -1,5 +1,5 @@
 //! Responsibility: define font resolution inputs and outputs.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: keep fallback and symbol-route semantics backend independent.
 
 const std = @import("std");

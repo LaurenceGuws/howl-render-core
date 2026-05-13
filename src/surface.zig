@@ -1,5 +1,5 @@
 //! Responsibility: define shared frame/surface model types for render conversion.
-//! Ownership: render-core surface data model.
+//! Ownership: render surface data model.
 //! Reason: keep frame shape canonical across modules.
 
 pub const SurfaceState = enum {

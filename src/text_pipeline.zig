@@ -1,5 +1,5 @@
 //! Responsibility: deterministic resolver/shaper pipeline contract types.
-//! Ownership: render-core text pipeline API boundary.
+//! Ownership: render text pipeline API boundary.
 //! Reason: force one explicit resolver order across render variants.
 
 const std = @import("std");

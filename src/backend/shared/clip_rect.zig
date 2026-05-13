@@ -1,9 +1,9 @@
 //! Responsibility: define backend-shared clipping rectangles.
-//! Ownership: render-core backend shared layer owns common draw constraints.
+//! Ownership: render backend shared layer owns common draw constraints.
 //! Reason: avoids duplicating clipping vocabulary across GL backend variants.
 
 const std = @import("std");
-const render_core = @import("../../render_core.zig").RenderCore;
+const render = @import("../../render.zig").Render;
 
 pub const ClipRect = struct {
     x: c_int,
@@ -12,7 +12,7 @@ pub const ClipRect = struct {
     h: c_int,
 };
 
-pub fn clipRectTopOrigin(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
+pub fn clipRectTopOrigin(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
     if (width == 0 or height == 0) return null;
     const sw: i32 = @intCast(surface.width);
     const sh: i32 = @intCast(surface.height);
@@ -30,7 +30,7 @@ pub fn clipRectTopOrigin(surface: render_core.PixelSize, x: i32, y: i32, width: 
     };
 }
 
-pub fn clipRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
+pub fn clipRect(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16) ?ClipRect {
     const clipped = clipRectTopOrigin(surface, x, y, width, height) orelse return null;
     const sh: i32 = @intCast(surface.height);
     const bottom_y = sh - (clipped.y + clipped.h);

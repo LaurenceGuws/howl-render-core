@@ -4,7 +4,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-const render_core = @import("../../render_core.zig").RenderCore;
+const render = @import("../../render.zig").Render;
 const clip_rect = @import("../shared/clip_rect.zig");
 const shared_text_cache = @import("../shared/text_cache.zig");
 const atlas_mod = @import("internal/atlas.zig");
@@ -40,7 +40,7 @@ const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
 
 const TexturedGlyph = struct {
     clipped: clip_rect.ClipRect,
-    color: render_core.Rgba8,
+    color: render.Rgba8,
     tex_u0: f32,
     tex_v0: f32,
     tex_u1: f32,
@@ -80,27 +80,27 @@ fn monotonicNs() u64 {
 }
 
 /// Shared cell-size alias.
-pub const CellSize = render_core.CellSize;
+pub const CellSize = render.CellSize;
 /// Shared surface color alias.
-pub const SurfaceColor = render_core.SurfaceColor;
+pub const SurfaceColor = render.SurfaceColor;
 /// Shared surface cell flag alias.
-pub const SurfaceCellFlags = render_core.SurfaceCellFlags;
+pub const SurfaceCellFlags = render.SurfaceCellFlags;
 /// Shared surface cell attribute alias.
-pub const SurfaceCellAttrs = render_core.SurfaceCellAttrs;
+pub const SurfaceCellAttrs = render.SurfaceCellAttrs;
 /// Shared surface cell alias.
-pub const SurfaceCell = render_core.SurfaceCell;
+pub const SurfaceCell = render.SurfaceCell;
 /// Shared surface grid model alias.
-pub const SurfaceGridModel = render_core.SurfaceGridModel;
+pub const SurfaceGridModel = render.SurfaceGridModel;
 /// Shared surface cursor-shape alias.
-pub const SurfaceCursorShape = render_core.SurfaceCursorShape;
+pub const SurfaceCursorShape = render.SurfaceCursorShape;
 /// Shared surface cursor-info alias.
-pub const SurfaceCursorInfo = render_core.SurfaceCursorInfo;
+pub const SurfaceCursorInfo = render.SurfaceCursorInfo;
 /// Shared surface viewport-info alias.
-pub const SurfaceViewportInfo = render_core.SurfaceViewportInfo;
+pub const SurfaceViewportInfo = render.SurfaceViewportInfo;
 /// Shared surface frame-data alias.
-pub const SurfaceFrameData = render_core.SurfaceFrameData;
+pub const SurfaceFrameData = render.SurfaceFrameData;
 /// Shared retained surface handle alias.
-pub const SurfaceHandle = render_core.SurfaceHandle;
+pub const SurfaceHandle = render.SurfaceHandle;
 
 /// Error set returned by backend lifecycle and render functions.
 pub const BackendError = error{
@@ -113,7 +113,7 @@ pub const BackendError = error{
 
 /// Render report returned after processing one render pass.
 pub const RenderReport = struct {
-    stats: render_core.RenderStats,
+    stats: render.RenderStats,
     pass_index: u64,
     atlas_uploads_committed: usize,
 };
@@ -130,26 +130,26 @@ pub const TextSceneRenderReport = struct {
     cursor_draws: usize,
 };
 
-pub const PreparedTextScene = render_core.Text.Engine.OwnedTextAnalysis;
+pub const PreparedTextScene = render.Text.Engine.OwnedTextAnalysis;
 
 fn elapsedUs(start_ns: u64) u64 {
     return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);
 }
 
 pub const FrameLayout = struct {
-    cell_px: render_core.CellSize,
-    grid: render_core.GridSize,
+    cell_px: render.CellSize,
+    grid: render.GridSize,
 };
 
 /// Primary export surface for the GL renderer implementation.
 pub const test_primary_face_id: u32 = provider_mod.primary_face_id;
 
-pub fn testProviderGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+pub fn testProviderGlyphId(self: *Backend, face_id: render.FontFaceId, codepoint: u32) u32 {
     return provider_mod.providerGlyphId(self, face_id, codepoint);
 }
 
-pub const Config = render_core.BackendConfig;
-pub const Capability = render_core.BackendCapability;
+pub const Config = render.BackendConfig;
+pub const Capability = render.BackendCapability;
 pub const Error = BackendError;
 pub const Report = RenderReport;
 
@@ -157,26 +157,26 @@ pub fn init(config: Config) Backend {
     return Backend.init(config);
 }
 
-/// Derive grid dimensions through the shared render-core policy.
-pub fn deriveGridSize(grid_px: render_core.PixelSize, cell_px: CellSize) render_core.GridSize {
-    return render_core.deriveGridSize(grid_px, cell_px);
+/// Derive grid dimensions through the shared render policy.
+pub fn deriveGridSize(grid_px: render.PixelSize, cell_px: CellSize) render.GridSize {
+    return render.deriveGridSize(grid_px, cell_px);
 }
 
 /// Validate frame geometry and derive grid dimensions.
 pub fn deriveGridForFrame(
-    render_px: render_core.PixelSize,
-    grid_px: render_core.PixelSize,
+    render_px: render.PixelSize,
+    grid_px: render.PixelSize,
     cell_px: CellSize,
-) render_core.FrameGeometryError!render_core.GridSize {
-    return render_core.deriveGridForFrame(render_px, grid_px, cell_px);
+) render.FrameGeometryError!render.GridSize {
+    return render.deriveGridForFrame(render_px, grid_px, cell_px);
 }
 
-/// GL backend implementation consuming render-core apis.
+/// GL backend implementation consuming render apis.
 pub const Backend = struct {
     const MaxFallbackFonts = 24;
     pub const AtlasTexCols: usize = 64;
 
-    config: render_core.BackendConfig,
+    config: render.BackendConfig,
     pass_count: u64 = 0,
     closed: bool = false,
     atlas_pixels: []u8 = &.{},
@@ -214,8 +214,8 @@ pub const Backend = struct {
     target_content_valid: bool = false,
     target_fbo: u32 = 0,
     surface_epoch: u64 = 1,
-    resolve_counters: render_core.ResolveCounters = .{},
-    resolve_stage: render_core.ResolveStage = .style_policy,
+    resolve_counters: render.ResolveCounters = .{},
+    resolve_stage: render.ResolveStage = .style_policy,
     fill_vertices: []QuadVertex = &.{},
     glyph_vertices: []QuadVertex = &.{},
     text_vertices: []TexturedVertex = &.{},
@@ -225,7 +225,7 @@ pub const Backend = struct {
     text_shader_color_loc: c_int = -1,
     text_shader_sampler_loc: c_int = -1,
     fallback_fill_vertices: []QuadVertex = &.{},
-    text_engine: ?render_core.Text.Engine.Engine = null,
+    text_engine: ?render.Text.Engine.Engine = null,
     face_text_cache: shared_text_cache.FaceTextCache,
     shape_run_cache: shared_text_cache.ShapeRunCache,
     glyph_cell_cache: shared_text_cache.GlyphCellCache,
@@ -233,7 +233,7 @@ pub const Backend = struct {
     fallback_font_paths_len: usize = 0,
 
     /// Initialize a backend instance from shared backend config.
-    pub fn init(config: render_core.BackendConfig) Backend {
+    pub fn init(config: render.BackendConfig) Backend {
         return .{
             .config = config,
             .face_text_cache = shared_text_cache.FaceTextCache.init(std.heap.c_allocator),
@@ -410,27 +410,27 @@ pub const Backend = struct {
 
     pub fn deriveFrameLayout(
         self: *Backend,
-        render_px: render_core.PixelSize,
-        grid_px: render_core.PixelSize,
-    ) render_core.FrameGeometryError!FrameLayout {
+        render_px: render.PixelSize,
+        grid_px: render.PixelSize,
+    ) render.FrameGeometryError!FrameLayout {
         if (render_px.width == 0 or render_px.height == 0) return error.InvalidSurfaceSize;
         if (grid_px.width == 0 or grid_px.height == 0) return error.InvalidGridSize;
         const cell_px = self.deriveCellSize();
         return .{
             .cell_px = cell_px,
-            .grid = render_core.deriveGridSize(grid_px, cell_px),
+            .grid = render.deriveGridSize(grid_px, cell_px),
         };
     }
 
-    pub fn resolveCounters(self: *const Backend) render_core.ResolveCounters {
+    pub fn resolveCounters(self: *const Backend) render.ResolveCounters {
         return self.resolve_counters;
     }
 
-    pub fn lastResolveStage(self: *const Backend) render_core.ResolveStage {
+    pub fn lastResolveStage(self: *const Backend) render.ResolveStage {
         return self.resolve_stage;
     }
 
-    pub fn textProvider(self: *Backend) render_core.Text.FtHbProvider.FtHbSource {
+    pub fn textProvider(self: *Backend) render.Text.FtHbProvider.FtHbSource {
         return .{
             .ctx = self,
             .has_codepoint = providerHasCodepoint,
@@ -441,7 +441,7 @@ pub const Backend = struct {
         };
     }
 
-    pub fn fontSession(self: *Backend, faces: []render_core.Text.FontSession.FontFaceRecord) render_core.Text.FontSession.FontSession {
+    pub fn fontSession(self: *Backend, faces: []render.Text.FontSession.FontFaceRecord) render.Text.FontSession.FontSession {
         var len: usize = 0;
         if (faces.len > len) {
             faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
@@ -464,43 +464,43 @@ pub const Backend = struct {
     pub fn analyzeTextCells(
         self: *Backend,
         allocator: std.mem.Allocator,
-        cells: []const render_core.CellInput,
-        grid: render_core.GridMetrics,
-        faces: []render_core.Text.FontSession.FontFaceRecord,
-    ) !render_core.Text.Engine.OwnedTextAnalysis {
+        cells: []const render.CellInput,
+        grid: render.GridMetrics,
+        faces: []render.Text.FontSession.FontFaceRecord,
+    ) !render.Text.Engine.OwnedTextAnalysis {
         return self.analyzeTextCellsOptions(allocator, cells, grid, faces, .{});
     }
 
     pub fn analyzeTextCellsOptions(
         self: *Backend,
         allocator: std.mem.Allocator,
-        cells: []const render_core.CellInput,
-        grid: render_core.GridMetrics,
-        faces: []render_core.Text.FontSession.FontFaceRecord,
-        options: render_core.Text.Engine.AnalysisOptions,
-    ) !render_core.Text.Engine.OwnedTextAnalysis {
+        cells: []const render.CellInput,
+        grid: render.GridMetrics,
+        faces: []render.Text.FontSession.FontFaceRecord,
+        options: render.Text.Engine.AnalysisOptions,
+    ) !render.Text.Engine.OwnedTextAnalysis {
         self.lockFontAnalysis();
         defer self.unlockFontAnalysis();
         const engine = try self.ensureTextEngine(allocator);
         return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
 
-    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render_core.Text.Engine.OwnedTextAnalysis) BackendError!usize {
+    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render.Text.Engine.OwnedTextAnalysis) BackendError!usize {
         return self.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     }
 
     pub fn uploadTextSceneRaster(
         self: *Backend,
-        scene: render_core.TextScene,
-        outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
+        scene: render.TextScene,
+        outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
     ) BackendError!usize {
         return atlas_mod.uploadTextSceneRaster(self, scene, outputs);
     }
 
     pub fn renderTextScene(
         self: *Backend,
-        scene: render_core.TextScene,
-        outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
+        scene: render.TextScene,
+        outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
     ) !TextSceneRenderReport {
         if (self.closed) return error.BackendClosed;
         var committed_uploads: usize = 0;
@@ -536,8 +536,8 @@ pub const Backend = struct {
         };
     }
 
-    /// Report backend capabilities used by render-core batch generation.
-    pub fn capabilities(_: *const Backend) render_core.BackendCapability {
+    /// Report backend capabilities used by render batch generation.
+    pub fn capabilities(_: *const Backend) render.BackendCapability {
         return .{
             .max_atlas_slots = 2048,
             .supports_fill_rect = true,
@@ -546,7 +546,7 @@ pub const Backend = struct {
     }
 
     /// Update surface and cell dimensions after window resize.
-    pub fn resize(self: *Backend, surface_px: render_core.PixelSize, cell_px: render_core.CellSize) BackendError!void {
+    pub fn resize(self: *Backend, surface_px: render.PixelSize, cell_px: render.CellSize) BackendError!void {
         if (self.closed) return error.BackendClosed;
         const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
         const cell_changed = self.config.cell_px.width != cell_px.width or self.config.cell_px.height != cell_px.height;
@@ -565,10 +565,10 @@ pub const Backend = struct {
         self: *Backend,
         allocator: std.mem.Allocator,
         state: anytype,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
+        surface_px: render.PixelSize,
+        cell_px: render.CellSize,
     ) BackendError!RenderReport {
-        var faces: [MaxFallbackFonts + 1]render_core.Text.FontSession.FontFaceRecord = undefined;
+        var faces: [MaxFallbackFonts + 1]render.Text.FontSession.FontFaceRecord = undefined;
         const scene_report = self.renderFrameStateTextScene(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
         return renderReportFromTextScene(scene_report);
     }
@@ -577,9 +577,9 @@ pub const Backend = struct {
         self: *Backend,
         allocator: std.mem.Allocator,
         state: anytype,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
-        faces: []render_core.Text.FontSession.FontFaceRecord,
+        surface_px: render.PixelSize,
+        cell_px: render.CellSize,
+        faces: []render.Text.FontSession.FontFaceRecord,
     ) !TextSceneRenderReport {
         var prepared = try self.prepareFrameStateTextScene(allocator, state, surface_px, cell_px, faces);
         defer prepared.deinit();
@@ -590,12 +590,12 @@ pub const Backend = struct {
         self: *Backend,
         allocator: std.mem.Allocator,
         state: anytype,
-        surface_px: render_core.PixelSize,
-        cell_px: render_core.CellSize,
-        faces: []render_core.Text.FontSession.FontFaceRecord,
+        surface_px: render.PixelSize,
+        cell_px: render.CellSize,
+        faces: []render.Text.FontSession.FontFaceRecord,
     ) !PreparedTextScene {
         try self.resize(surface_px, cell_px);
-        const rc = render_core.init(self.config, self.capabilities());
+        const rc = render.init(self.config, self.capabilities());
         const input_start_ns = monotonicNs();
         var input = try rc.vtStateToTextSceneInput(allocator, state);
         const input_us = elapsedUs(input_start_ns);
@@ -621,7 +621,7 @@ pub const Backend = struct {
         return self.renderTextScene(prepared.scene.scene, prepared.raster_plan.outputs);
     }
 
-    fn copyRasterOutputToAtlas(self: *Backend, slot: u32, output: render_core.Text.Rasterizer.RasterSpriteOutput) void {
+    fn copyRasterOutputToAtlas(self: *Backend, slot: u32, output: render.Text.Rasterizer.RasterSpriteOutput) void {
         atlas_mod.copyRasterOutputToAtlas(self, slot, output);
     }
 
@@ -631,7 +631,7 @@ pub const Backend = struct {
         return self.ensureAtlasStorageSized(need_w, need_h);
     }
 
-    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput) BackendError!void {
+    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render.Text.Rasterizer.RasterSpriteOutput) BackendError!void {
         return atlas_mod.ensureAtlasStorageForRasterOutputs(self, outputs);
     }
 
@@ -654,7 +654,7 @@ pub const Backend = struct {
             self.atlas_slot_height[idx] == height;
     }
 
-    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render_core.Text.Rasterizer.RasterSpriteOutput) bool {
+    fn textSceneSlotCached(self: *const Backend, slot: u32, output: render.Text.Rasterizer.RasterSpriteOutput) bool {
         return atlas_mod.textSceneSlotCached(self, slot, output);
     }
 
@@ -797,10 +797,10 @@ pub const Backend = struct {
         if (self.text_engine) |*engine| engine.clearAtlas();
     }
 
-    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render_core.Text.Engine.Engine {
+    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render.Text.Engine.Engine {
         if (self.text_engine == null) {
             var ft_hb = self.textProvider();
-            self.text_engine = try render_core.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, ft_hb.textProvider());
+            self.text_engine = try render.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, ft_hb.textProvider());
         }
         return &self.text_engine.?;
     }
@@ -861,7 +861,7 @@ pub const Backend = struct {
         const bh: usize = @intCast(bitmap.rows);
         const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
         const pitch_is_negative = bitmap.pitch < 0;
-        const placement = render_core.Text.Metrics.bitmapPlacement(
+        const placement = render.Text.Metrics.bitmapPlacement(
             .{ .cell_w_px = gw, .cell_h_px = gh, .baseline_px = @intCast(computeBaselineFromFace(face, gh)) },
             faceMetricsInput(face, 1),
             glyph.*.bitmap_left,
@@ -892,15 +892,15 @@ pub const Backend = struct {
         return provider_mod.computeBaselineFromFace(face, cell_h);
     }
 
-    fn deriveCellMetrics(self: *Backend) render_core.CellMetrics {
+    fn deriveCellMetrics(self: *Backend) render.CellMetrics {
         return provider_mod.deriveCellMetrics(self);
     }
 
-    fn configuredCellMetrics(self: *Backend) render_core.CellMetrics {
+    fn configuredCellMetrics(self: *Backend) render.CellMetrics {
         return provider_mod.configuredCellMetrics(self);
     }
 
-    fn deriveCellSize(self: *Backend) render_core.CellSize {
+    fn deriveCellSize(self: *Backend) render.CellSize {
         return provider_mod.deriveCellSize(self);
     }
 
@@ -981,35 +981,35 @@ fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
     return c.FT_Get_Char_Index(face, codepoint);
 }
 
-fn providerHasCodepoint(ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32) bool {
+fn providerHasCodepoint(ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32) bool {
     return provider_mod.providerHasCodepoint(Backend, ctx, face_id, codepoint);
 }
 
-fn providerHasCellText(ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+fn providerHasCellText(ctx: *anyopaque, face_id: render.FontFaceId, text: render.CellText) bool {
     return provider_mod.providerHasCellText(Backend, ctx, face_id, text);
 }
 
 fn providerShapeRun(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    text_cache_view: render_core.LineTextCache,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
-) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
+    run: render.ResolvedRun,
+    text_cache_view: render.LineTextCache,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
+) anyerror!render.Text.ShapeRun.OwnedShapedRun {
     return provider_mod.providerShapeRun(Backend, ctx, allocator, run, text_cache_view, clusters, cell_metrics);
 }
 
 fn fallbackProviderShapeRun(
     backend: *Backend,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
+    run: render.ResolvedRun,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
-    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+) anyerror!render.Text.ShapeRun.OwnedShapedRun {
+    const glyphs = try allocator.alloc(render.GlyphInstance, end - start);
     errdefer allocator.free(glyphs);
     for (clusters[start..end], 0..) |cluster, idx| {
         const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
@@ -1027,7 +1027,7 @@ fn fallbackProviderShapeRun(
     return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
 }
 
-fn providerGlyphVisualWidth(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32) f32 {
+fn providerGlyphVisualWidth(self: *Backend, face_id: render.FontFaceId, glyph_id: u32) f32 {
     if (glyph_id == 0) return 0;
     if (!self.ensureFont()) return 0;
     if (face_id.value == primary_face_id) {
@@ -1046,7 +1046,7 @@ const ShapingFace = struct {
     owns_face: bool,
 };
 
-fn acquireShapingFace(self: *Backend, face_id: render_core.FontFaceId) ?ShapingFace {
+fn acquireShapingFace(self: *Backend, face_id: render.FontFaceId) ?ShapingFace {
     if (!self.ensureFont()) return null;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return null;
@@ -1067,7 +1067,7 @@ fn releaseShapingFace(_: *Backend, shaped: ShapingFace) void {
     }
 }
 
-fn textForCluster(text_cache_view: render_core.LineTextCache, cluster: render_core.CellCluster) render_core.CellText {
+fn textForCluster(text_cache_view: render.LineTextCache, cluster: render.CellCluster) render.CellText {
     const idx = @as(usize, @intCast(cluster.text_id.value));
     if (idx < text_cache_view.texts.len) return text_cache_view.texts[idx];
     return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
@@ -1089,27 +1089,27 @@ fn isIconCodepoint(cp: u32) bool {
         (cp >= 0x100000 and cp <= 0x10fffd);
 }
 
-fn providerGlyphId(self: *Backend, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+fn providerGlyphId(self: *Backend, face_id: render.FontFaceId, codepoint: u32) u32 {
     return provider_mod.providerGlyphId(self, face_id, codepoint);
 }
 
-fn providerGlyphAdvance(self: *Backend, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+fn providerGlyphAdvance(self: *Backend, face_id: render.FontFaceId, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
     return provider_mod.providerGlyphAdvance(self, face_id, glyph_id, cell_metrics);
 }
 
 fn providerRasterizeSprite(
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
-    req: render_core.SpriteRasterRequest,
-) anyerror!render_core.Text.Rasterizer.RasterSpriteOutput {
+    req: render.SpriteRasterRequest,
+) anyerror!render.Text.Rasterizer.RasterSpriteOutput {
     return provider_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
 }
 
-fn providerLookupGlyph(ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32, cell_metrics: render_core.CellMetrics) render_core.Text.Provider.LookupGlyphResult {
+fn providerLookupGlyph(ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
     return provider_mod.providerLookupGlyph(Backend, ctx, face_id, codepoint, cell_metrics);
 }
 
-fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: render_core.RasterizeRequest) anyerror!render_core.RasterizeOutput {
+fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: render.RasterizeRequest) anyerror!render.RasterizeOutput {
     const self: *Backend = @ptrCast(@alignCast(ctx));
     const width = @as(u16, @intCast(@as(u32, @max(req.cell_span, 1)) * @as(u32, @max(req.cell_metrics.cell_w_px, 1))));
     const height = @max(req.cell_metrics.cell_h_px, 1);
@@ -1293,14 +1293,14 @@ fn drawAlphaQuadraticStroke(dst: []u8, w: u16, h: u16, p0: PointF, p1: PointF, p
     }
 }
 
-fn findSceneSpriteSlot(scene: render_core.TextScene, key: render_core.SpriteKey) ?u32 {
+fn findSceneSpriteSlot(scene: render.TextScene, key: render.SpriteKey) ?u32 {
     for (scene.sprite_draws) |draw| {
         if (draw.sprite.key.value == key.value) return draw.sprite.slot;
     }
     return null;
 }
 
-fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+fn rasterizeProviderGlyph(self: *Backend, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
     if (!self.ensureFont()) return false;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return false;
@@ -1353,27 +1353,27 @@ fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top
     return .{ .x_px = x_px, .y_px = y_px };
 }
 
-fn glyphAdvanceFromFace(self: *const Backend, face: FtFace, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+fn glyphAdvanceFromFace(self: *const Backend, face: FtFace, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
     if (!setFacePixelHeight(self, face)) return @floatFromInt(cell_metrics.cell_w_px);
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return @floatFromInt(cell_metrics.cell_w_px);
     if (face.*.glyph == null) return @floatFromInt(cell_metrics.cell_w_px);
-    return render_core.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
+    return render.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
 }
 
 fn setFacePixelHeight(self: *const Backend, face: FtFace) bool {
     return c.FT_Set_Pixel_Sizes(face, 0, @max(self.config.font_size_px, 1)) == 0;
 }
 
-fn cellSizeFromFace(face: FtFace, font_size_px: u16) render_core.CellSize {
+fn cellSizeFromFace(face: FtFace, font_size_px: u16) render.CellSize {
     const cell = cellMetricsFromFace(face, font_size_px);
     return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
 }
 
-fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render_core.CellMetrics {
-    return render_core.Text.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
+fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render.CellMetrics {
+    return render.Text.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
 }
 
-fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.Text.Metrics.FaceMetrics26Dot6 {
+fn faceMetricsInput(face: FtFace, font_size_px: u16) render.Text.Metrics.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
     return .{
         .ascender = @intCast(metrics.ascender),
@@ -1426,7 +1426,7 @@ fn renderReportFromTextScene(report: TextSceneRenderReport) RenderReport {
     };
 }
 
-fn drawTextScene(backend: *Backend, surface: render_core.PixelSize, scene: render_core.TextScene) void {
+fn drawTextScene(backend: *Backend, surface: render.PixelSize, scene: render.TextScene) void {
     c.glViewport(0, 0, @as(c_int, @intCast(surface.width)), @as(c_int, @intCast(surface.height)));
     c.glDisable(c.GL_DEPTH_TEST);
     c.glMatrixMode(c.GL_PROJECTION);
@@ -1480,7 +1480,7 @@ fn drawTextScene(backend: *Backend, surface: render_core.PixelSize, scene: rende
     drawSceneCursors(backend, surface, scene.cursor_draws);
 }
 
-fn drawSceneBackgrounds(backend: *Backend, surface: render_core.PixelSize, backgrounds: []const render_core.TextBackgroundDraw) void {
+fn drawSceneBackgrounds(backend: *Backend, surface: render.PixelSize, backgrounds: []const render.TextBackgroundDraw) void {
     if (backgrounds.len == 0) return;
     var vertices = ensureVertexCapacity(&backend.fill_vertices, backgrounds.len * 4) orelse {
         for (backgrounds) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
@@ -1493,7 +1493,7 @@ fn drawSceneBackgrounds(backend: *Backend, surface: render_core.PixelSize, backg
     drawSolidVertices(vertices[0..count]);
 }
 
-fn drawSceneClears(backend: *Backend, surface: render_core.PixelSize, clears: []const render_core.TextClearDraw) void {
+fn drawSceneClears(backend: *Backend, surface: render.PixelSize, clears: []const render.TextClearDraw) void {
     if (clears.len == 0) return;
     var vertices = ensureVertexCapacity(&backend.fill_vertices, clears.len * 4) orelse {
         for (clears) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
@@ -1506,7 +1506,7 @@ fn drawSceneClears(backend: *Backend, surface: render_core.PixelSize, clears: []
     drawSolidVertices(vertices[0..count]);
 }
 
-fn drawSceneDecorations(backend: *Backend, surface: render_core.PixelSize, decorations: []const render_core.TextDecorationDraw) void {
+fn drawSceneDecorations(backend: *Backend, surface: render.PixelSize, decorations: []const render.TextDecorationDraw) void {
     if (decorations.len == 0) return;
     var vertices = ensureVertexCapacity(&backend.fill_vertices, decorations.len * 4) orelse {
         for (decorations) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
@@ -1519,7 +1519,7 @@ fn drawSceneDecorations(backend: *Backend, surface: render_core.PixelSize, decor
     drawSolidVertices(vertices[0..count]);
 }
 
-fn drawSceneCursors(backend: *Backend, surface: render_core.PixelSize, cursors: []const render_core.TextCursorDraw) void {
+fn drawSceneCursors(backend: *Backend, surface: render.PixelSize, cursors: []const render.TextCursorDraw) void {
     if (cursors.len == 0) return;
     var vertices = ensureVertexCapacity(&backend.fill_vertices, cursors.len * 4) orelse {
         for (cursors) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
@@ -1532,7 +1532,7 @@ fn drawSceneCursors(backend: *Backend, surface: render_core.PixelSize, cursors: 
     drawSolidVertices(vertices[0..count]);
 }
 
-fn drawSceneSprites(backend: *Backend, surface: render_core.PixelSize, draws: []const render_core.TextSpriteDraw) void {
+fn drawSceneSprites(backend: *Backend, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
     if (draws.len == 0) return;
     if (ensureTextShader(backend)) {
         drawSceneSpritesShader(backend, surface, draws);
@@ -1550,7 +1550,7 @@ fn drawSceneSprites(backend: *Backend, surface: render_core.PixelSize, draws: []
     drawTexturedVertices(sprite_vertices[0..sprite_count]);
 }
 
-fn drawSceneSpritesShader(backend: *Backend, surface: render_core.PixelSize, draws: []const render_core.TextSpriteDraw) void {
+fn drawSceneSpritesShader(backend: *Backend, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
     if (backend.text_shader_program == 0 or backend.atlas_texture == 0) return;
     c.glUseProgram(backend.text_shader_program);
     defer c.glUseProgram(0);
@@ -1573,7 +1573,7 @@ fn drawSceneSpritesShader(backend: *Backend, surface: render_core.PixelSize, dra
     }
 }
 
-fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) void {
+fn drawSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: render.TextSpriteDraw) void {
     const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse return;
     c.glEnable(c.GL_TEXTURE_2D);
     c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
@@ -1582,7 +1582,7 @@ fn drawSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw
     c.glEnd();
 }
 
-fn applyScrollReusePx(backend: *Backend, surface_px: render_core.PixelSize, scroll_px_u16: u16) void {
+fn applyScrollReusePx(backend: *Backend, surface_px: render.PixelSize, scroll_px_u16: u16) void {
     const scroll_px = @as(u32, scroll_px_u16);
     const width = @as(u32, surface_px.width);
     const height = @as(u32, surface_px.height);
@@ -1622,7 +1622,7 @@ fn applyScrollReusePx(backend: *Backend, surface_px: render_core.PixelSize, scro
     c.glDisable(c.GL_TEXTURE_2D);
 }
 
-fn ensureScrollScratchTexture(backend: *Backend, surface_px: render_core.PixelSize) BackendError!void {
+fn ensureScrollScratchTexture(backend: *Backend, surface_px: render.PixelSize) BackendError!void {
     if (backend.scroll_scratch_texture == 0) {
         c.glGenTextures(1, @ptrCast(&backend.scroll_scratch_texture));
         if (backend.scroll_scratch_texture == 0) return error.TargetTextureUnset;
@@ -1657,7 +1657,7 @@ fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: usize) ?[]QuadVertex {
     return new_buffer;
 }
 
-fn appendRectVertices(surface: render_core.PixelSize, vertices: []QuadVertex, count: *usize, x: i32, y: i32, width: u16, height: u16, color: render_core.Rgba8) bool {
+fn appendRectVertices(surface: render.PixelSize, vertices: []QuadVertex, count: *usize, x: i32, y: i32, width: u16, height: u16, color: render.Rgba8) bool {
     const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return false;
     if (count.* + 4 > vertices.len) return false;
     appendQuad(vertices, count, clipped, color, 0, 0, 0, 0);
@@ -1669,7 +1669,7 @@ fn appendTexturedGlyphVertices(vertices: []QuadVertex, count: *usize, glyph: Tex
     appendQuad(vertices, count, glyph.clipped, glyph.color, glyph.tex_u0, glyph.tex_v0, glyph.tex_u1, glyph.tex_v1);
 }
 
-fn appendQuad(vertices: []QuadVertex, count: *usize, clipped: clip_rect.ClipRect, color: render_core.Rgba8, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
+fn appendQuad(vertices: []QuadVertex, count: *usize, clipped: clip_rect.ClipRect, color: render.Rgba8, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
     const x0: f32 = @floatFromInt(clipped.x);
     const y0: f32 = @floatFromInt(clipped.y);
     const x1: f32 = @floatFromInt(clipped.x + clipped.w);
@@ -1736,7 +1736,7 @@ fn drawVertexArray(vertices: []const QuadVertex, textured: bool) void {
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
-    render_core.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
+    render.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
 }
 
@@ -1744,7 +1744,7 @@ fn useDeterministicTestTextFallback(backend: *Backend) bool {
     return builtin.is_test and backend.config.font_path == null and backend.fallback_font_paths_len == 0;
 }
 
-fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: u16, color: render_core.Rgba8) void {
+fn drawRect(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16, color: render.Rgba8) void {
     const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return;
     c.glDisable(c.GL_TEXTURE_2D);
     c.glColor4ub(color.r, color.g, color.b, color.a);
@@ -1756,7 +1756,7 @@ fn drawRect(surface: render_core.PixelSize, x: i32, y: i32, width: u16, height: 
     c.glEnd();
 }
 
-fn prepareTexturedSceneSprite(backend: *const Backend, surface: render_core.PixelSize, draw: render_core.TextSpriteDraw) ?TexturedGlyph {
+fn prepareTexturedSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: render.TextSpriteDraw) ?TexturedGlyph {
     if (backend.atlas_texture == 0 or backend.atlas_pixels.len == 0) return null;
     const slot = @as(usize, draw.sprite.slot);
     if (slot >= backend.atlas_slot_has_alpha.len or !backend.atlas_slot_has_alpha[slot]) return null;

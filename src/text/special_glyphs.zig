@@ -1,5 +1,5 @@
 //! Responsibility: special-glyph classification shared across backends.
-//! Ownership: render-core text pipeline.
+//! Ownership: render text pipeline.
 //! Reason: avoid per-backend drift for symbol/powerline decisions.
 
 pub fn isPowerlineCodepoint(codepoint: u21) bool {

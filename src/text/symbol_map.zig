@@ -1,5 +1,5 @@
 //! Responsibility: classify configured and built-in symbol routes.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: nerd-font and icon rendering must be explicit, not fallback luck.
 
 const contract = @import("../text_contract.zig");

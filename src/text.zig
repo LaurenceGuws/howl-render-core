@@ -1,5 +1,5 @@
 //! Responsibility: own the public text support surface.
-//! Ownership: render-core text shaping/raster support boundary.
+//! Ownership: render text shaping/raster support boundary.
 //! Reason: keep root exports boring while text units stay grouped.
 
 /// Canonical public text support surface.

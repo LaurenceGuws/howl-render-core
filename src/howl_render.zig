@@ -7,7 +7,7 @@ const std = @import("std");
 const render = @import("render_namespace.zig");
 const ffi = render.c_api;
 
-pub const Core = render.Core;
+pub const Render = render.Render;
 pub const Ffi = ffi;
 pub const C = ffi;
 pub const Renderer = render.Renderer;

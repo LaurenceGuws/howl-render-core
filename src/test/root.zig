@@ -1,5 +1,5 @@
 //! Responsibility: aggregate the runtime proof artifact.
-//! Ownership: render-core runtime proof root.
+//! Ownership: render runtime proof root.
 //! Reason: keep runtime proof explicit and separate from package-surface compile checks.
 
 test {

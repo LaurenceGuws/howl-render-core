@@ -1,10 +1,10 @@
 //! Responsibility: implement OpenGL ES backend text provider callbacks.
 //! Ownership: OpenGL ES backend internals own FreeType/HarfBuzz cache wiring.
-//! Reason: keeps backend font access behind the render-core text provider boundary.
+//! Reason: keeps backend font access behind the render text provider boundary.
 
 const builtin = @import("builtin");
 const std = @import("std");
-const render_core = @import("../../../render_core.zig").RenderCore;
+const render = @import("../../../render.zig").Render;
 const text_cache = @import("../../shared/text_cache.zig");
 const c_api = @import("c_api.zig");
 const c = c_api.c;
@@ -21,7 +21,7 @@ pub const ResolvedGlyphKey = struct {
     glyph_id: u32,
 };
 
-pub fn providerHasCodepoint(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32) bool {
+pub fn providerHasCodepoint(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32) bool {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     if (useDeterministicTestTextFallback(backend)) return codepoint != 0;
     if (!ensureFont(backend)) return false;
@@ -35,7 +35,7 @@ pub fn providerHasCodepoint(comptime Backend: type, ctx: *anyopaque, face_id: re
     return c.FT_Get_Char_Index(face, codepoint) != 0;
 }
 
-pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, text: render.CellText) bool {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const key = text_cache.FaceTextKey{ .face_id = face_id.value, .text_hash = text_cache.hashCellText(text) };
     const entry = backend.face_text_cache.map.getOrPut(key) catch return uncachedProviderHasCellText(Backend, ctx, face_id, text);
@@ -50,7 +50,7 @@ pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: ren
     return result;
 }
 
-fn uncachedProviderHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, text: render_core.CellText) bool {
+fn uncachedProviderHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, text: render.CellText) bool {
     for (text.codepoints) |cp| {
         if (cp == 0xfe0e or cp == 0xfe0f) continue;
         if (!providerHasCodepoint(Backend, ctx, face_id, cp)) return false;
@@ -62,17 +62,17 @@ pub fn providerShapeRun(
     comptime Backend: type,
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    text_cache_view: render_core.LineTextCache,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
-) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
+    run: render.ResolvedRun,
+    text_cache_view: render.LineTextCache,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
+) anyerror!render.Text.ShapeRun.OwnedShapedRun {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const start = @as(usize, @intCast(run.run.cluster_start));
     const count = @as(usize, @intCast(run.run.cluster_count));
     const end = @min(start + count, clusters.len);
     if (end <= start) {
-        return .{ .allocator = allocator, .run = run, .glyphs = try allocator.alloc(render_core.GlyphInstance, 0) };
+        return .{ .allocator = allocator, .run = run, .glyphs = try allocator.alloc(render.GlyphInstance, 0) };
     }
 
     backend.resolve_counters.shape_requests += 1;
@@ -102,13 +102,13 @@ pub fn providerShapeRun(
 fn shapeRunViaProviderOrFallback(
     backend: anytype,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    text_cache_view: render_core.LineTextCache,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
+    run: render.ResolvedRun,
+    text_cache_view: render.LineTextCache,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
+) anyerror!render.Text.ShapeRun.OwnedShapedRun {
     var run_codepoints = std.ArrayList(u32).empty;
     defer run_codepoints.deinit(allocator);
     var cluster_map = std.ArrayList(u32).empty;
@@ -151,7 +151,7 @@ fn shapeRunViaProviderOrFallback(
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, start, end);
     }
 
-    const glyphs = try allocator.alloc(render_core.GlyphInstance, glyph_count);
+    const glyphs = try allocator.alloc(render.GlyphInstance, glyph_count);
     errdefer allocator.free(glyphs);
 
     for (glyphs, 0..) |*glyph, idx| {
@@ -159,7 +159,7 @@ fn shapeRunViaProviderOrFallback(
         const pos = positions[idx];
         const cluster_cp_idx = @min(@as(usize, info.cluster), cluster_map.items.len - 1);
         const cluster_idx = cluster_map.items[cluster_cp_idx];
-        const shaped_advance = render_core.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
+        const shaped_advance = render.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
         const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[cluster_idx].first_cp))
             @max(shaped_advance, glyphVisualWidthPx(shaped_face.face, info.codepoint))
         else
@@ -180,13 +180,13 @@ fn shapeRunViaProviderOrFallback(
 fn shapePlainAsciiRun(
     backend: anytype,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    text_cache_view: render_core.LineTextCache,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
+    run: render.ResolvedRun,
+    text_cache_view: render.LineTextCache,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!?render_core.Text.ShapeRun.OwnedShapedRun {
+) anyerror!?render.Text.ShapeRun.OwnedShapedRun {
     if (run.features_id != 0) return null;
     if (run.run.font.presentation == .emoji) return null;
 
@@ -201,7 +201,7 @@ fn shapePlainAsciiRun(
 
     if (!ensureFont(backend)) return null;
 
-    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+    const glyphs = try allocator.alloc(render.GlyphInstance, end - start);
     var keep_glyphs = false;
     defer if (!keep_glyphs) allocator.free(glyphs);
 
@@ -229,8 +229,8 @@ pub fn providerRasterizeSprite(
     comptime Backend: type,
     ctx: *anyopaque,
     allocator: std.mem.Allocator,
-    req: render_core.SpriteRasterRequest,
-) anyerror!render_core.Text.Rasterizer.RasterSpriteOutput {
+    req: render.SpriteRasterRequest,
+) anyerror!render.Text.Rasterizer.RasterSpriteOutput {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const width = @max(req.width_px, 1);
     const height = @max(req.height_px, 1);
@@ -239,12 +239,12 @@ pub fn providerRasterizeSprite(
     @memset(pixels, 0);
 
     if (req.kind == .undercurl) {
-        render_core.Text.Rasterizer.rasterizeUndercurlAlpha(pixels, width, height, req.decoration);
+        render.Text.Rasterizer.rasterizeUndercurlAlpha(pixels, width, height, req.decoration);
         return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
     }
 
     if (req.group.kind == .box_fallback) {
-        if (render_core.Text.Rasterizer.rasterizeGeneratedSpecialAlphaWithMetrics(pixels, width, height, req.group.first_cp, req.box_drawing)) {
+        if (render.Text.Rasterizer.rasterizeGeneratedSpecialAlphaWithMetrics(pixels, width, height, req.group.first_cp, req.box_drawing)) {
             return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
         }
         rasterizeFallbackGlyph(pixels, width, height, @intCast(req.group.first_cp), width, height);
@@ -267,7 +267,7 @@ pub fn providerRasterizeSprite(
     return .{ .allocator = allocator, .key = req.key, .width_px = width, .height_px = height, .color_mode = req.color_mode, .pixels = pixels };
 }
 
-fn providerGlyphId(self: anytype, face_id: render_core.FontFaceId, codepoint: u32) u32 {
+fn providerGlyphId(self: anytype, face_id: render.FontFaceId, codepoint: u32) u32 {
     if (useDeterministicTestTextFallback(self)) return codepoint;
     if (!ensureFont(self)) return 0;
     if (face_id.value == primary_face_id) {
@@ -280,7 +280,7 @@ fn providerGlyphId(self: anytype, face_id: render_core.FontFaceId, codepoint: u3
     return shapeGlyphId(self.fallback_hb_fonts[fallback_index], face, @intCast(codepoint));
 }
 
-pub fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+pub fn providerGlyphAdvance(self: anytype, face_id: render.FontFaceId, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
     const fallback: f32 = @floatFromInt(cell_metrics.cell_w_px);
     if (glyph_id == 0) return fallback;
     if (useDeterministicTestTextFallback(self)) return fallback;
@@ -292,7 +292,7 @@ pub fn providerGlyphAdvance(self: anytype, face_id: render_core.FontFaceId, glyp
     return glyphAdvanceFromFace(face.?, glyph_id, cell_metrics);
 }
 
-pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render_core.FontFaceId, codepoint: u32, cell_metrics: render_core.CellMetrics) render_core.Text.Provider.LookupGlyphResult {
+pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const key = text_cache.GlyphCellKey{
         .face_id = face_id.value,
@@ -321,13 +321,13 @@ pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: ren
 fn fallbackProviderShapeRun(
     backend: anytype,
     allocator: std.mem.Allocator,
-    run: render_core.ResolvedRun,
-    clusters: []const render_core.CellCluster,
-    cell_metrics: render_core.CellMetrics,
+    run: render.ResolvedRun,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
     start: usize,
     end: usize,
-) anyerror!render_core.Text.ShapeRun.OwnedShapedRun {
-    const glyphs = try allocator.alloc(render_core.GlyphInstance, end - start);
+) anyerror!render.Text.ShapeRun.OwnedShapedRun {
+    const glyphs = try allocator.alloc(render.GlyphInstance, end - start);
     errdefer allocator.free(glyphs);
     for (clusters[start..end], 0..) |cluster, idx| {
         const glyph_id = providerGlyphId(backend, run.run.font.face_id, cluster.first_cp);
@@ -345,7 +345,7 @@ fn fallbackProviderShapeRun(
     return .{ .allocator = allocator, .run = run, .glyphs = glyphs };
 }
 
-fn providerGlyphVisualWidth(self: anytype, face_id: render_core.FontFaceId, glyph_id: u32) f32 {
+fn providerGlyphVisualWidth(self: anytype, face_id: render.FontFaceId, glyph_id: u32) f32 {
     if (glyph_id == 0) return 0;
     if (!ensureFont(self)) return 0;
     if (face_id.value == primary_face_id) {
@@ -364,7 +364,7 @@ const ShapingFace = struct {
     owns_face: bool,
 };
 
-fn acquireShapingFace(self: anytype, face_id: render_core.FontFaceId) ?ShapingFace {
+fn acquireShapingFace(self: anytype, face_id: render.FontFaceId) ?ShapingFace {
     if (!ensureFont(self)) return null;
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return null;
@@ -386,7 +386,7 @@ fn releaseShapingFace(shaped: ShapingFace) void {
     }
 }
 
-fn textForCluster(text_cache_view: render_core.LineTextCache, cluster: render_core.CellCluster) render_core.CellText {
+fn textForCluster(text_cache_view: render.LineTextCache, cluster: render.CellCluster) render.CellText {
     const idx = @as(usize, @intCast(cluster.text_id.value));
     if (idx < text_cache_view.texts.len) return text_cache_view.texts[idx];
     return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
@@ -400,7 +400,7 @@ fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
     return @as(f32, @floatFromInt(@as(i32, @intCast(metrics.width)))) / 64.0;
 }
 
-pub fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render_core.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+pub fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face_id: render.FontFaceId, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
     if (useDeterministicTestTextFallback(self)) {
         rasterizeFallbackGlyph(dst, width, height, @intCast(glyph_id), width, height);
         return true;
@@ -587,10 +587,10 @@ fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top
     return .{ .x_px = x_px, .y_px = y_px };
 }
 
-fn glyphAdvanceFromFace(face: FtFace, glyph_id: u32, cell_metrics: render_core.CellMetrics) f32 {
+fn glyphAdvanceFromFace(face: FtFace, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return @floatFromInt(cell_metrics.cell_w_px);
     if (face.*.glyph == null) return @floatFromInt(cell_metrics.cell_w_px);
-    return render_core.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
+    return render.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
 }
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
@@ -629,10 +629,10 @@ fn setFacePixelHeight(self: anytype, face: FtFace) bool {
 }
 
 fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
-    return render_core.Text.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
+    return render.Text.Metrics.baselineFromFaceMetrics(faceMetricsInput(face, 1), cell_h);
 }
 
-fn faceMetricsInput(face: FtFace, font_size_px: u16) render_core.Text.Metrics.FaceMetrics26Dot6 {
+fn faceMetricsInput(face: FtFace, font_size_px: u16) render.Text.Metrics.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
     return .{
         .ascender = @intCast(metrics.ascender),
@@ -657,7 +657,7 @@ fn asciiCellAdvance(face: FtFace, fallback_advance: i32) i32 {
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
-    render_core.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
+    render.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
 }
 

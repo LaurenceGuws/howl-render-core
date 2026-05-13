@@ -1,5 +1,5 @@
-//! Responsibility: define render-core RGBA color payloads.
-//! Ownership: render-core owns shared color vocabulary.
+//! Responsibility: define render RGBA color payloads.
+//! Ownership: render owns shared color vocabulary.
 //! Reason: keeps color representation deterministic across surfaces and backends.
 
 pub const Rgba8 = extern struct {

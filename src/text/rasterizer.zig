@@ -1,5 +1,5 @@
 //! Responsibility: define glyph-group rasterization contracts.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: rasterize shaped groups as sprites, not only individual codepoints.
 
 const std = @import("std");

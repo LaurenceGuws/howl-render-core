@@ -1,5 +1,5 @@
 //! Responsibility: map shaped glyphs back to terminal cell groups.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: ligatures, combining marks, and wide glyphs are terminal text semantics.
 
 const std = @import("std");

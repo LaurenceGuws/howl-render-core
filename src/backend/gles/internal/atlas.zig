@@ -1,14 +1,14 @@
 //! Responsibility: upload text raster outputs into the OpenGL ES atlas.
 //! Ownership: OpenGL ES backend internals own GLES texture residency details.
-//! Reason: keeps backend-specific atlas mutation behind the render-core backend owner.
+//! Reason: keeps backend-specific atlas mutation behind the render backend owner.
 
 const std = @import("std");
-const render_core = @import("../../../render_core.zig").RenderCore;
+const render = @import("../../../render.zig").Render;
 
 pub fn uploadTextSceneRaster(
     self: anytype,
-    scene: render_core.TextScene,
-    outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
+    scene: render.TextScene,
+    outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
 ) !usize {
     try ensureAtlasStorageForRasterOutputs(self, outputs);
     var committed: usize = 0;
@@ -43,7 +43,7 @@ pub fn clearAtlasCache(self: anytype) void {
 
 pub fn ensureAtlasStorageForRasterOutputs(
     self: anytype,
-    outputs: []const render_core.Text.Rasterizer.RasterSpriteOutput,
+    outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
 ) !void {
     var need_w = @max(self.config.cell_px.width, 1);
     var need_h = @max(self.config.cell_px.height, 1);
@@ -220,7 +220,7 @@ fn freeOldAtlasStorage(
 fn textSceneSlotCached(
     self: anytype,
     slot: u32,
-    output: render_core.Text.Rasterizer.RasterSpriteOutput,
+    output: render.Text.Rasterizer.RasterSpriteOutput,
 ) bool {
     const idx = @as(usize, slot);
     if (idx >= self.atlas_slot_sprite_key.len) return false;
@@ -233,7 +233,7 @@ fn textSceneSlotCached(
 fn copyRasterOutputToAtlas(
     self: anytype,
     slot: u32,
-    output: render_core.Text.Rasterizer.RasterSpriteOutput,
+    output: render.Text.Rasterizer.RasterSpriteOutput,
 ) void {
     if (self.atlas_pixels.len == 0) return;
     const slot_idx = @as(usize, slot);
@@ -262,7 +262,7 @@ fn copyRasterOutputToAtlas(
     markSlotAlpha(self, slot, dst, copy_w, copy_h);
 }
 
-fn clippedBounds(bounds: render_core.Text.Rasterizer.SpriteBounds, max_w: u16, max_h: u16) render_core.Text.Rasterizer.SpriteBounds {
+fn clippedBounds(bounds: render.Text.Rasterizer.SpriteBounds, max_w: u16, max_h: u16) render.Text.Rasterizer.SpriteBounds {
     if (bounds.width_px == 0 or bounds.height_px == 0) return .{};
     if (bounds.x_px >= max_w or bounds.y_px >= max_h) return .{};
     return .{
@@ -287,11 +287,11 @@ fn markSlotAlpha(self: anytype, slot: u32, pixels: []const u8, gw: u16, gh: u16)
     self.atlas_slot_has_alpha[slot_idx] = false;
 }
 
-fn markOutputRendered(self: anytype, output: render_core.Text.Rasterizer.RasterSpriteOutput) void {
+fn markOutputRendered(self: anytype, output: render.Text.Rasterizer.RasterSpriteOutput) void {
     if (self.text_engine) |*engine| _ = engine.atlas.markRendered(output.key);
 }
 
-fn findSceneSpriteSlot(scene: render_core.TextScene, key: render_core.SpriteKey) ?u32 {
+fn findSceneSpriteSlot(scene: render.TextScene, key: render.SpriteKey) ?u32 {
     for (scene.sprite_draws) |draw| {
         if (draw.sprite.key.value == key.value) return draw.sprite.slot;
     }

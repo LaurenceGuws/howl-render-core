@@ -1,6 +1,6 @@
 //! Responsibility: own render-frame metric contracts.
 //! Ownership: prepare and submit timing/count readouts.
-//! Reason: keep render diagnostics shaped by render-core, not terminal orchestration.
+//! Reason: keep render diagnostics shaped by render, not terminal orchestration.
 
 pub const PrepareMetrics = struct {
     us: u64 = 0,

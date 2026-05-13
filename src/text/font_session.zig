@@ -1,5 +1,5 @@
 //! Responsibility: own font-group/session vocabulary.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: model primary, style, symbol, and fallback faces separately from backends.
 
 const std = @import("std");

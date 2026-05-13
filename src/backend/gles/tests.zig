@@ -1,10 +1,10 @@
 //! Responsibility: cover OpenGL ES backend behavior.
-//! Ownership: render-core GLES tests own backend-specific regression checks.
+//! Ownership: render GLES tests own backend-specific regression checks.
 //! Reason: keeps GLES coverage close to the backend it validates.
 
 const std = @import("std");
 const backend_mod = @import("backend.zig");
-const render_core = @import("../../render_core.zig").RenderCore;
+const render = @import("../../render.zig").Render;
 
 const Backend = backend_mod.Backend;
 
@@ -15,13 +15,13 @@ test "gles backend analyzes text cells through provider-backed engine" {
     });
     defer backend.deinit();
 
-    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_core.CellInput{
+    const white = render.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
     };
-    var faces: [8]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var faces: [8]render.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 0), analysis.groups.groups.len);
@@ -36,10 +36,10 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     });
     defer backend.deinit();
 
-    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    const white = render.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer analysis.deinit();
     const committed = try backend.uploadTextAnalysisRaster(analysis);
@@ -60,10 +60,10 @@ test "gles backend text analysis reuses retained scene atlas for unchanged glyph
     });
     defer backend.deinit();
 
-    const white = render_core.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = render_core.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]render_core.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    const white = render.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
 
     var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
     defer first.deinit();
@@ -83,7 +83,7 @@ test "gles backend stores raster visual bounds separately from logical sprite sp
     });
     defer backend.deinit();
 
-    var outputs = [_]render_core.Text.Rasterizer.RasterSpriteOutput{.{
+    var outputs = [_]render.Text.Rasterizer.RasterSpriteOutput{.{
         .allocator = std.testing.allocator,
         .key = .{ .value = 88 },
         .width_px = 16,
@@ -95,7 +95,7 @@ test "gles backend stores raster visual bounds separately from logical sprite sp
     outputs[0].pixels[4 * 16 + 3] = 255;
     outputs[0].pixels[5 * 16 + 6] = 255;
 
-    const draw = render_core.TextSpriteDraw{
+    const draw = render.TextSpriteDraw{
         .sprite = .{ .slot = 0, .key = outputs[0].key },
         .x_px = 0,
         .y_px = 0,
@@ -105,7 +105,7 @@ test "gles backend stores raster visual bounds separately from logical sprite sp
         .first_cell = 0,
         .cell_span = 2,
     };
-    const scene = render_core.TextScene{ .cells = &.{}, .sprite_draws = &.{draw}, .missing = &.{} };
+    const scene = render.TextScene{ .cells = &.{}, .sprite_draws = &.{draw}, .missing = &.{} };
 
     _ = try backend.uploadTextSceneRaster(scene, &outputs);
     try std.testing.expectEqual(@as(u16, 16), backend.atlas_slot_width[0]);
@@ -122,10 +122,10 @@ test "gles backend renderFrameState uses text scene renderer" {
     });
     defer backend.deinit();
 
-    const cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const cells = [_]render.SurfaceCell{.{ .codepoint = 'A' }};
     const state = .{
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
-        .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
     const report = try backend.renderFrameState(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
@@ -152,13 +152,13 @@ test "gles backend prepares and submits text scene separately" {
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    const cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const cells = [_]render.SurfaceCell{.{ .codepoint = 'A' }};
     const state = .{
         .grid = .{ .cells = &cells, .cols = 1, .rows = 1 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     var prepared = try backend.prepareFrameStateTextScene(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
     defer prepared.deinit();
     try std.testing.expectEqual(@as(usize, 1), prepared.scene.scene.sprite_draws.len);
@@ -173,16 +173,16 @@ test "gles backend forces full redraw while target contents are invalid" {
     });
     defer backend.deinit();
 
-    const cells = [_]render_core.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const cells = [_]render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
     const dirty_rows = [_]bool{ false, true };
     const dirty_start = [_]u16{ 0, 0 };
     const dirty_end = [_]u16{ 0, 0 };
     const state = .{
         .grid = .{ .cells = &cells, .cols = 1, .rows = 2 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
     try std.testing.expect(report.full_redraw);
     try std.testing.expectEqual(@as(u16, 0), report.scroll_up_px);
@@ -196,16 +196,16 @@ test "gles backend preserves partial scroll damage when target contents are vali
     defer backend.deinit();
     backend.target_content_valid = true;
 
-    const cells = [_]render_core.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const cells = [_]render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
     const dirty_rows = [_]bool{ false, true };
     const dirty_start = [_]u16{ 0, 0 };
     const dirty_end = [_]u16{ 0, 0 };
     const state = .{
         .grid = .{ .cells = &cells, .cols = 1, .rows = 2 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
     try std.testing.expect(!report.full_redraw);
     try std.testing.expectEqual(@as(u16, 16), report.scroll_up_px);
@@ -218,24 +218,24 @@ test "gles backend reanalyzes after atlas storage grows" {
     });
     defer backend.deinit();
 
-    const first_cells = [_]render_core.SurfaceCell{.{ .codepoint = 'A' }};
+    const first_cells = [_]render.SurfaceCell{.{ .codepoint = 'A' }};
     const first_state = .{
         .grid = .{ .cells = &first_cells, .cols = 1, .rows = 1 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var faces: [4]render_core.Text.FontSession.FontFaceRecord = undefined;
+    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     const first = try backend.renderFrameStateTextScene(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
     try std.testing.expectEqual(@as(usize, 1), first.raster_uploads_committed);
 
-    const second_cells = [_]render_core.SurfaceCell{
+    const second_cells = [_]render.SurfaceCell{
         .{ .codepoint = 'A' },
         .{ .codepoint = 0x4f60 },
         .{ .codepoint = 0, .flags = .{ .continuation = true } },
     };
     const second_state = .{
         .grid = .{ .cells = &second_cells, .cols = 3, .rows = 1 },
-        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render_core.SurfaceCursorShape.block },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
     const second = try backend.renderFrameStateTextScene(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 }, &faces);

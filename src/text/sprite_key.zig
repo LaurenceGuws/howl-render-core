@@ -1,5 +1,5 @@
 //! Responsibility: define rendered sprite cache identity.
-//! Ownership: render-core text engine.
+//! Ownership: render text engine.
 //! Reason: cache rendered glyph groups by output identity instead of source codepoint.
 
 const std = @import("std");

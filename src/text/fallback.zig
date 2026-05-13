@@ -1,5 +1,5 @@
 //! Responsibility: own shared fallback raster policy for backend owners.
-//! Ownership: render-core text pipeline.
+//! Ownership: render text pipeline.
 //! Reason: keep fallback raster policy consistent across GL/GLES implementations.
 
 /// Rasterize the fallback placeholder used for unresolved glyphs.
