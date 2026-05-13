@@ -23,6 +23,18 @@ const FtLibrary = c_api.FtLibrary;
 const FtFace = c_api.FtFace;
 const HbFont = c_api.HbFont;
 
+const ThreadMutex = struct {
+    state: std.Io.Mutex = .init,
+
+    pub fn lock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexLock(&self.state);
+    }
+
+    pub fn unlock(self: *ThreadMutex) void {
+        std.Io.Threaded.mutexUnlock(&self.state);
+    }
+};
+
 const primary_face_id: u32 = provider_mod.primary_face_id;
 
 const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
@@ -104,6 +116,12 @@ pub const FrameLayout = struct {
 };
 
 /// Primary export surface for the GLES renderer implementation.
+pub const test_primary_face_id: u32 = provider_mod.primary_face_id;
+
+pub fn testProviderGlyphId(self: *Backend, face_id: render.FontFaceId, codepoint: u32) u32 {
+    return provider_mod.providerGlyphId(self, face_id, codepoint);
+}
+
 pub const Config = render.BackendConfig;
 pub const Capability = render.BackendCapability;
 pub const Error = BackendError;
@@ -130,6 +148,7 @@ pub fn deriveGridForFrame(
 /// GLES backend implementation consuming render apis.
 pub const Backend = struct {
     const MaxFallbackFonts = 24;
+    pub const AtlasTexCols = 64;
 
     config: render.BackendConfig,
     pass_count: u64 = 0,
@@ -160,6 +179,8 @@ pub const Backend = struct {
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
+    ft_mutex: ThreadMutex = .{},
+    font_analysis_mutex: ThreadMutex = .{},
     fallback_faces: [MaxFallbackFonts]?FtFace = [_]?FtFace{null} ** MaxFallbackFonts,
     fallback_hb_fonts: [MaxFallbackFonts]?HbFont = [_]?HbFont{null} ** MaxFallbackFonts,
     resolve_counters: render.ResolveCounters = .{},
@@ -185,66 +206,16 @@ pub const Backend = struct {
             engine.deinit();
             self.text_engine = null;
         }
-        if (self.atlas_pixels.len > 0) {
-            std.heap.c_allocator.free(self.atlas_pixels);
-            self.atlas_pixels = &.{};
-        }
-        if (self.atlas_slot_codepoint.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_codepoint);
-            self.atlas_slot_codepoint = &.{};
-        }
-        if (self.atlas_slot_face_id.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_face_id);
-            self.atlas_slot_face_id = &.{};
-        }
-        if (self.atlas_slot_glyph_id.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_glyph_id);
-            self.atlas_slot_glyph_id = &.{};
-        }
-        if (self.atlas_slot_sprite_key.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_sprite_key);
-            self.atlas_slot_sprite_key = &.{};
-        }
-        if (self.atlas_slot_width.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_width);
-            self.atlas_slot_width = &.{};
-        }
-        if (self.atlas_slot_height.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_height);
-            self.atlas_slot_height = &.{};
-        }
-        if (self.atlas_slot_draw_x.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_x);
-            self.atlas_slot_draw_x = &.{};
-        }
-        if (self.atlas_slot_draw_y.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_y);
-            self.atlas_slot_draw_y = &.{};
-        }
-        if (self.atlas_slot_draw_w.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_w);
-            self.atlas_slot_draw_w = &.{};
-        }
-        if (self.atlas_slot_draw_h.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_draw_h);
-            self.atlas_slot_draw_h = &.{};
-        }
-        if (self.atlas_slot_has_alpha.len > 0) {
-            std.heap.c_allocator.free(self.atlas_slot_has_alpha);
-            self.atlas_slot_has_alpha = &.{};
-        }
+        self.deinitAtlasStorage();
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
         self.face_text_cache.deinit();
         self.glyph_cell_cache.deinit();
-        if (self.target_fbo != 0 and hasCurrentContext()) {
-            c.glDeleteFramebuffers(1, @ptrCast(&self.target_fbo));
-            self.target_fbo = 0;
+        if (self.ft_lib != null) {
+            _ = c.FT_Done_FreeType(self.ft_lib.?);
+            self.ft_lib = null;
         }
-        if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            var texture = self.target_texture.?;
-            c.glDeleteTextures(1, @ptrCast(&texture));
-        }
+        self.deinitTargetObjects();
         self.target_texture = null;
         self.owns_target_texture = false;
         self.target_content_valid = false;
@@ -282,12 +253,16 @@ pub const Backend = struct {
     }
 
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         self.config.font_path = font_path;
         self.resetLoadedFace();
         self.clearAtlasCache();
     }
 
     pub fn setFallbackFontPaths(self: *Backend, paths: []const [:0]const u8) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         const n: u8 = @intCast(@min(paths.len, MaxFallbackFonts));
         self.fallback_font_paths_len = n;
         for (0..n) |i| self.fallback_font_paths[i] = paths[i];
@@ -297,8 +272,10 @@ pub const Backend = struct {
     }
 
     pub fn setFontSizePx(self: *Backend, font_size_px: u16) void {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         self.config.font_size_px = @max(font_size_px, 1);
-        self.resetLoadedFace();
+        self.resizeLoadedFaces();
         self.clearAtlasCache();
     }
 
@@ -363,6 +340,8 @@ pub const Backend = struct {
         faces: []render.Text.FontSession.FontFaceRecord,
         options: render.Text.Engine.AnalysisOptions,
     ) !render.Text.Engine.OwnedTextAnalysis {
+        self.lockFontAnalysis();
+        defer self.unlockFontAnalysis();
         const engine = try self.ensureTextEngine(allocator);
         return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
@@ -546,143 +525,49 @@ pub const Backend = struct {
     }
 
     fn deriveCellMetrics(self: *Backend) render.CellMetrics {
-        if (self.ensurePrimaryFont()) {
-            return cellMetricsFromFace(self.ft_face.?, self.config.font_size_px);
-        }
-        if (self.ft_lib) |lib| {
-            var i: u8 = 0;
-            while (i < self.fallback_font_paths_len) : (i += 1) {
-                const font_path = self.fallback_font_paths[i] orelse continue;
-                var face: FtFace = undefined;
-                if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
-                defer _ = c.FT_Done_Face(face);
-                if (!setFacePixelHeight(self, face)) continue;
-                return cellMetricsFromFace(face, self.config.font_size_px);
-            }
-        }
-        return render.Text.Metrics.defaultCellMetrics(self.config.font_size_px);
+        return provider_mod.deriveCellMetrics(self);
     }
 
     fn configuredCellMetrics(self: *Backend) render.CellMetrics {
-        const cell_w = @max(self.config.cell_px.width, 1);
-        const cell_h = @max(self.config.cell_px.height, 1);
-        const baseline = if (self.ensurePrimaryFont())
-            computeBaselineFromFace(self.ft_face.?, cell_h)
-        else
-            @as(i32, @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)));
-        return .{
-            .cell_w_px = cell_w,
-            .cell_h_px = cell_h,
-            .baseline_px = @intCast(std.math.clamp(baseline, 1, @as(i32, @intCast(cell_h)))),
-            .box_thickness_px = render.Text.Metrics.defaultBoxThickness(cell_h),
-        };
+        return provider_mod.configuredCellMetrics(self);
     }
 
     fn deriveCellSize(self: *Backend) render.CellSize {
-        const cell = self.deriveCellMetrics();
-        return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
+        return provider_mod.deriveCellSize(self);
     }
 
-    fn ensureFont(self: *Backend) bool {
-        if (self.ensurePrimaryFont()) {
-            self.resolve_stage = .loaded_exact_match;
-            return true;
-        }
-        if (!self.ensureFreeTypeLibrary()) return false;
-
-        var i: u8 = 0;
-        while (i < self.fallback_font_paths_len) : (i += 1) {
-            if (self.fallback_font_paths[i] == null) continue;
-            if (self.ensureFallbackFace(i) != null) {
-                self.resolve_stage = .discovery_fallback;
-                return true;
-            }
-        }
-
-        self.resolve_stage = .missing_glyph;
-        self.resolve_counters.missing_glyphs += 1;
-        return false;
+    fn lockFontAnalysis(self: *Backend) void {
+        self.font_analysis_mutex.lock();
     }
 
-    fn resetLoadedFace(self: *Backend) void {
-        self.resetFallbackFaces();
-        self.face_text_cache.clear();
-        self.shape_run_cache.clear();
-        self.glyph_cell_cache.clear();
-        if (self.ft_face != null) {
-            if (self.hb_font != null and builtin.target.abi != .android) {
-                c.hb_font_destroy(self.hb_font.?);
-                self.hb_font = null;
-            }
-            _ = c.FT_Done_Face(self.ft_face.?);
-            self.ft_face = null;
-        }
-        if (self.ft_lib != null) {
-            _ = c.FT_Done_FreeType(self.ft_lib.?);
-            self.ft_lib = null;
-        }
-    }
-
-    fn resetFallbackFaces(self: *Backend) void {
-        for (0..MaxFallbackFonts) |i| {
-            if (self.fallback_hb_fonts[i] != null and builtin.target.abi != .android) {
-                c.hb_font_destroy(self.fallback_hb_fonts[i].?);
-                self.fallback_hb_fonts[i] = null;
-            }
-            if (self.fallback_faces[i] != null) {
-                _ = c.FT_Done_Face(self.fallback_faces[i].?);
-                self.fallback_faces[i] = null;
-            }
-        }
-    }
-
-    fn ensureFreeTypeLibrary(self: *Backend) bool {
-        if (self.ft_lib != null) return true;
-        var lib: FtLibrary = undefined;
-        if (c.FT_Init_FreeType(&lib) != 0) return false;
-        self.ft_lib = lib;
-        return true;
+    fn unlockFontAnalysis(self: *Backend) void {
+        self.font_analysis_mutex.unlock();
     }
 
     fn ensurePrimaryFont(self: *Backend) bool {
-        if (self.ft_face != null) return true;
-        if (!self.ensureFreeTypeLibrary()) return false;
-        if (self.config.font_path == null) return false;
+        return provider_mod.ensurePrimaryFont(self);
+    }
 
-        var face: FtFace = undefined;
-        const lib = self.ft_lib.?;
-        const font_path = self.config.font_path.?;
-        if (c.FT_New_Face(lib, font_path, 0, &face) != 0) return false;
-        if (!setFacePixelHeight(self, face)) {
-            _ = c.FT_Done_Face(face);
-            return false;
-        }
+    fn ensureFont(self: *Backend) bool {
+        return provider_mod.ensureFont(self);
+    }
 
-        self.ft_face = face;
-        if (builtin.target.abi != .android) {
-            self.hb_font = @ptrCast(c.hb_ft_font_create_referenced(face));
-        }
-        return true;
+    fn resetLoadedFace(self: *Backend) void {
+        provider_mod.resetLoadedFace(self);
+        self.face_text_cache.clear();
+        self.shape_run_cache.clear();
+        self.glyph_cell_cache.clear();
+    }
+
+    fn resizeLoadedFaces(self: *Backend) void {
+        provider_mod.resizeLoadedFaces(self);
+        self.face_text_cache.clear();
+        self.shape_run_cache.clear();
+        self.glyph_cell_cache.clear();
     }
 
     fn ensureFallbackFace(self: *Backend, fallback_index: u32) ?FtFace {
-        if (fallback_index >= self.fallback_font_paths_len) return null;
-        const slot = fallbackSlot(self, fallback_index) orelse return null;
-        if (self.fallback_faces[slot]) |face| return face;
-        if (!self.ensureFreeTypeLibrary()) return null;
-        const font_path = self.fallback_font_paths[slot] orelse return null;
-        const lib = self.ft_lib orelse return null;
-        var face: FtFace = undefined;
-        if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) return null;
-        if (!setFacePixelHeight(self, face)) {
-            _ = c.FT_Done_Face(face);
-            return null;
-        }
-        self.fallback_faces[slot] = face;
-        if (builtin.target.abi != .android) {
-            self.fallback_hb_fonts[slot] = @ptrCast(c.hb_ft_font_create_referenced(face));
-        }
-        return face;
+        return provider_mod.ensureFallbackFace(self, fallback_index);
     }
 
     fn clearAtlasCache(self: *Backend) void {
@@ -700,6 +585,8 @@ pub const Backend = struct {
 
     fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
         if (!self.ensureFont()) return null;
+        self.ft_mutex.lock();
+        defer self.ft_mutex.unlock();
         if (self.ft_face) |face| {
             if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, primary_face_id, gw, gh)) |key| {
                 self.resolve_stage = .loaded_exact_match;
@@ -715,14 +602,8 @@ pub const Backend = struct {
             if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
             defer _ = c.FT_Done_Face(face);
 
-            var fallback_hb: ?HbFont = null;
-            defer if (fallback_hb != null and builtin.target.abi != .android) {
-                c.hb_font_destroy(fallback_hb.?);
-            };
-            if (!setFacePixelHeight(self, face)) continue;
-            if (builtin.target.abi != .android) {
-                fallback_hb = @ptrCast(c.hb_ft_font_create_referenced(face));
-            }
+            const fallback_hb = c_api.createHbFont(face);
+            defer c_api.destroyHbFont(fallback_hb);
 
             const face_id = fallbackFaceId(i);
             if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, face_id, gw, gh)) |key| {
@@ -739,14 +620,7 @@ pub const Backend = struct {
     }
 
     fn resolveGlyphKey(self: *Backend, codepoint: u21) ?ResolvedGlyphKey {
-        _ = self.ensureFont();
-        if (self.ft_face) |face| {
-            if (setFacePixelHeight(self, face)) {
-                const glyph_id = shapeGlyphId(self.hb_font, face, codepoint);
-                if (glyph_id != 0) return .{ .codepoint = codepoint, .face_id = primary_face_id, .glyph_id = glyph_id };
-            }
-        }
-        return null;
+        return provider_mod.resolveGlyphKey(self, codepoint);
     }
 
     fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, face_id: u32, gw: u16, gh: u16) ?ResolvedGlyphKey {
@@ -791,7 +665,39 @@ pub const Backend = struct {
         if (!wrote_any) return null;
         return .{ .codepoint = codepoint, .face_id = face_id, .glyph_id = glyph_id };
     }
+
+    fn deinitAtlasStorage(self: *Backend) void {
+        freeOwnedSlice(u8, &self.atlas_pixels);
+        freeOwnedSlice(u21, &self.atlas_slot_codepoint);
+        freeOwnedSlice(u32, &self.atlas_slot_face_id);
+        freeOwnedSlice(u32, &self.atlas_slot_glyph_id);
+        freeOwnedSlice(u64, &self.atlas_slot_sprite_key);
+        freeOwnedSlice(u16, &self.atlas_slot_width);
+        freeOwnedSlice(u16, &self.atlas_slot_height);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_x);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_y);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_w);
+        freeOwnedSlice(u16, &self.atlas_slot_draw_h);
+        freeOwnedSlice(bool, &self.atlas_slot_has_alpha);
+    }
+
+    fn deinitTargetObjects(self: *Backend) void {
+        if (self.target_fbo != 0 and hasCurrentContext()) {
+            c.glDeleteFramebuffers(1, @ptrCast(&self.target_fbo));
+            self.target_fbo = 0;
+        }
+        if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
+            var texture = self.target_texture.?;
+            c.glDeleteTextures(1, @ptrCast(&texture));
+        }
+    }
 };
+
+fn freeOwnedSlice(comptime T: type, buffer: *[]T) void {
+    if (buffer.*.len == 0) return;
+    std.heap.c_allocator.free(buffer.*);
+    buffer.* = &.{};
+}
 
 fn providerHasCodepoint(ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32) bool {
     return provider_mod.providerHasCodepoint(Backend, ctx, face_id, codepoint);
@@ -844,21 +750,7 @@ fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: re
 }
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
-    if (hb_font) |font| {
-        const buffer = c.hb_buffer_create() orelse return c.FT_Get_Char_Index(face, codepoint);
-        defer c.hb_buffer_destroy(buffer);
-        var cp: u32 = codepoint;
-        c.hb_buffer_add_utf32(buffer, &cp, 1, 0, 1);
-        c.hb_buffer_guess_segment_properties(buffer);
-        c.hb_shape(font, buffer, null, 0);
-        var count: c_uint = 0;
-        const infos = c.hb_buffer_get_glyph_infos(buffer, &count);
-        if (infos != null and count > 0) {
-            const gid = infos[0].codepoint;
-            if (gid != 0) return gid;
-        }
-    }
-    return c.FT_Get_Char_Index(face, codepoint);
+    return c_api.shapeGlyphId(hb_font, face, codepoint);
 }
 
 fn setFacePixelHeight(self: *const Backend, face: FtFace) bool {

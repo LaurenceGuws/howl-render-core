@@ -15,6 +15,14 @@ const HbFont = c_api.HbFont;
 
 pub const primary_face_id: u32 = 1;
 
+fn lockFt(self: anytype) void {
+    self.ft_mutex.lock();
+}
+
+fn unlockFt(self: anytype) void {
+    self.ft_mutex.unlock();
+}
+
 pub const ResolvedGlyphKey = struct {
     codepoint: u21,
     face_id: u32,
@@ -67,14 +75,10 @@ pub fn providerHasCodepoint(comptime Backend: type, ctx: *anyopaque, face_id: re
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     if (useDeterministicTestTextFallback(backend)) return codepoint != 0;
     if (!ensureFont(backend)) return false;
-    if (face_id.value == primary_face_id) {
-        const face = backend.ft_face orelse return false;
-        return c.FT_Get_Char_Index(face, codepoint) != 0;
-    }
-
-    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return false;
-    const face = ensureFallbackFace(backend, fallback_index) orelse return false;
-    return c.FT_Get_Char_Index(face, codepoint) != 0;
+    lockFt(backend);
+    defer unlockFt(backend);
+    const shaped_face = acquireShapingFaceLocked(backend, face_id) orelse return false;
+    return c.FT_Get_Char_Index(shaped_face.face, codepoint) != 0;
 }
 
 pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, text: render.CellText) bool {
@@ -128,7 +132,7 @@ pub fn providerShapeRun(
         return cached;
     }
 
-    var shaped = if (builtin.target.abi == .android)
+    var shaped = if (!c_api.supports_complex_shaping)
         try fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window)
     else if (try shapePlainAsciiRun(backend, allocator, run, text_cache_view, clusters, cell_metrics, window)) |ascii|
         ascii
@@ -164,11 +168,17 @@ fn shapeRunViaProviderOrFallback(
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
     }
 
-    const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse {
+    lockFt(backend);
+    defer unlockFt(backend);
+    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse {
+        unlockFt(backend);
+        defer lockFt(backend);
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
     };
     defer releaseShapingFace(shaped_face);
     const hb_font = shaped_face.hb_font orelse {
+        unlockFt(backend);
+        defer lockFt(backend);
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
     };
     c.hb_shape(hb_font, buffer, null, 0);
@@ -210,7 +220,9 @@ fn shapePlainAsciiRun(
     var keep_glyphs = false;
     defer if (!keep_glyphs) allocator.free(glyphs);
 
-    const shaped_face = acquireShapingFace(backend, run.run.font.face_id) orelse return null;
+    lockFt(backend);
+    defer unlockFt(backend);
+    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse return null;
     const face = shaped_face.face;
 
     for (window.slice(clusters), 0..) |cluster, idx| {
@@ -222,7 +234,7 @@ fn shapePlainAsciiRun(
             .cluster_index = window.start + @as(u32, @intCast(idx)),
             .x_offset_px = 0,
             .y_offset_px = 0,
-            .x_advance_px = glyphAdvanceFromFace(face, glyph_id, cell_metrics),
+            .x_advance_px = glyphAdvanceFromFace(backend, face, glyph_id, cell_metrics),
         };
     }
 
@@ -258,29 +270,23 @@ pub fn providerRasterizeSprite(
     return providerSpriteOutput(allocator, req, width, height, pixels);
 }
 
-fn providerGlyphId(self: anytype, face_id: render.FontFaceId, codepoint: u32) u32 {
+pub fn providerGlyphId(self: anytype, face_id: render.FontFaceId, codepoint: u32) u32 {
     if (useDeterministicTestTextFallback(self)) return codepoint;
     if (!ensureFont(self)) return 0;
-    if (face_id.value == primary_face_id) {
-        const face = self.ft_face orelse return 0;
-        return shapeGlyphId(self.hb_font, face, @intCast(codepoint));
-    }
-
-    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
-    const face = ensureFallbackFace(self, fallback_index) orelse return 0;
-    return shapeGlyphId(self.fallback_hb_fonts[fallback_index], face, @intCast(codepoint));
+    lockFt(self);
+    defer unlockFt(self);
+    const shaped_face = acquireShapingFaceLocked(self, face_id) orelse return 0;
+    return shapeGlyphId(shaped_face.hb_font, shaped_face.face, @intCast(codepoint));
 }
 
 pub fn providerGlyphAdvance(self: anytype, face_id: render.FontFaceId, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
     const fallback: f32 = @floatFromInt(cell_metrics.cell_w_px);
     if (glyph_id == 0) return fallback;
-    if (useDeterministicTestTextFallback(self)) return fallback;
-    const face = if (face_id.value == primary_face_id)
-        self.ft_face
-    else
-        ensureFallbackFace(self, if (face_id.value >= 2) face_id.value - 2 else return fallback);
-    if (face == null) return fallback;
-    return glyphAdvanceFromFace(face.?, glyph_id, cell_metrics);
+    if (!ensureFont(self)) return fallback;
+    lockFt(self);
+    defer unlockFt(self);
+    const shaped_face = acquireShapingFaceLocked(self, face_id) orelse return fallback;
+    return glyphAdvanceFromFace(self, shaped_face.face, glyph_id, cell_metrics);
 }
 
 pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
@@ -338,14 +344,10 @@ fn fallbackProviderShapeRun(
 fn providerGlyphVisualWidth(self: anytype, face_id: render.FontFaceId, glyph_id: u32) f32 {
     if (glyph_id == 0) return 0;
     if (!ensureFont(self)) return 0;
-    if (face_id.value == primary_face_id) {
-        const face = self.ft_face orelse return 0;
-        return glyphVisualWidthPx(face, glyph_id);
-    }
-
-    const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return 0;
-    const face = ensureFallbackFace(self, fallback_index) orelse return 0;
-    return glyphVisualWidthPx(face, glyph_id);
+    lockFt(self);
+    defer unlockFt(self);
+    const shaped_face = acquireShapingFaceLocked(self, face_id) orelse return 0;
+    return glyphVisualWidthPxLocked(shaped_face.face, glyph_id);
 }
 
 const ShapingFace = struct {
@@ -354,24 +356,21 @@ const ShapingFace = struct {
     owns_face: bool,
 };
 
-fn acquireShapingFace(self: anytype, face_id: render.FontFaceId) ?ShapingFace {
-    if (!ensureFont(self)) return null;
+fn acquireShapingFaceLocked(self: anytype, face_id: render.FontFaceId) ?ShapingFace {
     if (face_id.value == primary_face_id) {
         const face = self.ft_face orelse return null;
         return .{ .face = face, .hb_font = self.hb_font, .owns_face = false };
     }
 
     const fallback_index = if (face_id.value >= 2) face_id.value - 2 else return null;
-    if (fallback_index >= self.fallback_font_paths_len) return null;
-    const face = self.fallback_faces[fallback_index] orelse return null;
-    return .{ .face = face, .hb_font = self.fallback_hb_fonts[fallback_index], .owns_face = false };
+    const slot = fallbackSlot(self, fallback_index) orelse return null;
+    const face = self.fallback_faces[slot] orelse return null;
+    return .{ .face = face, .hb_font = self.fallback_hb_fonts[slot], .owns_face = false };
 }
 
 fn releaseShapingFace(shaped: ShapingFace) void {
     if (shaped.owns_face) {
-        if (shaped.hb_font != null and builtin.target.abi != .android) {
-            c.hb_font_destroy(shaped.hb_font.?);
-        }
+        c_api.destroyHbFont(shaped.hb_font);
         _ = c.FT_Done_Face(shaped.face);
     }
 }
@@ -382,7 +381,7 @@ fn textForCluster(text_cache_view: render.LineTextCache, cluster: render.CellClu
     return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
 }
 
-fn glyphVisualWidthPx(face: FtFace, glyph_id: u32) f32 {
+fn glyphVisualWidthPxLocked(face: FtFace, glyph_id: u32) f32 {
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return 0;
     if (face.*.glyph == null) return 0;
     const metrics = face.*.glyph.*.metrics;
@@ -396,25 +395,21 @@ pub fn rasterizeProviderGlyph(self: anytype, dst: []u8, width: u16, height: u16,
         return true;
     }
     if (!ensureFont(self)) return false;
-    const face = if (face_id.value == primary_face_id)
-        self.ft_face
-    else
-        ensureFallbackFace(self, if (face_id.value >= 2) face_id.value - 2 else return false);
-    if (face == null) return false;
-    return rasterizeProviderGlyphFromFace(dst, width, height, baseline_px, face.?, glyph_id, x_origin_px, y_origin_px, glyph_index);
+    lockFt(self);
+    defer unlockFt(self);
+    const shaped_face = acquireShapingFaceLocked(self, face_id) orelse return false;
+    return rasterizeProviderGlyphFromFace(self, dst, width, height, baseline_px, shaped_face.face, glyph_id, x_origin_px, y_origin_px, glyph_index);
 }
 
-fn ensureFont(self: anytype) bool {
+pub fn ensureFont(self: anytype) bool {
     if (ensurePrimaryFont(self)) {
         self.resolve_stage = .loaded_exact_match;
         return true;
     }
-    if (!ensureFreeTypeLibrary(self)) return false;
 
-    var i: usize = 0;
-    while (i < self.fallback_font_paths_len) : (i += 1) {
+    for (0..self.fallback_font_paths_len) |i| {
         if (self.fallback_font_paths[i] == null) continue;
-        if (ensureFallbackFace(self, i) != null) {
+        if (ensureFallbackFace(self, @intCast(i))) |_| {
             self.resolve_stage = .discovery_fallback;
             return true;
         }
@@ -425,9 +420,36 @@ fn ensureFont(self: anytype) bool {
     return false;
 }
 
-fn ensurePrimaryFont(self: anytype) bool {
+pub fn resetLoadedFace(self: anytype) void {
+    lockFt(self);
+    defer unlockFt(self);
+    resetFallbackFaces(self);
+    if (self.ft_face != null) {
+        c_api.destroyHbFont(self.hb_font);
+        self.hb_font = null;
+        _ = c.FT_Done_Face(self.ft_face.?);
+        self.ft_face = null;
+    }
+    if (self.ft_lib != null) {
+        _ = c.FT_Done_FreeType(self.ft_lib.?);
+        self.ft_lib = null;
+    }
+}
+
+pub fn resizeLoadedFaces(self: anytype) void {
+    lockFt(self);
+    defer unlockFt(self);
+    if (self.ft_face) |face| _ = setFacePixelHeight(self, face);
+    for (self.fallback_faces) |face_opt| {
+        if (face_opt) |face| _ = setFacePixelHeight(self, face);
+    }
+}
+
+pub fn ensurePrimaryFont(self: anytype) bool {
+    lockFt(self);
+    defer unlockFt(self);
     if (self.ft_face != null) return true;
-    if (!ensureFreeTypeLibrary(self)) return false;
+    if (!ensureFreeTypeLibraryLocked(self)) return false;
     if (self.config.font_path == null) return false;
 
     var face: FtFace = undefined;
@@ -440,17 +462,16 @@ fn ensurePrimaryFont(self: anytype) bool {
     }
 
     self.ft_face = face;
-    if (builtin.target.abi != .android) {
-        self.hb_font = @ptrCast(c.hb_ft_font_create_referenced(face));
-    }
+    self.hb_font = c_api.createHbFont(face);
     return true;
 }
 
-fn ensureFallbackFace(self: anytype, fallback_index: u32) ?FtFace {
-    if (fallback_index >= self.fallback_font_paths_len) return null;
+pub fn ensureFallbackFace(self: anytype, fallback_index: u32) ?FtFace {
+    lockFt(self);
+    defer unlockFt(self);
     const slot = fallbackSlot(self, fallback_index) orelse return null;
     if (self.fallback_faces[slot]) |face| return face;
-    if (!ensureFreeTypeLibrary(self)) return null;
+    if (!ensureFreeTypeLibraryLocked(self)) return null;
     const font_path = self.fallback_font_paths[slot] orelse return null;
     const lib = self.ft_lib orelse return null;
     var face: FtFace = undefined;
@@ -460,13 +481,67 @@ fn ensureFallbackFace(self: anytype, fallback_index: u32) ?FtFace {
         return null;
     }
     self.fallback_faces[slot] = face;
-    if (builtin.target.abi != .android) {
-        self.fallback_hb_fonts[slot] = @ptrCast(c.hb_ft_font_create_referenced(face));
-    }
+    self.fallback_hb_fonts[slot] = c_api.createHbFont(face);
     return face;
 }
 
-fn ensureFreeTypeLibrary(self: anytype) bool {
+pub fn resolveGlyphKey(self: anytype, codepoint: u21) ?ResolvedGlyphKey {
+    if (!ensureFont(self)) return null;
+    lockFt(self);
+    defer unlockFt(self);
+    const face = self.ft_face orelse return null;
+    if (!setFacePixelHeight(self, face)) return null;
+    const glyph_id = shapeGlyphId(self.hb_font, face, codepoint);
+    if (glyph_id == 0) return null;
+    return .{ .codepoint = codepoint, .face_id = primary_face_id, .glyph_id = glyph_id };
+}
+
+pub fn deriveCellMetrics(self: anytype) render.CellMetrics {
+    if (ensurePrimaryFont(self)) {
+        lockFt(self);
+        defer unlockFt(self);
+        return cellMetricsFromFace(self.ft_face.?, self.config.font_size_px);
+    }
+    lockFt(self);
+    defer unlockFt(self);
+    if (ensureFreeTypeLibraryLocked(self)) {
+        const lib = self.ft_lib.?;
+        var i: usize = 0;
+        while (i < self.fallback_font_paths_len) : (i += 1) {
+            const font_path = self.fallback_font_paths[i] orelse continue;
+            var face: FtFace = undefined;
+            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
+            defer _ = c.FT_Done_Face(face);
+            if (!setFacePixelHeight(self, face)) continue;
+            return cellMetricsFromFace(face, self.config.font_size_px);
+        }
+    }
+    return render.Text.Metrics.defaultCellMetrics(self.config.font_size_px);
+}
+
+pub fn configuredCellMetrics(self: anytype) render.CellMetrics {
+    const cell_w = @max(self.config.cell_px.width, 1);
+    const cell_h = @max(self.config.cell_px.height, 1);
+    var baseline = @as(i32, @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)));
+    if (ensurePrimaryFont(self)) {
+        lockFt(self);
+        defer unlockFt(self);
+        baseline = computeBaselineFromFace(self.ft_face.?, cell_h);
+    }
+    return .{
+        .cell_w_px = cell_w,
+        .cell_h_px = cell_h,
+        .baseline_px = @intCast(std.math.clamp(baseline, 1, @as(i32, @intCast(cell_h)))),
+        .box_thickness_px = render.Text.Metrics.defaultBoxThickness(cell_h),
+    };
+}
+
+pub fn deriveCellSize(self: anytype) render.CellSize {
+    const cell = deriveCellMetrics(self);
+    return .{ .width = cell.cell_w_px, .height = cell.cell_h_px };
+}
+
+fn ensureFreeTypeLibraryLocked(self: anytype) bool {
     if (self.ft_lib != null) return true;
     var lib: FtLibrary = undefined;
     if (c.FT_Init_FreeType(&lib) != 0) return false;
@@ -474,7 +549,7 @@ fn ensureFreeTypeLibrary(self: anytype) bool {
     return true;
 }
 
-fn rasterizeProviderGlyphFromFace(dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
+fn rasterizeProviderGlyphFromFace(_: anytype, dst: []u8, width: u16, height: u16, baseline_px: i16, face: FtFace, glyph_id: u32, x_origin_px: i32, y_origin_px: i32, glyph_index: u32) bool {
     if (glyph_id == 0) return false;
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return false;
     const glyph = face.*.glyph;
@@ -541,7 +616,7 @@ fn buildProviderShapedRun(
         const cluster_idx = cluster_map[@intCast(cluster_cp_idx)];
         const shaped_advance = render.Text.Metrics.advancePx(@intCast(pos.x_advance), cell_metrics.cell_w_px);
         const advance_px = if (cluster_idx < clusters.len and isIconCodepoint(clusters[@intCast(cluster_idx)].first_cp))
-            @max(shaped_advance, glyphVisualWidthPx(face, info.codepoint))
+            @max(shaped_advance, glyphVisualWidthPxLocked(face, info.codepoint))
         else
             shaped_advance;
         glyph.* = .{
@@ -669,29 +744,15 @@ fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top
     return .{ .x_px = x_px, .y_px = y_px };
 }
 
-fn glyphAdvanceFromFace(face: FtFace, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
+fn glyphAdvanceFromFace(self: anytype, face: FtFace, glyph_id: u32, cell_metrics: render.CellMetrics) f32 {
+    if (!setFacePixelHeight(self, face)) return @floatFromInt(cell_metrics.cell_w_px);
     if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_DEFAULT) != 0) return @floatFromInt(cell_metrics.cell_w_px);
     if (face.*.glyph == null) return @floatFromInt(cell_metrics.cell_w_px);
     return render.Text.Metrics.advancePx(@intCast(face.*.glyph.*.advance.x), cell_metrics.cell_w_px);
 }
 
 fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
-    if (builtin.target.abi == .android) return c.FT_Get_Char_Index(face, codepoint);
-    if (hb_font) |font| {
-        const buffer = c.hb_buffer_create() orelse return c.FT_Get_Char_Index(face, codepoint);
-        defer c.hb_buffer_destroy(buffer);
-        var cp: u32 = codepoint;
-        c.hb_buffer_add_utf32(buffer, &cp, 1, 0, 1);
-        c.hb_buffer_guess_segment_properties(buffer);
-        c.hb_shape(font, buffer, null, 0);
-        var count: c_uint = 0;
-        const infos = c.hb_buffer_get_glyph_infos(buffer, &count);
-        if (infos != null and count > 0) {
-            const gid = infos[0].codepoint;
-            if (gid != 0) return gid;
-        }
-    }
-    return c.FT_Get_Char_Index(face, codepoint);
+    return c_api.shapeGlyphId(hb_font, face, codepoint);
 }
 
 fn isIconCodepoint(cp: u32) bool {
@@ -708,6 +769,10 @@ fn isPlainAsciiCodepoint(cp: u32) bool {
 
 fn setFacePixelHeight(self: anytype, face: FtFace) bool {
     return c.FT_Set_Pixel_Sizes(face, 0, @max(self.config.font_size_px, 1)) == 0;
+}
+
+fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render.CellMetrics {
+    return render.Text.Metrics.cellMetricsFromFaceMetrics(faceMetricsInput(face, font_size_px));
 }
 
 fn computeBaselineFromFace(face: FtFace, cell_h: u16) i32 {
@@ -738,11 +803,22 @@ fn asciiCellAdvance(face: FtFace, fallback_advance: i32) i32 {
     return if (max_advance > 0) max_advance else fallback_advance;
 }
 
+fn resetFallbackFaces(self: anytype) void {
+    for (self.fallback_faces, 0..) |face_opt, i| {
+        c_api.destroyHbFont(self.fallback_hb_fonts[i]);
+        self.fallback_hb_fonts[i] = null;
+        if (face_opt != null) {
+            _ = c.FT_Done_Face(face_opt.?);
+            self.fallback_faces[i] = null;
+        }
+    }
+}
+
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
     render.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
 }
 
 fn useDeterministicTestTextFallback(self: anytype) bool {
-    return builtin.is_test and self.config.font_path == null;
+    return builtin.is_test and self.config.font_path == null and self.fallback_font_paths_len == 0;
 }
