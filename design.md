@@ -56,11 +56,21 @@ stateDiagram-v2
 sequenceDiagram
     participant Backend
     participant RC as Render
+    participant TE as Render.Text.Engine
     participant RR as RenderRuntime
     participant VT as VtState
     participant Renderer
 
     VT->>RC: vtStateToFrameTextInput(...)
+    Backend->>TE: analyze*Options(...)
+    TE->>TE: text cache -> renderable cells
+    TE->>Render.Text.Cluster: extract clusters
+    TE->>Render.Text.Cluster: select complex cells and clusters
+    TE->>Render.Text.Lane: direct normal or complex branch
+    TE->>font_resolver: resolve
+    TE->>shape_run: shape
+    TE->>grouping: group
+    TE->>scene: assemble scene
     Backend->>RR: acceptSource(...)
     Backend->>RR: prepare()
     RR->>RR: publish pending snapshot token
@@ -78,6 +88,11 @@ sequenceDiagram
 - retained publication storage, source classification, and pending-publication state mutate in one local runtime owner path.
 - queue state reports explicit prepare/submit transitions; runtime decides when rejected submit turns into a full-prepare request.
 - runtime metric contracts live in `frame_metrics.zig`; queue transition counters mutate only at the queue transition that they count.
+- `Render.Text.Engine` owns the active text control spine: input acceptance, cluster extraction, lane branching, resolve, shape, grouping, and scene assembly.
+- `Render.Text.Cluster` owns extraction and complex-path selection over text/cache/cell data, then stops.
+- `grouping` owns grouping policy only.
+- `scene` owns scene assembly only.
+- `Render.Text.Lane`, `font_resolver`, `shape_run`, `grouping`, and `scene` stay leaf phase owners under the engine spine; they do not own top-level routing.
 - `Renderer` owns backend selection, backend-facing prepare/submit behavior, and prepared-frame lifetime.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.
 - text-lane contracts should be read through `Render.Text.Lane` and adjacent `Render.Text.Cluster` input types, not through duplicate `Render` aliases.

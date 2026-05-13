@@ -6,6 +6,7 @@ const std = @import("std");
 const contract = @import("../text_contract.zig");
 const types = @import("../types.zig");
 const scene_mod = @import("scene.zig");
+const text_lane = @import("text_lane.zig");
 
 const VS15: u32 = 0xfe0e;
 const VS16: u32 = 0xfe0f;
@@ -71,6 +72,18 @@ pub const OwnedRuns = struct {
 
     pub fn deinit(self: *OwnedRuns) void {
         self.allocator.free(self.runs);
+        self.* = undefined;
+    }
+};
+
+pub const ComplexSelection = struct {
+    allocator: std.mem.Allocator,
+    cells: []contract.RenderableCell,
+    clusters: []contract.CellCluster,
+
+    pub fn deinit(self: *ComplexSelection) void {
+        self.allocator.free(self.cells);
+        self.allocator.free(self.clusters);
         self.* = undefined;
     }
 };
@@ -401,6 +414,49 @@ pub fn extractClustersWithDamage(
     return .{ .allocator = allocator, .clusters = clusters };
 }
 
+pub fn selectComplexWithDamage(
+    allocator: std.mem.Allocator,
+    cells: []const contract.RenderableCell,
+    cache: contract.LineTextCache,
+    clusters: []const contract.CellCluster,
+    grid_metrics: contract.GridMetrics,
+    damage: scene_mod.DamageInput,
+) !ComplexSelection {
+    var complex_cell_count: usize = 0;
+    for (cells) |cell| {
+        if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane == .complex) complex_cell_count += 1;
+    }
+
+    const complex_cells = try allocator.alloc(contract.RenderableCell, complex_cell_count);
+    errdefer allocator.free(complex_cells);
+    var complex_cell_idx: usize = 0;
+    for (cells) |cell| {
+        if (cell.continuation) continue;
+        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane != .complex) continue;
+        complex_cells[complex_cell_idx] = cell;
+        complex_cell_idx += 1;
+    }
+
+    var complex_cluster_count: usize = 0;
+    for (clusters) |cluster_value| {
+        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane == .complex) complex_cluster_count += 1;
+    }
+
+    const complex_clusters = try allocator.alloc(contract.CellCluster, complex_cluster_count);
+    errdefer allocator.free(complex_clusters);
+    var complex_cluster_idx: usize = 0;
+    for (clusters) |cluster_value| {
+        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane != .complex) continue;
+        complex_clusters[complex_cluster_idx] = cluster_value;
+        complex_cluster_idx += 1;
+    }
+
+    return .{ .allocator = allocator, .cells = complex_cells, .clusters = complex_clusters };
+}
+
 fn includeSpan(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
     if (damage.full) return true;
     const row_count = @as(usize, grid_metrics.rows);
@@ -423,6 +479,12 @@ fn textForCell(cell: contract.RenderableCell, cache: contract.LineTextCache) con
     const text_idx = @as(usize, @intCast(cell.text_id.value));
     if (text_idx < cache.texts.len) return cache.texts[text_idx];
     return .{ .id = cell.text_id, .first_cp = 0, .codepoints = &.{} };
+}
+
+fn textForCluster(cluster: contract.CellCluster, cache: contract.LineTextCache) contract.CellText {
+    const idx = @as(usize, @intCast(cluster.text_id.value));
+    if (idx < cache.texts.len) return cache.texts[idx];
+    return .{ .id = cluster.text_id, .first_cp = cluster.first_cp, .codepoints = &.{cluster.first_cp} };
 }
 
 fn isBlankText(text: contract.CellText) bool {

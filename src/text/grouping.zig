@@ -26,25 +26,6 @@ pub const GroupingPolicy = struct {
     suppress_ligature_at_cursor: bool = false,
 };
 
-pub fn singleCellGroup(first_cell: u32, glyphs: []const contract.GlyphInstance, key: contract.SpriteKey) contract.GlyphGroup {
-    return .{
-        .first_cell = first_cell,
-        .cell_span = 1,
-        .glyphs = glyphs,
-        .sprite_key = key,
-        .kind = .normal,
-    };
-}
-
-pub fn groupShapedRuns(
-    allocator: std.mem.Allocator,
-    shaped_runs: []const shape_run.OwnedShapedRun,
-    clusters: []const contract.CellCluster,
-    cell_metrics: contract.CellMetrics,
-) !OwnedGlyphGroups {
-    return groupShapedRunsWithPolicy(allocator, shaped_runs, clusters, cell_metrics, .{});
-}
-
 pub fn groupShapedRunsWithPolicy(
     allocator: std.mem.Allocator,
     shaped_runs: []const shape_run.OwnedShapedRun,
@@ -226,7 +207,7 @@ test "group shaped run creates one group per glyph cluster" {
         .font = .{ .face_id = .{ .value = 5 }, .style = .regular, .presentation = .any },
     } }, text_cache, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
     defer shaped.deinit();
-    var groups = try groupShapedRuns(std.testing.allocator, &.{shaped}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    var groups = try groupShapedRunsWithPolicy(std.testing.allocator, &.{shaped}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{});
     defer groups.deinit();
     try std.testing.expectEqual(@as(usize, 1), groups.groups.len);
     try std.testing.expectEqual(@as(u32, 4), groups.groups[0].first_cell);
@@ -249,7 +230,7 @@ test "grouping merges multiple glyphs for one cluster" {
         var owned = shaped_run;
         owned.deinit();
     }
-    var groups = try groupShapedRuns(std.testing.allocator, &.{shaped_run}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    var groups = try groupShapedRunsWithPolicy(std.testing.allocator, &.{shaped_run}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{});
     defer groups.deinit();
     try std.testing.expectEqual(@as(usize, 1), groups.groups.len);
     try std.testing.expectEqual(@as(usize, 2), groups.groups[0].glyphs.len);
@@ -303,7 +284,7 @@ test "grouping preserves multicell span as ligature-shaped group" {
         .font = .{ .face_id = .{ .value = 5 }, .style = .regular, .presentation = .any },
     } }, text_cache, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
     defer shaped.deinit();
-    var groups = try groupShapedRuns(std.testing.allocator, &.{shaped}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    var groups = try groupShapedRunsWithPolicy(std.testing.allocator, &.{shaped}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{});
     defer groups.deinit();
     try std.testing.expectEqual(@as(u8, 2), groups.groups[0].cell_span);
     try std.testing.expectEqual(contract.GlyphGroupKind.ligature, groups.groups[0].kind);
@@ -347,7 +328,7 @@ test "grouping infers multicell span from next cluster boundary" {
         var owned = shaped_run;
         owned.deinit();
     }
-    var groups = try groupShapedRuns(std.testing.allocator, &.{shaped_run}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    var groups = try groupShapedRunsWithPolicy(std.testing.allocator, &.{shaped_run}, &clusters, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{});
     defer groups.deinit();
     try std.testing.expectEqual(@as(usize, 1), groups.groups.len);
     try std.testing.expectEqual(@as(u8, 2), groups.groups[0].cell_span);
