@@ -43,6 +43,5 @@ comptime {
 }
 
 test {
-    _ = @import("test/root.zig");
     std.testing.refAllDecls(lib);
 }

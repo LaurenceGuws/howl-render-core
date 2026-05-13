@@ -44,16 +44,16 @@ const WorkloadResult = struct {
     normal_clusters: usize,
     complex_clusters: usize,
     direct_normal_draws: usize,
-    legacy_resolved_normal_clusters: usize,
-    legacy_resolved_complex_clusters: usize,
-    legacy_shaped_normal_clusters: usize,
-    legacy_shaped_complex_clusters: usize,
-    legacy_grouped_normal_groups: usize,
-    legacy_grouped_complex_groups: usize,
-    legacy_scene_normal_sprite_draws: usize,
-    legacy_scene_complex_sprite_draws: usize,
+    complex_path_resolved_normal_clusters: usize,
+    complex_path_resolved_complex_clusters: usize,
+    complex_path_shaped_normal_clusters: usize,
+    complex_path_shaped_complex_clusters: usize,
+    complex_path_grouped_normal_groups: usize,
+    complex_path_grouped_complex_groups: usize,
+    complex_path_scene_normal_sprite_draws: usize,
+    complex_path_scene_complex_sprite_draws: usize,
     frame_fully_normal_input: bool,
-    frame_stayed_out_of_legacy_path: bool,
+    frame_stayed_out_of_complex_path: bool,
     dirty_cells_per_run: usize,
     runs: usize,
     cold_ns: u64,
@@ -693,16 +693,16 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .normal_clusters = final_lane_report.normal_clusters,
         .complex_clusters = final_lane_report.complex_clusters,
         .direct_normal_draws = final_lane_report.direct_normal_draws,
-        .legacy_resolved_normal_clusters = final_lane_report.legacy.resolved_clusters.normal,
-        .legacy_resolved_complex_clusters = final_lane_report.legacy.resolved_clusters.complex,
-        .legacy_shaped_normal_clusters = final_lane_report.legacy.shaped_clusters.normal,
-        .legacy_shaped_complex_clusters = final_lane_report.legacy.shaped_clusters.complex,
-        .legacy_grouped_normal_groups = final_lane_report.legacy.grouped_groups.normal,
-        .legacy_grouped_complex_groups = final_lane_report.legacy.grouped_groups.complex,
-        .legacy_scene_normal_sprite_draws = final_lane_report.legacy.scene_sprite_draws.normal,
-        .legacy_scene_complex_sprite_draws = final_lane_report.legacy.scene_sprite_draws.complex,
+        .complex_path_resolved_normal_clusters = final_lane_report.legacy.resolved_clusters.normal,
+        .complex_path_resolved_complex_clusters = final_lane_report.legacy.resolved_clusters.complex,
+        .complex_path_shaped_normal_clusters = final_lane_report.legacy.shaped_clusters.normal,
+        .complex_path_shaped_complex_clusters = final_lane_report.legacy.shaped_clusters.complex,
+        .complex_path_grouped_normal_groups = final_lane_report.legacy.grouped_groups.normal,
+        .complex_path_grouped_complex_groups = final_lane_report.legacy.grouped_groups.complex,
+        .complex_path_scene_normal_sprite_draws = final_lane_report.legacy.scene_sprite_draws.normal,
+        .complex_path_scene_complex_sprite_draws = final_lane_report.legacy.scene_sprite_draws.complex,
         .frame_fully_normal_input = final_lane_report.frameFullyNormalInput(),
-        .frame_stayed_out_of_legacy_path = final_lane_report.frameStayedOutOfLegacyPath(),
+        .frame_stayed_out_of_complex_path = final_lane_report.frameStayedOutOfLegacyPath(),
         .dirty_cells_per_run = workload.dirty_cells_per_run,
         .runs = runs,
         .cold_ns = cold_observation.ns,
@@ -799,16 +799,16 @@ fn printTextResult(result: WorkloadResult) void {
     std.debug.print("direct_normal_draws={d}\n", .{result.direct_normal_draws});
     std.debug.print("cold_direct_normal_raster_misses={d}\n", .{result.cold_direct_normal_raster_misses});
     std.debug.print("warm_direct_normal_raster_misses={d}\n", .{result.warm_direct_normal_raster_misses});
-    std.debug.print("legacy_resolved_normal_clusters={d}\n", .{result.legacy_resolved_normal_clusters});
-    std.debug.print("legacy_resolved_complex_clusters={d}\n", .{result.legacy_resolved_complex_clusters});
-    std.debug.print("legacy_shaped_normal_clusters={d}\n", .{result.legacy_shaped_normal_clusters});
-    std.debug.print("legacy_shaped_complex_clusters={d}\n", .{result.legacy_shaped_complex_clusters});
-    std.debug.print("legacy_grouped_normal_groups={d}\n", .{result.legacy_grouped_normal_groups});
-    std.debug.print("legacy_grouped_complex_groups={d}\n", .{result.legacy_grouped_complex_groups});
-    std.debug.print("legacy_scene_normal_sprite_draws={d}\n", .{result.legacy_scene_normal_sprite_draws});
-    std.debug.print("legacy_scene_complex_sprite_draws={d}\n", .{result.legacy_scene_complex_sprite_draws});
+    std.debug.print("complex_path_resolved_normal_clusters={d}\n", .{result.complex_path_resolved_normal_clusters});
+    std.debug.print("complex_path_resolved_complex_clusters={d}\n", .{result.complex_path_resolved_complex_clusters});
+    std.debug.print("complex_path_shaped_normal_clusters={d}\n", .{result.complex_path_shaped_normal_clusters});
+    std.debug.print("complex_path_shaped_complex_clusters={d}\n", .{result.complex_path_shaped_complex_clusters});
+    std.debug.print("complex_path_grouped_normal_groups={d}\n", .{result.complex_path_grouped_normal_groups});
+    std.debug.print("complex_path_grouped_complex_groups={d}\n", .{result.complex_path_grouped_complex_groups});
+    std.debug.print("complex_path_scene_normal_sprite_draws={d}\n", .{result.complex_path_scene_normal_sprite_draws});
+    std.debug.print("complex_path_scene_complex_sprite_draws={d}\n", .{result.complex_path_scene_complex_sprite_draws});
     std.debug.print("frame_fully_normal_input={}\n", .{result.frame_fully_normal_input});
-    std.debug.print("frame_stayed_out_of_legacy_path={}\n", .{result.frame_stayed_out_of_legacy_path});
+    std.debug.print("frame_stayed_out_of_complex_path={}\n", .{result.frame_stayed_out_of_complex_path});
     std.debug.print("runs={d}\n", .{result.runs});
     std.debug.print("dirty_cells_per_run={d}\n", .{result.dirty_cells_per_run});
     std.debug.print("cold_ms={d:.3}\n", .{cold_ms});
@@ -840,7 +840,7 @@ fn printTextResult(result: WorkloadResult) void {
 
 fn printNdjsonResult(result: WorkloadResult) void {
     std.debug.print(
-        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"complex_icon_cells\":{d},\"complex_curly_underline_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"cold_direct_normal_raster_misses\":{d},\"warm_direct_normal_raster_misses\":{d},\"legacy_resolved_normal_clusters\":{d},\"legacy_resolved_complex_clusters\":{d},\"legacy_shaped_normal_clusters\":{d},\"legacy_shaped_complex_clusters\":{d},\"legacy_grouped_normal_groups\":{d},\"legacy_grouped_complex_groups\":{d},",
+        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"complex_icon_cells\":{d},\"complex_curly_underline_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"cold_direct_normal_raster_misses\":{d},\"warm_direct_normal_raster_misses\":{d},\"complex_path_resolved_normal_clusters\":{d},\"complex_path_resolved_complex_clusters\":{d},\"complex_path_shaped_normal_clusters\":{d},\"complex_path_shaped_complex_clusters\":{d},\"complex_path_grouped_normal_groups\":{d},\"complex_path_grouped_complex_groups\":{d},",
         .{
             result.name,
             result.grid_cols,
@@ -858,21 +858,21 @@ fn printNdjsonResult(result: WorkloadResult) void {
             result.direct_normal_draws,
             result.cold_direct_normal_raster_misses,
             result.warm_direct_normal_raster_misses,
-            result.legacy_resolved_normal_clusters,
-            result.legacy_resolved_complex_clusters,
-            result.legacy_shaped_normal_clusters,
-            result.legacy_shaped_complex_clusters,
-            result.legacy_grouped_normal_groups,
-            result.legacy_grouped_complex_groups,
+            result.complex_path_resolved_normal_clusters,
+            result.complex_path_resolved_complex_clusters,
+            result.complex_path_shaped_normal_clusters,
+            result.complex_path_shaped_complex_clusters,
+            result.complex_path_grouped_normal_groups,
+            result.complex_path_grouped_complex_groups,
         },
     );
     std.debug.print(
-        "\"legacy_scene_normal_sprite_draws\":{d},\"legacy_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_legacy_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"cold_ns\":{d},\"cold_resolve_us\":{d},\"cold_shape_us\":{d},\"cold_group_us\":{d},\"cold_scene_us\":{d},\"cold_alloc_count\":{d},\"cold_alloc_bytes\":{d},\"cold_peak_live_bytes\":{d},\"cold_fills\":{d},\"cold_glyphs\":{d},\"cold_uploads\":{d},\"warm_median_ns\":{d},\"warm_p95_ns\":{d},\"warm_median_resolve_us\":{d},\"warm_median_shape_us\":{d},\"warm_median_group_us\":{d},\"warm_median_scene_us\":{d},\"dirty_cells_per_second\":{d:.0},\"warm_median_alloc_count\":{d},\"warm_median_alloc_bytes\":{d},\"warm_median_peak_live_bytes\":{d},\"warm_median_fills\":{d},\"warm_median_glyphs\":{d},\"warm_median_uploads\":{d}}}\n",
+        "\"complex_path_scene_normal_sprite_draws\":{d},\"complex_path_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_complex_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"cold_ns\":{d},\"cold_resolve_us\":{d},\"cold_shape_us\":{d},\"cold_group_us\":{d},\"cold_scene_us\":{d},\"cold_alloc_count\":{d},\"cold_alloc_bytes\":{d},\"cold_peak_live_bytes\":{d},\"cold_fills\":{d},\"cold_glyphs\":{d},\"cold_uploads\":{d},\"warm_median_ns\":{d},\"warm_p95_ns\":{d},\"warm_median_resolve_us\":{d},\"warm_median_shape_us\":{d},\"warm_median_group_us\":{d},\"warm_median_scene_us\":{d},\"dirty_cells_per_second\":{d:.0},\"warm_median_alloc_count\":{d},\"warm_median_alloc_bytes\":{d},\"warm_median_peak_live_bytes\":{d},\"warm_median_fills\":{d},\"warm_median_glyphs\":{d},\"warm_median_uploads\":{d}}}\n",
         .{
-            result.legacy_scene_normal_sprite_draws,
-            result.legacy_scene_complex_sprite_draws,
+            result.complex_path_scene_normal_sprite_draws,
+            result.complex_path_scene_complex_sprite_draws,
             result.frame_fully_normal_input,
-            result.frame_stayed_out_of_legacy_path,
+            result.frame_stayed_out_of_complex_path,
             result.runs,
             result.dirty_cells_per_run,
             result.cold_ns,

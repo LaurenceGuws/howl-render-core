@@ -146,6 +146,15 @@ sequenceDiagram
 - `prepareFrame(...)` and `submitFrame(...)` are the reviewable staged path for retained runtime integration.
 - backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
 
+## Proof Surface
+- `zig build test --summary all` remains the closeout proof umbrella.
+- `zig build test:render` proves the pure render contract surface.
+- `zig build test:unit` proves the integrated module surface, including text and backend behavior.
+- `zig build test:runtime-proof` proves the retained runtime and staged renderer owner chain directly through `src/test/runtime_proof.zig`.
+- runtime proof is no longer hidden behind the package-root unit test surface.
+- `zig build render-benchmark` runs the synthetic text-spine benchmark surface in `src/test/render_benchmark.zig`.
+- Benchmark output names describe direct-normal and complex-path behavior; they should not use stale wrapper-era surface names.
+
 ## Non-Goals
 - GPU resource ownership.
 - Platform GL/GLES contexts.

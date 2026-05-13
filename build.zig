@@ -118,16 +118,38 @@ pub fn build(b: *std.Build) void {
         run_render_tests.has_side_effects = true;
     }
 
+    const runtime_proof_mod = b.createModule(.{
+        .root_source_file = b.path("src/test/runtime_proof.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    runtime_proof_mod.addImport("howl_render", mod);
+    const runtime_proof_tests = b.addTest(.{
+        .name = "test-runtime-proof",
+        .root_module = runtime_proof_mod,
+        .filters = b.args orelse &.{},
+    });
+    runtime_proof_tests.use_llvm = true;
+    const run_runtime_proof_tests = b.addRunArtifact(runtime_proof_tests);
+    if (b.args != null) {
+        run_runtime_proof_tests.has_side_effects = true;
+    }
+
     const test_step = b.step("test", "Run all tests");
     const test_render_step = b.step("test:render", "Run pure render tests");
     const test_render_build_step = b.step("test:render:build", "Build pure render tests");
+    const test_runtime_proof_step = b.step("test:runtime-proof", "Run runtime proof tests");
+    const test_runtime_proof_build_step = b.step("test:runtime-proof:build", "Build runtime proof tests");
     const test_unit_step = b.step("test:unit", "Run unit tests");
     const test_unit_build_step = b.step("test:unit:build", "Build unit tests");
     test_render_build_step.dependOn(&b.addInstallArtifact(render_tests, .{}).step);
     test_render_step.dependOn(&run_render_tests.step);
+    test_runtime_proof_build_step.dependOn(&b.addInstallArtifact(runtime_proof_tests, .{}).step);
+    test_runtime_proof_step.dependOn(&run_runtime_proof_tests.step);
     test_unit_build_step.dependOn(&b.addInstallArtifact(mod_tests, .{}).step);
     test_unit_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(test_render_step);
+    test_step.dependOn(test_runtime_proof_step);
     test_step.dependOn(test_unit_step);
 
     const ffi_mod = b.createModule(.{
@@ -180,6 +202,8 @@ pub fn build(b: *std.Build) void {
     benchmark_exe.use_llvm = true;
     const run_benchmark = b.addRunArtifact(benchmark_exe);
     if (b.args) |args| run_benchmark.addArgs(args);
+    const benchmark_build_step = b.step("render-benchmark:build", "Build render benchmark suite");
+    benchmark_build_step.dependOn(&b.addInstallArtifact(benchmark_exe, .{}).step);
     const benchmark_step = b.step("render-benchmark", "Run render benchmark suite");
     benchmark_step.dependOn(&run_benchmark.step);
 }
