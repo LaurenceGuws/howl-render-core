@@ -169,7 +169,7 @@ test "backend analyzes text cells through provider-backed engine" {
         .{ .codepoint = 'B', .fg = white, .bg = black },
     };
     var faces: [8]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
+    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 0), analysis.groups.groups.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
@@ -203,9 +203,9 @@ test "backend uploads text analysis raster outputs into atlas memory" {
     const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
     defer analysis.deinit();
-    const committed = try backend.uploadTextAnalysisRaster(analysis);
+    const committed = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     try std.testing.expectEqual(@as(usize, 1), committed);
     const committed_scene = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     try std.testing.expectEqual(@as(usize, 0), committed_scene);
@@ -228,12 +228,12 @@ test "backend text analysis reuses retained scene atlas for unchanged glyphs" {
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
 
-    var first = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    var first = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
-    _ = try backend.uploadTextAnalysisRaster(first);
+    _ = try backend.uploadTextSceneRaster(first.scene.scene, first.raster_plan.outputs);
 
-    var second = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    var second = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
     defer second.deinit();
     try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
     try std.testing.expectEqual(first.scene.scene.sprite_draws[0].sprite.slot, second.scene.scene.sprite_draws[0].sprite.slot);
@@ -328,7 +328,7 @@ test "backend renders prepared text scene" {
     const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black, .underline = true }};
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces);
+    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
     defer analysis.deinit();
     const report = try backend.renderTextScene(analysis.scene.scene, analysis.raster_plan.outputs);
     try std.testing.expectEqual(@as(u64, 1), report.pass_index);
@@ -371,7 +371,9 @@ test "backend renders frame state through opt-in text scene path" {
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    defer prepared.deinit();
+    const report = try backend.submitFrame(&prepared);
     try std.testing.expectEqual(@as(usize, 1), report.sprite_draws);
     try std.testing.expectEqual(@as(usize, 1), report.cursor_draws);
 }
@@ -407,10 +409,10 @@ test "backend prepares and submits text scene separately" {
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var prepared = try backend.prepareFrameStateTextScene(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
     defer prepared.deinit();
     try std.testing.expectEqual(@as(usize, 1), prepared.scene.scene.sprite_draws.len);
-    const report = try backend.submitPreparedTextScene(&prepared);
+    const report = try backend.submitFrame(&prepared);
     try std.testing.expectEqual(@as(usize, 1), report.sprite_draws);
 }
 
@@ -431,7 +433,9 @@ test "backend forces full redraw while target contents are invalid" {
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    defer prepared.deinit();
+    const report = try backend.submitFrame(&prepared);
     try std.testing.expect(report.full_redraw);
     try std.testing.expectEqual(@as(u16, 0), report.scroll_up_px);
 }
@@ -454,7 +458,9 @@ test "backend preserves partial scroll damage when target contents are valid" {
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    const report = try backend.renderFrameStateTextScene(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    defer prepared.deinit();
+    const report = try backend.submitFrame(&prepared);
     try std.testing.expect(!report.full_redraw);
     try std.testing.expectEqual(@as(u16, 16), report.scroll_up_px);
 }
@@ -472,7 +478,7 @@ test "backend text scene atlas storage fits multicell sprites" {
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces);
+    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(u16, 16), analysis.scene.scene.sprite_draws[0].width_px);
@@ -498,7 +504,9 @@ test "backend reanalyzes after atlas storage grows" {
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    const first = try backend.renderFrameStateTextScene(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    var first_prepared = try backend.prepareFrame(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    defer first_prepared.deinit();
+    const first = try backend.submitFrame(&first_prepared);
     try std.testing.expectEqual(@as(usize, 1), first.raster_uploads_committed);
 
     const second_cells = [_]render.SurfaceCell{
@@ -511,7 +519,9 @@ test "backend reanalyzes after atlas storage grows" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    const second = try backend.renderFrameStateTextScene(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 }, &faces);
+    var second_prepared = try backend.prepareFrame(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 }, &faces);
+    defer second_prepared.deinit();
+    const second = try backend.submitFrame(&second_prepared);
     try std.testing.expect(backend.atlas_cell_w > 8);
     try std.testing.expectEqual(@as(usize, 2), second.raster_uploads_committed);
 }

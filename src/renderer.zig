@@ -1,5 +1,5 @@
 //! Responsibility: own the selected render backend runtime surface.
-//! Ownership: backend locking, prepared-frame lifetime, and renderer counters.
+//! Ownership: backend locking, staged prepare/submit lifetime, and renderer counters.
 //! Reason: keep terminal packages from wrapping backend internals directly.
 
 const std = @import("std");
@@ -263,7 +263,7 @@ pub const Renderer = struct {
         lockMutex(&self.mutex);
         errdefer self.mutex.unlock();
         const resolve_before = self.backend.resolveCounters();
-        const prepared = try self.backend.prepareFrameStateTextScene(allocator, state, surface_px, cell_px, &faces);
+        const prepared = try self.backend.prepareFrame(allocator, state, surface_px, cell_px, &faces);
         self.mutex.unlock();
         return .{ .resolve_before = resolve_before, .frame = .{ .prepared = prepared } };
     }
@@ -271,7 +271,7 @@ pub const Renderer = struct {
     pub fn submitFrame(self: *Renderer, frame: *PreparedFrame) !Submitted {
         lockMutex(&self.mutex);
         errdefer self.mutex.unlock();
-        const report = try self.backend.submitPreparedTextScene(&frame.prepared);
+        const report = try self.backend.submitFrame(&frame.prepared);
         const resolve_after = self.backend.resolveCounters();
         const surface = self.backend.surfaceHandle();
         self.mutex.unlock();

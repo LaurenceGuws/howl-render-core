@@ -35,6 +35,7 @@ classDiagram
 ## Ownership Rules
 - `Render` is the public owner surface for render-facing types, VT conversion, geometry derivation, and runtime contracts.
 - `Renderer` owns selected backend behavior and prepared-frame lifetime.
+- GL and GLES should expose the same staged backend spine to `Renderer`: prepare frame, upload/consume raster outputs, submit frame.
 - `Render.Text` owns the public text support surface. `Render.Text.Lane` is the text-lane contract owner.
 - `Ffi` translates ABI contracts only; it does not own render policy.
 - `RenderRuntime` keeps retained publication mutation local before handing snapshot tokens to the frame queue.
@@ -92,13 +93,58 @@ sequenceDiagram
 - `Render.Text.Cluster` owns extraction and complex-path selection over text/cache/cell data, then stops.
 - `grouping` owns grouping policy only.
 - `scene` owns scene assembly only.
+- `rasterizer` owns text sprite raster-request construction, request-list dedupe, generated special sprite raster policy, and raster execution contracts.
+- `atlas_cache` owns sprite residency mutation: reserve slot, keep pending residency visible until raster completes, and mark entries rendered.
+- `sprite_key` owns sprite output identity only; it does not own residency mutation.
 - `Render.Text.Lane`, `font_resolver`, `shape_run`, `grouping`, and `scene` stay leaf phase owners under the engine spine; they do not own top-level routing.
 - `Renderer` owns backend selection, backend-facing prepare/submit behavior, and prepared-frame lifetime.
+- backend root files own control flow only: prepare shared frame input, consume shared text analysis, upload atlas residency, and submit the target pass.
+- backend internal atlas files own backend-local atlas storage and GPU upload mutation only.
+- backend internal provider files own FT/HB callback translation and backend-local cache wiring only.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.
 - text-lane contracts should be read through `Render.Text.Lane` and adjacent `Render.Text.Cluster` input types, not through duplicate `Render` aliases.
 - Text contracts must represent whole cell text and shaped groups, not only isolated codepoints.
 - Fallback contracts must validate whole cell text against selected faces.
 - GL and GLES should consume the same metrics, resolver, and sprite-key contracts.
+
+## Text Spine
+- Public text-engine entrypoints are the two options-bearing owners:
+  - `Render.Text.Engine.analyzeCellsWithSessionOptions(...)`
+  - `Render.Text.Engine.analyzeCellTextInputsOptions(...)`
+- Direct normal path:
+  - input acceptance
+  - lane classification
+  - direct normal draw assembly
+  - scene result without resolve/shape/group phases
+- Complex path:
+  - sparse input preparation
+  - `Render.Text.Cluster.extractClustersWithDamage(...)`
+  - `Render.Text.Cluster.selectComplexWithDamage(...)`
+  - `font_resolver.resolveClusters(...)`
+  - `shape_run.shapeResolvedRunsWithShaper(...)`
+  - `grouping.groupShapedRunsWithPolicy(...)`
+  - `grouping.groupSpriteRoutes(...)`
+  - `scene.buildSceneWithAtlasCacheOptions(...)`
+  - `rasterizer.rasterizeRequestsWithRasterizer(...)`
+- Scene assembly uses `atlas_cache.reserveRequest(...)` for residency mutation and `rasterizer.appendPendingRequest(...)` for raster request ownership; `scene.zig` no longer scans or mutates request state itself.
+- Direct normal path uses `atlas_cache.reserve(...)` for glyph residency and keeps glyph raster requests local to the engine-owned fast path.
+- `shape_run.defaultShaper()` still earns contract value because providers and tests can inject or reuse the default single-run shaper contract without re-owning the shaping phase.
+- `scene.buildSceneWithOptions(...)` and `scene.buildSceneWithAtlasCacheOptions(...)` are the two remaining scene surfaces because caller-owned atlas residency is a real boundary difference.
+- `provider.zig` and `ft_hb_provider.zig` stay callback-glue owners only. They supply shaper/raster/glyph callbacks but do not own raster policy or atlas residency policy.
+
+## Backend Spine
+- `Renderer.prepareFrame(...)` calls backend `prepareFrame(...)`.
+- `Renderer.submitFrame(...)` calls backend `submitFrame(...)`.
+- GL and GLES backend roots now share the same staged backend contract shape:
+  - `analyzeTextCellsOptions(...)`
+  - `prepareFrame(...)`
+  - `uploadTextSceneRaster(...)`
+  - `renderTextScene(...)`
+  - `submitFrame(...)`
+  - `renderFrameState(...)`
+- `renderFrameState(...)` is the convenience owner path for one-shot rendering.
+- `prepareFrame(...)` and `submitFrame(...)` are the reviewable staged path for retained runtime integration.
+- backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
 
 ## Non-Goals
 - GPU resource ownership.

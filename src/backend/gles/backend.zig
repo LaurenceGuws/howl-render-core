@@ -356,16 +356,6 @@ pub const Backend = struct {
         };
     }
 
-    pub fn analyzeTextCells(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        cells: []const render.CellInput,
-        grid: render.GridMetrics,
-        faces: []render.Text.FontSession.FontFaceRecord,
-    ) !render.Text.Engine.OwnedTextAnalysis {
-        return self.analyzeTextCellsOptions(allocator, cells, grid, faces, .{});
-    }
-
     pub fn analyzeTextCellsOptions(
         self: *Backend,
         allocator: std.mem.Allocator,
@@ -378,20 +368,12 @@ pub const Backend = struct {
         return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
     }
 
-    pub fn uploadTextAnalysisRaster(self: *Backend, analysis: render.Text.Engine.OwnedTextAnalysis) BackendError!usize {
-        return self.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
-    }
-
     pub fn uploadTextSceneRaster(
         self: *Backend,
         scene: render.TextScene,
         outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
     ) BackendError!usize {
         return atlas_mod.uploadTextSceneRaster(self, scene, outputs);
-    }
-
-    fn ensureAtlasStorageForRasterOutputs(self: *Backend, outputs: []const render.Text.Rasterizer.RasterSpriteOutput) BackendError!void {
-        return atlas_mod.ensureAtlasStorageForRasterOutputs(self, outputs);
     }
 
     pub fn renderTextScene(
@@ -466,24 +448,13 @@ pub const Backend = struct {
         cell_px: render.CellSize,
     ) BackendError!RenderReport {
         var faces: [MaxFallbackFonts + 1]render.Text.FontSession.FontFaceRecord = undefined;
-        const scene_report = self.renderFrameStateTextScene(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
+        var prepared = self.prepareFrame(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
+        defer prepared.deinit();
+        const scene_report = self.submitFrame(&prepared) catch |err| return mapTextSceneRenderError(err);
         return renderReportFromTextScene(scene_report);
     }
 
-    pub fn renderFrameStateTextScene(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: render.PixelSize,
-        cell_px: render.CellSize,
-        faces: []render.Text.FontSession.FontFaceRecord,
-    ) !TextSceneRenderReport {
-        var prepared = try self.prepareFrameStateTextScene(allocator, state, surface_px, cell_px, faces);
-        defer prepared.deinit();
-        return self.submitPreparedTextScene(&prepared);
-    }
-
-    pub fn prepareFrameStateTextScene(
+    pub fn prepareFrame(
         self: *Backend,
         allocator: std.mem.Allocator,
         state: anytype,
@@ -508,13 +479,13 @@ pub const Backend = struct {
         var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
         errdefer analysis.deinit();
         const atlas_start_ns = monotonicNs();
-        try self.ensureAtlasStorageForRasterOutputs(analysis.raster_plan.outputs);
+        try atlas_mod.ensureAtlasStorageForRasterOutputs(self, analysis.raster_plan.outputs);
         analysis.timings.atlas_us += elapsedUs(atlas_start_ns);
         analysis.timings.input_us = input_us;
         return analysis;
     }
 
-    pub fn submitPreparedTextScene(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {
+    pub fn submitFrame(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {
         return self.renderTextScene(prepared.scene.scene, prepared.raster_plan.outputs);
     }
 
