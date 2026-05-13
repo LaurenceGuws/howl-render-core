@@ -5,7 +5,7 @@ Shared rules: [`../design/design-rules.md`](../design/design-rules.md)
 ## Purpose
 `howl-render` owns the backend-neutral rendering contract.
 
-It turns render-facing terminal state into validated frame inputs, retained publication state, shared text contracts, and backend submission surfaces.
+It turns render-facing terminal state into frame inputs, retained publication state, text contracts, and backend submission surfaces.
 
 ## Doc Set
 - `design.md`: owner boundary, runtime flow, and proof surface.
@@ -45,7 +45,7 @@ classDiagram
 - `RenderRuntime` keeps retained publication mutation local before handing snapshot tokens to the frame queue.
 - Backend repos should depend on these contracts, not re-invent them privately.
 - `GlyphQuad` is final GPU submission data. It is not the shaping input model.
-- Font and glyph decisions should flow through a kitty-style text path: cell text -> resolved runs -> shaped glyph groups -> sprite/atlas positions -> glyph quads.
+- Font and glyph decisions flow through one text path: cell text -> resolved runs -> shaped glyph groups -> sprite or atlas positions -> glyph quads.
 
 ## Lifecycle
 ```mermaid
@@ -151,7 +151,7 @@ sequenceDiagram
 - backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
 
 ## Proof Surface
-- `zig build test --summary all` remains the closeout proof umbrella.
+- `zig build test --summary all` is the proof umbrella.
 - `zig build test:render` proves the pure render contract surface.
 - `zig build test:unit` proves the integrated module surface, including text and backend behavior.
 - `zig build test:runtime-proof` proves the retained runtime and staged renderer owner chain directly through `src/test/runtime_proof.zig`.

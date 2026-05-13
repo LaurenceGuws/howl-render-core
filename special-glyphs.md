@@ -2,9 +2,9 @@
 
 Owner: `howl-render`
 
-Purpose: generated special-glyph coverage reference.
+Purpose: generated special-glyph coverage table.
 
-`covered` means `howl-render` routes the glyph through generated-special handling and produces a sprite today. `exact math` means the generated geometry matches the local Kitty reference closely enough to treat it as the same construction, not just a similar picture.
+`covered` means `howl-render` produces a generated special sprite today. `exact math` means the generated geometry matches the local Kitty reference closely enough to treat it as the same construction.
 
 | Kitty Glyphs | Family | Covered | Exact Math |
 |---|---:|---:|---:|
@@ -51,8 +51,8 @@ Purpose: generated special-glyph coverage reference.
 
 ## Notes
 
-- `howl-render` covers the common terminal families: box drawing, block elements, braille, sextants, octants, and the main Powerline separators.
-- `howl-render` does not cover the larger Kitty-only generated surface: progress bars, spinners, smooth mosaics, half triangles, shade variants, eight-bars, mid-lines, and private-use UI glyphs.
+- Common terminal families are covered: box drawing, block elements, braille, sextants, octants, and the main Powerline separators.
+- The larger Kitty-only generated surface is not covered: progress bars, spinners, smooth mosaics, half triangles, shade variants, eight-bars, mid-lines, and private-use UI glyphs.
 - `U+1FB00..U+1FBAE` still routes through the legacy-computing classifier, but the rasterizer only handles sextants `U+1FB00..U+1FB3B` today. The rest remain unsupported.
 - Box drawing is functional but not a full Kitty math port.
 - `░▒▓` remain intentional uniform alpha masks.
