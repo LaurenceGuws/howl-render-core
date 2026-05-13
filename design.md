@@ -1,11 +1,15 @@
 # Design
 
-Shared rules: [`../../design/design-rules.md`](../../design/design-rules.md)
+Shared rules: [`../design/design-rules.md`](../design/design-rules.md)
 
 ## Purpose
 `howl-render` owns the backend-neutral rendering contract.
 
 It turns render-facing terminal state into validated frame inputs, retained publication state, shared text contracts, and backend submission surfaces.
+
+## Doc Set
+- `design.md`: owner boundary, runtime flow, and proof surface.
+- `special-glyphs.md`: generated special-glyph coverage table.
 
 ## Public Surface
 - `Render`: main render owner.

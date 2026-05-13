@@ -1,4 +1,8 @@
-# Special Glyph Reference
+# Special Glyphs
+
+Owner: `howl-render`
+
+Purpose: generated special-glyph coverage reference.
 
 `covered` means `howl-render` routes the glyph through generated-special handling and produces a sprite today. `exact math` means the generated geometry matches the local Kitty reference closely enough to treat it as the same construction, not just a similar picture.
 
@@ -45,7 +49,7 @@
 | `🭰...🭵`, `🭶...🭻` | eight-bars ranges | false | false |
 | `U+1CD00..U+1CDE5`, `🯦🯧` | octants | true | true |
 
-## Current Notes
+## Notes
 
 - `howl-render` covers the common terminal families: box drawing, block elements, braille, sextants, octants, and the main Powerline separators.
 - `howl-render` does not cover the larger Kitty-only generated surface: progress bars, spinners, smooth mosaics, half triangles, shade variants, eight-bars, mid-lines, and private-use UI glyphs.
