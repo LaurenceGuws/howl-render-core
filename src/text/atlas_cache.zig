@@ -5,23 +5,14 @@
 const std = @import("std");
 const contract = @import("../text_contract.zig");
 
-pub const AtlasResidency = union(enum) {
-    resident: contract.SpritePosition,
-    missing: contract.SpriteKey,
-};
-
-pub fn resident(slot: u32, key: contract.SpriteKey) AtlasResidency {
-    return .{ .resident = .{ .slot = slot, .key = key, .rendered = true } };
-}
-
 pub const Entry = struct {
     key: contract.SpriteKey,
     position: contract.SpritePosition,
 };
 
-pub const EnsureResult = struct {
+pub const ReserveResult = struct {
     position: contract.SpritePosition,
-    created: bool,
+    pending: bool,
 };
 
 pub const OwnedAtlasCache = struct {
@@ -46,20 +37,20 @@ pub const OwnedAtlasCache = struct {
         return null;
     }
 
-    pub fn ensure(self: *OwnedAtlasCache, key: contract.SpriteKey, colored: bool) contract.SpritePosition {
-        return self.ensureDetailed(key, colored).position;
-    }
-
-    pub fn ensureDetailed(self: *OwnedAtlasCache, key: contract.SpriteKey, colored: bool) EnsureResult {
-        if (self.get(key)) |pos| return .{ .position = pos, .created = !pos.rendered };
-        if (self.entries.len == 0) return .{ .position = .{ .slot = 0, .key = key, .rendered = false, .colored = colored }, .created = true };
+    pub fn reserve(self: *OwnedAtlasCache, key: contract.SpriteKey, colored: bool) ReserveResult {
+        if (self.get(key)) |pos| return .{ .position = pos, .pending = !pos.rendered };
+        if (self.entries.len == 0) return .{ .position = .{ .slot = 0, .key = key, .rendered = false, .colored = colored }, .pending = true };
         const idx = if (self.len < self.entries.len) self.len else @as(usize, @intCast(self.next_slot % @as(u32, @intCast(self.entries.len))));
         const slot: u32 = @intCast(idx);
         const pos = contract.SpritePosition{ .slot = slot, .key = key, .rendered = false, .colored = colored };
         self.entries[idx] = .{ .key = key, .position = pos };
         if (self.len < self.entries.len) self.len += 1;
         self.next_slot = (slot + 1) % @as(u32, @intCast(self.entries.len));
-        return .{ .position = pos, .created = true };
+        return .{ .position = pos, .pending = true };
+    }
+
+    pub fn reserveRequest(self: *OwnedAtlasCache, req: contract.SpriteRasterRequest) ReserveResult {
+        return self.reserve(req.key, req.color_mode == .color);
     }
 
     pub fn markRendered(self: *OwnedAtlasCache, key: contract.SpriteKey) bool {
@@ -75,19 +66,19 @@ pub const OwnedAtlasCache = struct {
 test "atlas cache reuses slots by sprite key" {
     var cache = try OwnedAtlasCache.init(std.testing.allocator, 4);
     defer cache.deinit();
-    const first = cache.ensure(.{ .value = 11 }, false);
-    const second = cache.ensure(.{ .value = 11 }, false);
-    const third = cache.ensure(.{ .value = 12 }, true);
-    try std.testing.expectEqual(first.slot, second.slot);
-    try std.testing.expectEqual(@as(u32, 1), third.slot);
-    try std.testing.expect(third.colored);
+    const first = cache.reserve(.{ .value = 11 }, false);
+    const second = cache.reserve(.{ .value = 11 }, false);
+    const third = cache.reserve(.{ .value = 12 }, true);
+    try std.testing.expectEqual(first.position.slot, second.position.slot);
+    try std.testing.expectEqual(@as(u32, 1), third.position.slot);
+    try std.testing.expect(third.position.colored);
 }
 
 test "atlas cache marks entries rendered after raster" {
     var cache = try OwnedAtlasCache.init(std.testing.allocator, 4);
     defer cache.deinit();
-    const pos = cache.ensure(.{ .value = 99 }, false);
-    try std.testing.expect(!pos.rendered);
+    const pos = cache.reserve(.{ .value = 99 }, false);
+    try std.testing.expect(!pos.position.rendered);
     try std.testing.expect(cache.markRendered(.{ .value = 99 }));
     try std.testing.expect(cache.get(.{ .value = 99 }).?.rendered);
 }
@@ -95,12 +86,12 @@ test "atlas cache marks entries rendered after raster" {
 test "atlas cache requests pending sprites until marked rendered" {
     var cache = try OwnedAtlasCache.init(std.testing.allocator, 4);
     defer cache.deinit();
-    const first = cache.ensureDetailed(.{ .value = 99 }, false);
-    const pending = cache.ensureDetailed(.{ .value = 99 }, false);
-    try std.testing.expect(first.created);
-    try std.testing.expect(pending.created);
+    const first = cache.reserve(.{ .value = 99 }, false);
+    const pending = cache.reserve(.{ .value = 99 }, false);
+    try std.testing.expect(first.pending);
+    try std.testing.expect(pending.pending);
     try std.testing.expectEqual(first.position.slot, pending.position.slot);
     try std.testing.expect(cache.markRendered(.{ .value = 99 }));
-    const committed = cache.ensureDetailed(.{ .value = 99 }, false);
-    try std.testing.expect(!committed.created);
+    const committed = cache.reserve(.{ .value = 99 }, false);
+    try std.testing.expect(!committed.pending);
 }

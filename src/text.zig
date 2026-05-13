@@ -3,7 +3,7 @@
 //! Reason: keep root exports boring while text units stay grouped.
 
 /// Canonical public text support surface.
-/// Mature text-engine orchestration boundary.
+/// Mature text-engine orchestration owner with options-bearing analyze entrypoints.
 pub const Engine = @import("text/engine.zig");
 /// Font session/group vocabulary.
 pub const FontSession = @import("text/font_session.zig");
@@ -11,7 +11,7 @@ pub const FontSession = @import("text/font_session.zig");
 pub const FontResolver = @import("text/font_resolver.zig");
 /// Cell text and grapheme cluster extraction.
 pub const Cluster = @import("text/cluster.zig");
-/// HarfBuzz run-shaping boundary.
+/// HarfBuzz run-shaping boundary and shaper contract surface.
 pub const ShapeRun = @import("text/shape_run.zig");
 /// Shape-output to terminal-cell grouping policy.
 pub const Grouping = @import("text/grouping.zig");
@@ -19,7 +19,7 @@ pub const Grouping = @import("text/grouping.zig");
 pub const SpriteKey = @import("text/sprite_key.zig");
 /// Glyph-group rasterization contracts.
 pub const Rasterizer = @import("text/rasterizer.zig");
-/// Renderer-neutral text scene vocabulary.
+/// Renderer-neutral text scene vocabulary and scene-build entrypoints.
 pub const Scene = @import("text/scene.zig");
 /// Backend-neutral atlas residency vocabulary.
 pub const AtlasCache = @import("text/atlas_cache.zig");

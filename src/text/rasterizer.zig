@@ -108,6 +108,19 @@ pub fn requestForGroup(group: contract.GlyphGroup, cell_metrics: contract.CellMe
     };
 }
 
+pub fn appendPendingRequest(
+    allocator: std.mem.Allocator,
+    requests: *std.ArrayList(contract.SpriteRasterRequest),
+    pending: bool,
+    req: contract.SpriteRasterRequest,
+) !void {
+    if (!pending) return;
+    for (requests.items) |existing| {
+        if (existing.key.value == req.key.value) return;
+    }
+    try requests.append(allocator, req);
+}
+
 test "raster output reports non-empty alpha bounds" {
     const pixels = [_]u8{
         0, 0, 0, 0,
@@ -1163,10 +1176,6 @@ fn placeholderRasterThunk(_: *anyopaque, allocator: std.mem.Allocator, req: cont
     return placeholderRaster(allocator, req);
 }
 
-pub fn rasterizeRequests(allocator: std.mem.Allocator, requests: []const contract.SpriteRasterRequest) !OwnedRasterPlan {
-    return rasterizeRequestsWithRasterizer(allocator, defaultRasterizer(), requests);
-}
-
 pub fn rasterizeRequestsWithRasterizer(allocator: std.mem.Allocator, raster: Rasterizer, requests: []const contract.SpriteRasterRequest) !OwnedRasterPlan {
     const outputs = try allocator.alloc(RasterSpriteOutput, requests.len);
     errdefer allocator.free(outputs);
@@ -1731,11 +1740,21 @@ test "generated special raster draws powerline diagonal aliases" {
 test "raster plan creates one output per request" {
     const group = contract.GlyphGroup{ .first_cell = 0, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 5 }, .kind = .emoji };
     const req = requestForGroup(group, .{ .cell_w_px = 10, .cell_h_px = 20, .baseline_px = 15 });
-    var plan = try rasterizeRequests(std.testing.allocator, &.{req});
+    var plan = try rasterizeRequestsWithRasterizer(std.testing.allocator, defaultRasterizer(), &.{req});
     defer plan.deinit();
     try std.testing.expectEqual(@as(usize, 1), plan.outputs.len);
     try std.testing.expectEqual(contract.SpriteColorMode.color, plan.outputs[0].color_mode);
     try std.testing.expectEqual(@as(usize, 200), plan.outputs[0].pixels.len);
+}
+
+test "pending raster requests dedupe by sprite key" {
+    var requests = std.ArrayList(contract.SpriteRasterRequest).empty;
+    defer requests.deinit(std.testing.allocator);
+    const req = requestForGroup(.{ .first_cell = 0, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 5 }, .kind = .normal }, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 });
+    try appendPendingRequest(std.testing.allocator, &requests, true, req);
+    try appendPendingRequest(std.testing.allocator, &requests, true, req);
+    try appendPendingRequest(std.testing.allocator, &requests, false, req);
+    try std.testing.expectEqual(@as(usize, 1), requests.items.len);
 }
 
 test "raster plan uses injected rasterizer" {

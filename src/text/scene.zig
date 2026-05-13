@@ -62,19 +62,6 @@ pub const OwnedTextScene = struct {
     }
 };
 
-pub fn buildScene(
-    allocator: std.mem.Allocator,
-    cells: []const contract.RenderableCell,
-    groups: []const contract.GlyphGroup,
-    missing: []const contract.MissingGlyph,
-    cell_metrics: contract.CellMetrics,
-    grid_metrics: contract.GridMetrics,
-) !OwnedTextScene {
-    var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len + cells.len);
-    defer cache.deinit();
-    return buildSceneWithAtlasCacheOptions(allocator, cells, groups, missing, cell_metrics, grid_metrics, &cache, .{});
-}
-
 pub fn buildSceneWithOptions(
     allocator: std.mem.Allocator,
     cells: []const contract.RenderableCell,
@@ -87,18 +74,6 @@ pub fn buildSceneWithOptions(
     var cache = try atlas_cache.OwnedAtlasCache.init(allocator, groups.len + cells.len);
     defer cache.deinit();
     return buildSceneWithAtlasCacheOptions(allocator, cells, groups, missing, cell_metrics, grid_metrics, &cache, options);
-}
-
-pub fn buildSceneWithAtlasCache(
-    allocator: std.mem.Allocator,
-    cells: []const contract.RenderableCell,
-    groups: []const contract.GlyphGroup,
-    missing: []const contract.MissingGlyph,
-    cell_metrics: contract.CellMetrics,
-    grid_metrics: contract.GridMetrics,
-    cache: *atlas_cache.OwnedAtlasCache,
-) !OwnedTextScene {
-    return buildSceneWithAtlasCacheOptions(allocator, cells, groups, missing, cell_metrics, grid_metrics, cache, .{});
 }
 
 pub fn buildSceneWithAtlasCacheOptions(
@@ -136,10 +111,9 @@ pub fn buildSceneWithAtlasCacheOptions(
         const col = first_cell % cols;
         const row = first_cell / cols;
         const width_cells = @max(scene_group.cell_span, 1);
-        const residency = cache.ensureDetailed(scene_group.sprite_key, scene_group.kind == .emoji);
-        if (residency.created and !hasRasterRequest(raster_requests.items, scene_group.sprite_key)) {
-            try raster_requests.append(allocator, rasterizer.requestForGroup(scene_group, cell_metrics));
-        }
+        const req = rasterizer.requestForGroup(scene_group, cell_metrics);
+        const residency = cache.reserveRequest(req);
+        try rasterizer.appendPendingRequest(allocator, &raster_requests, residency.pending, req);
         try sprite_draws.append(allocator, .{
             .sprite = residency.position,
             .x_px = @as(i32, @intCast(col)) * cell_w,
@@ -484,10 +458,9 @@ fn appendUndercurlSprite(
     const period: u16 = @max(saturatingSub(cell_metrics.cell_w_px, 1), 1);
     const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
     const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
-    const residency = cache.ensureDetailed(key, false);
-    if (residency.created and !hasRasterRequest(raster_requests.items, key)) {
-        try raster_requests.append(allocator, rasterizer.requestForUndercurl(key, width, cell_h, decoration));
-    }
+    const req = rasterizer.requestForUndercurl(key, width, cell_h, decoration);
+    const residency = cache.reserveRequest(req);
+    try rasterizer.appendPendingRequest(allocator, raster_requests, residency.pending, req);
     try sprite_out.append(allocator, .{
         .sprite = residency.position,
         .x_px = x,
@@ -524,13 +497,6 @@ fn findCellByFirstCell(cells: []const contract.RenderableCell, first_cell: u32) 
         }
     }
     return null;
-}
-
-fn hasRasterRequest(requests: []const contract.SpriteRasterRequest, key: contract.SpriteKey) bool {
-    for (requests) |request| {
-        if (request.key.value == key.value) return true;
-    }
-    return false;
 }
 
 fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics, grid_metrics: contract.GridMetrics, next_group_cell: ?u32) contract.GlyphGroup {
@@ -579,7 +545,7 @@ test "scene builds ordered sprite draws from groups" {
         .sprite_key = .{ .value = 99 },
         .kind = .normal,
     };
-    var owned = try buildScene(std.testing.allocator, &.{cell}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 10 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &.{cell}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 10 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 1), owned.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 1), owned.scene.raster_requests.len);
@@ -611,7 +577,7 @@ test "scene emits background draws from non-continuation cells" {
             .continuation = true,
         },
     };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 2 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 2 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 1), owned.scene.background_draws.len);
     try std.testing.expectEqual(@as(u16, 16), owned.scene.background_draws[0].width_px);
@@ -625,7 +591,7 @@ test "scene merges adjacent same-color background cells on one row" {
         .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg, .bg = bg },
         .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg, .bg = bg },
     };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 1), owned.scene.background_draws.len);
     try std.testing.expectEqual(@as(u16, 24), owned.scene.background_draws[0].width_px);
@@ -641,7 +607,7 @@ test "scene keeps distinct background spans across color changes" {
         .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_b, .bg = bg_b },
         .{ .text_id = .{ .value = 3 }, .first_cell = 3, .cell_span = 1, .style = .regular, .presentation = .any, .fg = bg_a, .bg = bg_a },
     };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 4, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 4, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 3), owned.scene.background_draws.len);
     try std.testing.expectEqual(@as(u16, 16), owned.scene.background_draws[0].width_px);
@@ -749,7 +715,7 @@ test "scene emits shared-geometry decoration draws from cells" {
         .underline = true,
         .strikethrough = true,
     }};
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 2), owned.scene.decoration_draws.len);
     try std.testing.expectEqual(contract.DecorationKind.underline, owned.scene.decoration_draws[0].kind);
@@ -766,7 +732,7 @@ test "scene merges contiguous straight underline spans" {
         .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .underline = true },
         .{ .text_id = .{ .value = 2 }, .first_cell = 2, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .underline = true },
     };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 3, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 3, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 1), owned.scene.decoration_draws.len);
     try std.testing.expectEqual(@as(u16, 24), owned.scene.decoration_draws[0].width_px);
@@ -786,7 +752,7 @@ test "scene emits undercurl sprite for curly underline" {
         .underline = true,
         .underline_style = .curly,
     }};
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 4, .rows = 1 }, .{});
     defer owned.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), owned.scene.decoration_draws.len);
@@ -803,7 +769,7 @@ test "scene merges contiguous strikethrough spans" {
         .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .strikethrough = true },
         .{ .text_id = .{ .value = 1 }, .first_cell = 1, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .strikethrough = true },
     };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 2, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 13 }, .{ .cols = 2, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 1), owned.scene.decoration_draws.len);
     try std.testing.expectEqual(contract.DecorationKind.strikethrough, owned.scene.decoration_draws[0].kind);
@@ -819,7 +785,7 @@ test "scene carries group placement offsets into sprite draw" {
         .sprite_key = .{ .value = 77 },
         .kind = .normal,
     };
-    var owned = try buildScene(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 10 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 10 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(i32, 8), owned.scene.sprite_draws[0].x_px);
     try std.testing.expectEqual(@as(i32, 0), owned.scene.sprite_draws[0].y_px);
@@ -843,7 +809,7 @@ test "scene extends wide icon groups into available blank cells" {
         .kind = .icon,
     };
     const next = contract.GlyphGroup{ .first_cell = 2, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 9 }, .kind = .normal };
-    var owned = try buildScene(std.testing.allocator, &cells, &.{ icon, next }, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &.{ icon, next }, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 3, .rows = 1 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(u16, 16), owned.scene.sprite_draws[0].width_px);
     try std.testing.expectEqual(@as(u8, 2), owned.scene.sprite_draws[0].cell_span);
@@ -858,7 +824,7 @@ test "scene positions sprite draws by grid columns" {
         .sprite_key = .{ .value = 1 },
         .kind = .normal,
     };
-    var owned = try buildScene(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 9, .cell_h_px = 17, .baseline_px = 13 }, .{ .cols = 5, .rows = 2 });
+    var owned = try buildSceneWithOptions(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 9, .cell_h_px = 17, .baseline_px = 13 }, .{ .cols = 5, .rows = 2 }, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(i32, 18), owned.scene.sprite_draws[0].x_px);
     try std.testing.expectEqual(@as(i32, 17), owned.scene.sprite_draws[0].y_px);
@@ -871,7 +837,7 @@ test "scene reuses atlas slots for repeated sprite keys" {
     };
     var cache = try atlas_cache.OwnedAtlasCache.init(std.testing.allocator, 8);
     defer cache.deinit();
-    var owned = try buildSceneWithAtlasCache(std.testing.allocator, &.{}, &groups, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache);
+    var owned = try buildSceneWithAtlasCacheOptions(std.testing.allocator, &.{}, &groups, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache, .{});
     defer owned.deinit();
     try std.testing.expectEqual(owned.scene.sprite_draws[0].sprite.slot, owned.scene.sprite_draws[1].sprite.slot);
     try std.testing.expectEqual(@as(usize, 1), owned.scene.raster_requests.len);
@@ -882,9 +848,9 @@ test "scene does not request raster for cache hit" {
     const group = contract.GlyphGroup{ .first_cell = 0, .cell_span = 1, .glyphs = &.{}, .sprite_key = .{ .value = 21 }, .kind = .normal };
     var cache = try atlas_cache.OwnedAtlasCache.init(std.testing.allocator, 8);
     defer cache.deinit();
-    _ = cache.ensure(group.sprite_key, false);
+    _ = cache.reserve(group.sprite_key, false);
     try std.testing.expect(cache.markRendered(group.sprite_key));
-    var owned = try buildSceneWithAtlasCache(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache);
+    var owned = try buildSceneWithAtlasCacheOptions(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 0), owned.scene.raster_requests.len);
 }

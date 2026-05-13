@@ -68,16 +68,6 @@ pub fn emptyResult() ShapeRunResult {
     return .{ .glyphs = &.{} };
 }
 
-pub fn shapeResolvedRuns(
-    allocator: std.mem.Allocator,
-    runs: []const contract.ResolvedRun,
-    text_cache: contract.LineTextCache,
-    clusters: []const contract.CellCluster,
-    cell_metrics: contract.CellMetrics,
-) !OwnedShapedRuns {
-    return shapeResolvedRunsWithShaper(allocator, defaultShaper(), runs, text_cache, clusters, cell_metrics);
-}
-
 pub fn shapeResolvedRunsWithShaper(
     allocator: std.mem.Allocator,
     shaper: Shaper,

@@ -109,18 +109,6 @@ pub const Engine = struct {
         self.atlas.next_slot = 0;
     }
 
-    pub fn analyzeCells(self: *Engine, cells: []const types.CellInput, face_id: contract.FontFaceId) !OwnedTextAnalysis {
-        return self.analyzeCellsGrid(cells, .{ .cols = @intCast(@max(cells.len, 1)) }, face_id);
-    }
-
-    pub fn analyzeCellsGrid(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, face_id: contract.FontFaceId) !OwnedTextAnalysis {
-        return self.analyzeCellsWithSession(cells, grid_metrics, .{ .primary_face = face_id });
-    }
-
-    pub fn analyzeCellsWithSession(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
-        return self.analyzeCellsWithSessionOptions(cells, grid_metrics, session, .{});
-    }
-
     pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
         if (try self.analyzeDirectNormalCells(cells, grid_metrics, session, options)) |analysis| return analysis;
         var timings = PrepareTimings{};
@@ -228,10 +216,6 @@ pub const Engine = struct {
             .lane_report = lane_report,
             .timings = .{},
         };
-    }
-
-    pub fn analyzeCellTextInputs(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession) !OwnedTextAnalysis {
-        return self.analyzeCellTextInputsOptions(inputs, grid_metrics, session, .{});
     }
 
     pub fn analyzeCellTextInputsOptions(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
@@ -617,8 +601,8 @@ fn appendDirectNormalRenderable(
     const lookup = self.glyph_lookup.lookupGlyph(face.id, text.first_cp, session.metrics);
     const span = @max(renderable.cell_span, 1);
     const key = sprite_key.hashGlyphLocal(face.id, lookup.glyph_id, span, session.metrics);
-    const residency = self.atlas.ensureDetailed(key, false);
-    if (residency.created) {
+    const residency = self.atlas.reserve(key, false);
+    if (residency.pending) {
         self.normal_raster_reqs.appendAssumeCapacity(.{
             .face_id = face.id.value,
             .glyph_id = lookup.glyph_id,
@@ -1041,7 +1025,7 @@ test "text engine analyzes cell inputs into clusters and runs" {
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), analysis.text_cache.texts.len);
@@ -1072,7 +1056,7 @@ test "text engine records sprite routes through resolver" {
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 0x2500, .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), analysis.runs.runs.len);
@@ -1103,7 +1087,7 @@ test "text engine scene is grid positioned" {
         .{ .codepoint = 'c', .fg = white, .bg = black },
         .{ .codepoint = 'd', .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCellsGrid(&cells, .{ .cols = 2, .rows = 2 }, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 2 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 4), analysis.scene.scene.sprite_draws.len);
@@ -1117,10 +1101,10 @@ test "text engine rerasterizes pending atlas entries across analyses" {
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]types.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
-    var first = try engine.analyzeCells(&cells, .{ .value = 1 });
+    var first = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     const first_slot = first.scene.scene.sprite_draws[0].sprite.slot;
     first.deinit();
-    var second = try engine.analyzeCells(&cells, .{ .value = 1 });
+    var second = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer second.deinit();
     try std.testing.expectEqual(first_slot, second.scene.scene.sprite_draws[0].sprite.slot);
     try std.testing.expectEqual(@as(usize, 1), second.raster_plan.outputs.len);
@@ -1135,10 +1119,10 @@ test "text engine rerasterizes sprites after cell metrics change" {
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]types.CellInput{.{ .codepoint = 0x2588, .fg = white, .bg = black }};
-    var first = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } });
+    var first = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } }, .{});
     const first_key = first.scene.scene.sprite_draws[0].sprite.key.value;
     first.deinit();
-    var second = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 16, .cell_h_px = 32, .baseline_px = 24 } });
+    var second = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 16, .cell_h_px = 32, .baseline_px = 24 } }, .{});
     defer second.deinit();
     try std.testing.expect(first_key != second.scene.scene.sprite_draws[0].sprite.key.value);
     try std.testing.expectEqual(@as(usize, 1), second.raster_plan.outputs.len);
@@ -1152,10 +1136,10 @@ test "text engine rerasterizes sprites after box thickness change" {
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]types.CellInput{.{ .codepoint = 0x256d, .fg = white, .bg = black }};
-    var first = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 1 } });
+    var first = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 1 } }, .{});
     const first_key = first.scene.scene.sprite_draws[0].sprite.key.value;
     first.deinit();
-    var second = try engine.analyzeCellsWithSession(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 3 } });
+    var second = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 3 } }, .{});
     defer second.deinit();
     try std.testing.expect(first_key != second.scene.scene.sprite_draws[0].sprite.key.value);
     try std.testing.expectEqual(@as(usize, 1), second.raster_plan.outputs.len);
@@ -1179,7 +1163,7 @@ test "text engine accepts configurable shaper" {
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'q', 0x0332 };
     const inputs = [_]cluster.CellTextInput{.{ .codepoints = &combining, .fg = white, .bg = black }};
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } });
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
     try std.testing.expectEqual(@as(usize, 1), analysis.shaped_runs.runs.len);
@@ -1201,7 +1185,7 @@ test "text engine accepts unified provider rasterizer" {
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]types.CellInput{.{ .codepoint = 0x2500, .fg = white, .bg = black }};
-    var analysis = try engine.analyzeCells(&cells, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
 }
@@ -1234,7 +1218,7 @@ test "text engine analyzes rich multi-codepoint cell inputs" {
         .{ .codepoints = &combining, .fg = white, .bg = black },
         .{ .codepoints = &emoji, .fg = white, .bg = black, .cell_span = 2 },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 4, .rows = 1 }, .{});
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 4, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 2), analysis.text_cache.texts.len);
@@ -1255,7 +1239,7 @@ test "text engine direct-renders pure normal cell text inputs" {
         .{ .codepoints = &a, .fg = white, .bg = black },
         .{ .codepoints = &b, .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 2, .rows = 1 }, .{});
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 2, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), analysis.text_cache.texts.len);
@@ -1280,7 +1264,7 @@ test "text engine keeps mixed cell text normals out of legacy path" {
         .{ .codepoints = &a, .fg = white, .bg = black },
         .{ .codepoints = &combining, .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 2, .rows = 1 }, .{});
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 2, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.direct_normal_draws);
@@ -1301,7 +1285,7 @@ test "text engine marks curly underline cells complex before shaping" {
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black, .underline = true, .underline_style = .curly },
     };
-    var analysis = try engine.analyzeCellsGrid(&cells, .{ .cols = 2, .rows = 1 }, .{ .value = 1 });
+    var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.normal_cells);
@@ -1347,7 +1331,7 @@ test "text engine keeps icon codepoints out of the normal lane" {
         .{ .codepoints = &blank, .fg = white, .bg = black },
         .{ .codepoints = &ascii, .fg = white, .bg = black },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 3, .rows = 1 }, .{ .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } });
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 3, .rows = 1 }, .{ .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } }, .{});
     defer analysis.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_icon_cells);
@@ -1381,7 +1365,7 @@ test "text engine uses ft hb source coverage for fallback" {
         .{ .id = .{ .value = 1 }, .role = .primary, .coverage = .all },
         .{ .id = .{ .value = 2 }, .role = .fallback, .coverage = .all },
     };
-    var analysis = try engine.analyzeCellTextInputs(&inputs, .{ .cols = 1, .rows = 1 }, ft_hb.textProvider().applyToSession(.{ .faces = &faces }));
+    var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 1, .rows = 1 }, ft_hb.textProvider().applyToSession(.{ .faces = &faces }), .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(u32, 2), analysis.runs.runs[0].run.font.face_id.value);
 }
