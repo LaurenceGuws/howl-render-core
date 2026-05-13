@@ -1,6 +1,25 @@
 //! Responsibility: own render-frame metric contracts.
-//! Ownership: prepare and submit timing/count readouts.
-//! Reason: keep render diagnostics shaped by render, not terminal orchestration.
+//! Ownership: runtime and backend timing/count readouts.
+//! Reason: keep render diagnostics shaped by render, not queue storage details.
+
+pub const RuntimeMetrics = struct {
+    snapshot_publishes: u64 = 0,
+    snapshot_hidden_drops: u64 = 0,
+    snapshot_clean_drops: u64 = 0,
+    prepare_requests: u64 = 0,
+    prepare_coalesces: u64 = 0,
+    prepare_forced_full: u64 = 0,
+    prepare_takes: u64 = 0,
+    prepared_publishes: u64 = 0,
+    prepared_coalesces: u64 = 0,
+    submit_takes: u64 = 0,
+    submit_valid: u64 = 0,
+    submit_rejected: u64 = 0,
+    full_prepare_requests: u64 = 0,
+    submitted_accepts: u64 = 0,
+    presents: u64 = 0,
+    target_invalidations: u64 = 0,
+};
 
 pub const PrepareMetrics = struct {
     us: u64 = 0,

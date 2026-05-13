@@ -1,10 +1,10 @@
-//! Responsibility: implement the howl-render native ABI surface.
-//! Ownership: render geometry, snapshot storage, runtime scheduling, and renderer owner handles.
+//! Responsibility: translate the howl-render native ABI surface.
+//! Ownership: ABI contracts and marshalling only.
 //! Reason: keep C consumers on the same owner-true render contract as Zig consumers.
 
 const std = @import("std");
 const Render = @import("render.zig").Render;
-const renderer_mod = @import("renderer.zig").Renderer;
+const Renderer = @import("renderer.zig").Renderer;
 
 pub const SnapshotHandle = usize;
 pub const RuntimeHandle = usize;
@@ -215,20 +215,6 @@ pub const FfiBackendConfig = extern struct {
     target_texture: u32,
 };
 
-const RendererOwner = struct {
-    renderer: renderer_mod,
-    prepared: ?renderer_mod.FrameRecord = null,
-    font_path: ?[:0]u8 = null,
-
-    fn deinit(self: *RendererOwner) void {
-        if (self.prepared) |*prepared| prepared.deinit();
-        self.prepared = null;
-        if (self.font_path) |path| std.heap.c_allocator.free(path);
-        self.font_path = null;
-        self.renderer.deinit();
-    }
-};
-
 comptime {
     std.debug.assert(@sizeOf(FfiPixelSize) == 4);
     std.debug.assert(@sizeOf(FfiCellSize) == 4);
@@ -325,9 +311,9 @@ fn geometryOut(value: Render.GeometryReceipt) FfiGeometryReceipt {
 }
 
 fn sourceViewIn(value: FfiSourceView) ?Render.SourceView {
-    const snapshot = snapshotFromHandle(value.snapshot_handle) orelse return null;
+    const owner = snapshotOwnerFromHandle(value.snapshot_handle) orelse return null;
     return .{
-        .snapshot = snapshot,
+        .snapshot = &owner.snapshot,
         .cols = value.cols,
         .rows = value.rows,
         .scrollback_count = value.scrollback_count,
@@ -425,19 +411,16 @@ fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     };
 }
 
-fn snapshotFromHandle(handle: SnapshotHandle) ?*Render.FrameSnapshot {
-    if (handle == 0) return null;
-    return @ptrFromInt(handle);
+fn snapshotOwnerFromHandle(handle: SnapshotHandle) ?*Render.SnapshotOwner {
+    return Render.SnapshotOwner.fromHandle(handle);
 }
 
-fn runtimeFromHandle(handle: RuntimeHandle) ?*Render.RenderRuntime {
-    if (handle == 0) return null;
-    return @ptrFromInt(handle);
+fn runtimeOwnerFromHandle(handle: RuntimeHandle) ?*Render.RenderRuntime.Owner {
+    return Render.RenderRuntime.Owner.fromHandle(handle);
 }
 
-fn rendererFromHandle(handle: RendererHandle) ?*RendererOwner {
-    if (handle == 0) return null;
-    return @ptrFromInt(handle);
+fn rendererOwnerFromHandle(handle: RendererHandle) ?*Renderer.Owner {
+    return Renderer.Owner.fromHandle(handle);
 }
 
 pub fn deriveGridSize(grid_px: FfiPixelSize, cell_px: FfiCellSize) callconv(.c) FfiGridSize {
@@ -458,111 +441,103 @@ pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_
 }
 
 pub fn snapshotInit(rows: u16, cols: u16) callconv(.c) SnapshotHandle {
-    if (rows == 0 or cols == 0) return 0;
-    const snapshot = std.heap.c_allocator.create(Render.FrameSnapshot) catch return 0;
-    snapshot.* = Render.FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
-        std.heap.c_allocator.destroy(snapshot);
-        return 0;
-    };
-    return @intFromPtr(snapshot);
+    const owner = Render.SnapshotOwner.create(rows, cols) orelse return 0;
+    return owner.handle();
 }
 
 pub fn snapshotDeinit(handle: SnapshotHandle) callconv(.c) void {
-    const snapshot = snapshotFromHandle(handle) orelse return;
-    snapshot.deinit(std.heap.c_allocator);
-    std.heap.c_allocator.destroy(snapshot);
+    const owner = snapshotOwnerFromHandle(handle) orelse return;
+    owner.destroy();
 }
 
 pub fn snapshotResize(handle: SnapshotHandle, rows: u16, cols: u16) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (rows == 0 or cols == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    snapshot.resize(std.heap.c_allocator, rows, cols) catch return @intFromEnum(HowlRenderCallStatus.failed);
+    owner.snapshot.resize(std.heap.c_allocator, rows, cols) catch return @intFromEnum(HowlRenderCallStatus.failed);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn snapshotMarkFullDirty(handle: SnapshotHandle) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    snapshot.markFullDirty();
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    owner.snapshot.markFullDirty();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn snapshotClearDirty(handle: SnapshotHandle) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    snapshot.clearDirty();
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    owner.snapshot.clearDirty();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn snapshotSetViewport(handle: SnapshotHandle, scroll_row: u64, is_alternate_screen: c_int) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    snapshot.scroll_row = @intCast(scroll_row);
-    snapshot.is_alternate_screen = is_alternate_screen != 0;
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    owner.snapshot.scroll_row = @intCast(scroll_row);
+    owner.snapshot.is_alternate_screen = is_alternate_screen != 0;
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn snapshotSetCursor(handle: SnapshotHandle, cursor: FfiCursor) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    snapshot.cursor = cursorIn(cursor);
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    owner.snapshot.cursor = cursorIn(cursor);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn snapshotWriteCell(handle: SnapshotHandle, row: u16, col: u16, cell: FfiCell) callconv(.c) c_int {
-    const snapshot = snapshotFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    if (row >= snapshot.rows or col >= snapshot.cols) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    const idx = @as(usize, row) * @as(usize, snapshot.cols) + @as(usize, col);
-    snapshot.cells.items[idx] = cellValueIn(cell);
+    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    if (row >= owner.snapshot.rows or col >= owner.snapshot.cols) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
+    const idx = @as(usize, row) * @as(usize, owner.snapshot.cols) + @as(usize, col);
+    owner.snapshot.cells.items[idx] = cellValueIn(cell);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn runtimeInit() callconv(.c) RuntimeHandle {
-    const runtime = std.heap.c_allocator.create(Render.RenderRuntime) catch return 0;
-    runtime.* = Render.RenderRuntime.init(std.heap.c_allocator);
-    return @intFromPtr(runtime);
+    const owner = Render.RenderRuntime.Owner.create() orelse return 0;
+    return owner.handle();
 }
 
 pub fn runtimeDeinit(handle: RuntimeHandle) callconv(.c) void {
-    const runtime = runtimeFromHandle(handle) orelse return;
-    runtime.deinit();
-    std.heap.c_allocator.destroy(runtime);
+    const owner = runtimeOwnerFromHandle(handle) orelse return;
+    owner.destroy();
 }
 
 pub fn runtimeSetFontSizePx(handle: RuntimeHandle, font_size_px: u16) callconv(.c) c_int {
-    const runtime = runtimeFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = runtimeOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (font_size_px == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    runtime.setFontSizePx(font_size_px);
+    owner.runtime.setFontSizePx(font_size_px);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn runtimeSyncGeometry(handle: RuntimeHandle, geometry: FfiGeometry) callconv(.c) FfiGeometryReceipt {
-    const runtime = runtimeFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
+    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
     if (geometry.render_px.width == 0 or geometry.render_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
     if (geometry.grid_px.width == 0 or geometry.grid_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
     if (geometry.cell_px.width == 0 or geometry.cell_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
-    return geometryOut(runtime.syncGeometry(geometryIn(geometry)));
+    return geometryOut(owner.runtime.syncGeometry(geometryIn(geometry)));
 }
 
 pub fn runtimePublishSnapshot(handle: RuntimeHandle, source: FfiSourceView) callconv(.c) FfiSourceReceipt {
-    const runtime = runtimeFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
+    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
     const typed = sourceViewIn(source) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
-    return sourceReceiptOut(runtime.acceptSource(typed));
+    return sourceReceiptOut(owner.runtime.acceptSource(typed));
 }
 
 pub fn runtimeAction(handle: RuntimeHandle) callconv(.c) u8 {
-    const runtime = runtimeFromHandle(handle) orelse return @intFromEnum(Render.FrameQueue.TerminalSurface.Action.idle);
-    return @intFromEnum(runtime.surface_owner.nextAction());
+    const owner = runtimeOwnerFromHandle(handle) orelse return @intFromEnum(Render.FrameQueue.TerminalSurface.Action.idle);
+    return @intFromEnum(owner.runtime.surface_owner.nextAction());
 }
 
 pub fn runtimeMarkPresented(handle: RuntimeHandle) callconv(.c) void {
-    const runtime = runtimeFromHandle(handle) orelse return;
-    runtime.markPresented();
+    const owner = runtimeOwnerFromHandle(handle) orelse return;
+    owner.runtime.markPresented();
 }
 
 pub fn runtimeSurfaceQuery(handle: RuntimeHandle) callconv(.c) FfiSurfaceQuery {
-    const runtime = runtimeFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .font_size_px = 0, .epoch = 0 };
-    return surfaceQueryOut(runtime.surfaceQuery());
+    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .font_size_px = 0, .epoch = 0 };
+    return surfaceQueryOut(owner.runtime.surfaceQuery());
 }
 
 pub fn runtimeTakeMetrics(handle: RuntimeHandle) callconv(.c) FfiRuntimeMetrics {
-    const runtime = runtimeFromHandle(handle) orelse return .{
+    const owner = runtimeOwnerFromHandle(handle) orelse return .{
         .status = @intFromEnum(HowlRenderCallStatus.missing_handle),
         .snapshot_publishes = 0,
         .snapshot_hidden_drops = 0,
@@ -581,45 +556,41 @@ pub fn runtimeTakeMetrics(handle: RuntimeHandle) callconv(.c) FfiRuntimeMetrics 
         .presents = 0,
         .target_invalidations = 0,
     };
-    return metricsOut(runtime.takeMetrics());
+    return metricsOut(owner.runtime.takeMetrics());
 }
 
 pub fn runtimeResetMetrics(handle: RuntimeHandle) callconv(.c) c_int {
-    const runtime = runtimeFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    runtime.resetMetrics();
+    const owner = runtimeOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    owner.runtime.resetMetrics();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn rendererInit(config: FfiBackendConfig) callconv(.c) RendererHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return 0;
     if (config.cell_px.width == 0 or config.cell_px.height == 0) return 0;
-    const owner = std.heap.c_allocator.create(RendererOwner) catch return 0;
-    owner.* = .{
-        .renderer = renderer_mod.init(.{
-            .surface_px = pixelIn(config.surface_px),
-            .cell_px = cellInSize(config.cell_px),
-            .font_size_px = if (config.font_size_px == 0) config.cell_px.height else config.font_size_px,
-            .target_texture = config.target_texture,
-        }),
-    };
-    return @intFromPtr(owner);
+    const owner = Renderer.Owner.create(.{
+        .surface_px = pixelIn(config.surface_px),
+        .cell_px = cellInSize(config.cell_px),
+        .font_size_px = if (config.font_size_px == 0) config.cell_px.height else config.font_size_px,
+        .target_texture = config.target_texture,
+    }) orelse return 0;
+    return owner.handle();
 }
 
 pub fn rendererDeinit(handle: RendererHandle) callconv(.c) void {
-    const owner = rendererFromHandle(handle) orelse return;
-    owner.deinit();
-    std.heap.c_allocator.destroy(owner);
+    const owner = rendererOwnerFromHandle(handle) orelse return;
+    owner.destroy();
 }
 
 pub fn rendererSetFontSizePx(handle: RendererHandle, font_size_px: u16) callconv(.c) c_int {
-    const owner = rendererFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = rendererOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (font_size_px == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
     owner.renderer.setFontSizePx(font_size_px);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn rendererSetFontPath(handle: RendererHandle, ptr: ?[*]const u8, len: usize) callconv(.c) c_int {
-    const owner = rendererFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = rendererOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (len > 0 and ptr == null) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
     if (owner.font_path) |path| {
         std.heap.c_allocator.free(path);
@@ -636,13 +607,13 @@ pub fn rendererSetFontPath(handle: RendererHandle, ptr: ?[*]const u8, len: usize
 }
 
 pub fn rendererPrepare(renderer_handle: RendererHandle, runtime_handle: RuntimeHandle, snapshot_handle: SnapshotHandle) callconv(.c) c_int {
-    const owner = rendererFromHandle(renderer_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
-    const runtime = runtimeFromHandle(runtime_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
-    const snapshot = snapshotFromHandle(snapshot_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
-    const request = runtime.prepare() orelse return @intFromEnum(HowlRenderPrepareStatus.idle);
+    const owner = rendererOwnerFromHandle(renderer_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
+    const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
+    const snapshot = snapshotOwnerFromHandle(snapshot_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
+    const request = runtime.runtime.prepare() orelse return @intFromEnum(HowlRenderPrepareStatus.idle);
     if (owner.prepared) |*prepared| prepared.deinit();
-    const query = runtime.surfaceQuery();
-    const prepared = owner.renderer.prepareFrame(std.heap.c_allocator, snapshot.frameData(), query.render_px, query.cell_px) catch {
+    const query = runtime.runtime.surfaceQuery();
+    const prepared = owner.renderer.prepareFrame(std.heap.c_allocator, snapshot.snapshot.frameData(), query.render_px, query.cell_px) catch {
         owner.prepared = null;
         return @intFromEnum(HowlRenderPrepareStatus.failed);
     };
@@ -656,14 +627,14 @@ pub fn rendererPrepare(renderer_handle: RendererHandle, runtime_handle: RuntimeH
         .resolve_before = prepared.resolve_before,
         .prepared = prepared.frame,
     };
-    _ = runtime.publishPrepared(owner.prepared.?.pipelineFrame(request));
+    _ = runtime.runtime.publishPrepared(owner.prepared.?.pipelineFrame(request));
     return @intFromEnum(HowlRenderPrepareStatus.ready);
 }
 
 pub fn rendererSubmit(renderer_handle: RendererHandle, runtime_handle: RuntimeHandle, surface_out: ?*FfiSurfaceHandle, metrics_out: ?*FfiBackendMetrics) callconv(.c) HowlRenderSubmitStatus {
-    const owner = rendererFromHandle(renderer_handle) orelse return .failed;
-    const runtime = runtimeFromHandle(runtime_handle) orelse return .failed;
-    switch (runtime.submit()) {
+    const owner = rendererOwnerFromHandle(renderer_handle) orelse return .failed;
+    const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return .failed;
+    switch (runtime.runtime.submit()) {
         .idle => return .idle,
         .stale => return .stale,
         .needs_full_prepare => return .needs_prepare,
@@ -671,7 +642,7 @@ pub fn rendererSubmit(renderer_handle: RendererHandle, runtime_handle: RuntimeHa
             const prepared = &(owner.prepared orelse return .failed);
             const submitted = owner.renderer.submitFrame(&prepared.prepared) catch return .failed;
             const metrics = prepared.renderMetrics(submitted, 0);
-            runtime.acceptSubmitted(prepared.submittedFrame(submitted));
+            runtime.runtime.acceptSubmitted(prepared.submittedFrame(submitted));
             if (surface_out) |out| out.* = surfaceOut(submitted.surface);
             if (metrics_out) |out| out.* = backendMetricsOut(metrics);
             prepared.deinit();
@@ -699,9 +670,9 @@ test "ffi snapshot owner writes cells" {
         .attrs = .{ .bold = 1, .dim = 0, .italic = 0, .underline = 0, .underline_color_set = 0, .blink = 0, .inverse = 0, .invisible = 0, .strikethrough = 0 },
         .link_id = 3,
     }));
-    const snapshot = snapshotFromHandle(handle).?;
+    const owner = snapshotOwnerFromHandle(handle).?;
     const idx = @as(usize, 1) * 2 + 1;
-    try std.testing.expectEqual(@as(u21, 'Z'), snapshot.cells.items[idx].codepoint);
+    try std.testing.expectEqual(@as(u21, 'Z'), owner.snapshot.cells.items[idx].codepoint);
 }
 
 test "ffi runtime owner handles geometry and publication" {

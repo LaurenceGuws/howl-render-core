@@ -1,17 +1,15 @@
-//! Responsibility: define the renderer package public surface.
-//! Ownership: renderer API boundary and backend selection.
-//! Reason: keep the package root named after the public domain instead of a generic root facade.
+//! Responsibility: curate the howl-render public surface.
+//! Ownership: none beyond export curation.
+//! Reason: keep package-root naming explicit without moving owner policy upward.
 
 const lib = @This();
 const std = @import("std");
 const render = @import("render_namespace.zig");
-const ffi = render.c_api;
+const ffi = render.Ffi;
 
 pub const Render = render.Render;
 pub const Ffi = ffi;
-pub const C = ffi;
 pub const Renderer = render.Renderer;
-pub const geometry = render.geometry;
 
 comptime {
     if (@import("root") == lib) {

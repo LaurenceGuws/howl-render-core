@@ -183,6 +183,36 @@ pub const Renderer = struct {
         }
     };
 
+    pub const Owner = struct {
+        renderer: Renderer,
+        prepared: ?FrameRecord = null,
+        font_path: ?[:0]u8 = null,
+
+        pub fn create(config: render.BackendConfig) ?*Owner {
+            const owner = std.heap.c_allocator.create(Owner) catch return null;
+            owner.* = .{ .renderer = Renderer.init(config) };
+            return owner;
+        }
+
+        pub fn destroy(self: *Owner) void {
+            if (self.prepared) |*prepared| prepared.deinit();
+            self.prepared = null;
+            if (self.font_path) |path| std.heap.c_allocator.free(path);
+            self.font_path = null;
+            self.renderer.deinit();
+            std.heap.c_allocator.destroy(self);
+        }
+
+        pub fn fromHandle(raw: usize) ?*Owner {
+            if (raw == 0) return null;
+            return @ptrFromInt(raw);
+        }
+
+        pub fn handle(self: *Owner) usize {
+            return @intFromPtr(self);
+        }
+    };
+
     pub fn init(config: render.BackendConfig) Renderer {
         return .{ .backend = backend_mod.Backend.init(config) };
     }

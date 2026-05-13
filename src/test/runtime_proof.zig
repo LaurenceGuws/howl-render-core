@@ -21,7 +21,6 @@ test "renderer package surface remains available" {
     _ = root.Render.ResolveResult;
     _ = root.Ffi;
     _ = root.Renderer;
-    _ = root.geometry;
 }
 
 test "render frame pixel geometry clamps to drawable size" {
@@ -33,11 +32,11 @@ test "render frame pixel geometry clamps to drawable size" {
 }
 
 test "renderer root helpers forward deterministically" {
-    const grid = root.geometry.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
+    const grid = root.Render.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
     try std.testing.expectEqual(@as(u16, 10), grid.cols);
     try std.testing.expectEqual(@as(u16, 3), grid.rows);
 
-    const frame_grid = try root.geometry.deriveGridForFrame(
+    const frame_grid = try root.Render.deriveGridForFrame(
         .{ .width = 800, .height = 600 },
         .{ .width = 640, .height = 320 },
         .{ .width = 8, .height = 16 },

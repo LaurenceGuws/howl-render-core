@@ -26,12 +26,7 @@ pub const Render = struct {
     pub const GlyphQuad = types.GlyphQuad;
     pub const AtlasUpload = types.AtlasUpload;
     pub const RenderStats = types.RenderStats;
-    pub const TextCellInput = types.CellInput;
     pub const CellInput = types.CellInput;
-    pub const CellTextInput = text.Cluster.CellTextInput;
-    pub const TextLane = text.Lane.TextLane;
-    pub const TextComplexLaneReason = text.Lane.ComplexLaneReason;
-    pub const TextLaneReport = text.Lane.LaneReport;
     pub const FrameTheme = frame_input.FrameTheme;
     pub const OwnedFrameTextInput = frame_input.OwnedFrameTextInput;
     pub const OwnedTextSceneInput = frame_input.OwnedTextSceneInput;
@@ -50,9 +45,36 @@ pub const Render = struct {
     pub const FrameSnapshotDirty = frame_snapshot.Dirty;
     pub const FrameSnapshotDamage = frame_snapshot.Damage;
     pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
+    pub const SnapshotOwner = struct {
+        snapshot: FrameSnapshot,
+
+        pub fn create(rows: u16, cols: u16) ?*SnapshotOwner {
+            if (rows == 0 or cols == 0) return null;
+            const owner = std.heap.c_allocator.create(SnapshotOwner) catch return null;
+            owner.snapshot = FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
+                std.heap.c_allocator.destroy(owner);
+                return null;
+            };
+            return owner;
+        }
+
+        pub fn destroy(self: *SnapshotOwner) void {
+            self.snapshot.deinit(std.heap.c_allocator);
+            std.heap.c_allocator.destroy(self);
+        }
+
+        pub fn fromHandle(raw: usize) ?*SnapshotOwner {
+            if (raw == 0) return null;
+            return @ptrFromInt(raw);
+        }
+
+        pub fn handle(self: *SnapshotOwner) usize {
+            return @intFromPtr(self);
+        }
+    };
     pub const PrepareMetrics = frame_metrics.PrepareMetrics;
     pub const RenderMetrics = frame_metrics.RenderMetrics;
-    pub const Metrics = FrameQueue.TerminalSurface.Metrics;
+    pub const Metrics = frame_metrics.RuntimeMetrics;
     pub const SourceReceipt = struct {
         published: bool,
         queued: bool,
@@ -117,7 +139,129 @@ pub const Render = struct {
                 self.selection_current_col != null;
         }
     };
+    pub const PublicationState = struct {
+        publication: ?Publication = null,
+        pending: bool = false,
+
+        pub fn deinit(self: *PublicationState, allocator: std.mem.Allocator) void {
+            if (self.publication) |*publication| publication.deinit(allocator);
+            self.* = .{};
+        }
+
+        pub fn acceptSource(
+            self: *PublicationState,
+            allocator: std.mem.Allocator,
+            source: SourceView,
+            geometry_epoch: u64,
+        ) SourceReceipt {
+            const damage_kind = self.classify(source);
+            const published = damage_kind != .none;
+            if (published) {
+                self.updatePublication(allocator, source, damage_kind);
+                self.pending = true;
+            }
+            return .{
+                .published = published,
+                .queued = self.pending,
+                .damage_kind = damage_kind,
+                .source_seq = source.snapshot_seq,
+                .geometry_epoch = geometry_epoch,
+            };
+        }
+
+        pub fn takePendingToken(
+            self: *PublicationState,
+            geometry_epoch: u64,
+            submitted_token: ?frame_pipeline.SnapshotToken,
+        ) ?frame_pipeline.SnapshotToken {
+            if (!self.pending) return null;
+            const publication = self.publication orelse return null;
+            std.debug.assert(publication.snapshot.cols == publication.cols);
+            std.debug.assert(publication.snapshot.rows == publication.rows);
+            std.debug.assert(publication.damage_kind != .none);
+            self.pending = false;
+            return .{
+                .snapshot_seq = publication.snapshot_seq,
+                .dirty_epoch = publication.snapshot_seq,
+                .geometry_epoch = geometry_epoch,
+                .damage_base_seq = if (submitted_token) |token| token.snapshot_seq else 0,
+                .damage_kind = publication.damage_kind,
+            };
+        }
+
+        pub fn hasPending(self: *const PublicationState) bool {
+            return self.pending;
+        }
+
+        fn updatePublication(
+            self: *PublicationState,
+            allocator: std.mem.Allocator,
+            source: SourceView,
+            damage_kind: frame_pipeline.DamageKind,
+        ) void {
+            self.ensureSnapshot(allocator, source.rows, source.cols);
+            const publication = &(self.publication orelse unreachable);
+            publication.copyFrom(allocator, source, damage_kind) catch @panic("render publication allocation failed");
+            std.debug.assert(publication.snapshot.cols == source.cols);
+            std.debug.assert(publication.snapshot.rows == source.rows);
+            std.debug.assert(publication.damage_kind == damage_kind);
+        }
+
+        fn ensureSnapshot(self: *PublicationState, allocator: std.mem.Allocator, rows: u16, cols: u16) void {
+            if (self.publication == null) {
+                self.publication = Publication{};
+                const publication = &(self.publication orelse unreachable);
+                publication.snapshot = FrameSnapshot.init(allocator, rows, cols) catch @panic("render publication allocation failed");
+                return;
+            }
+            const publication = &(self.publication orelse unreachable);
+            if (publication.snapshot.rows == rows and publication.snapshot.cols == cols) return;
+            publication.snapshot.deinit(allocator);
+            publication.snapshot = FrameSnapshot.init(allocator, rows, cols) catch @panic("render publication allocation failed");
+        }
+
+        fn classify(self: *const PublicationState, source: SourceView) frame_pipeline.DamageKind {
+            const prior = self.publication orelse return .full;
+            if (source.snapshot_seq == prior.snapshot_seq) return .none;
+            if (source.cols != prior.cols or source.rows != prior.rows) return .full;
+            if (source.vt_epoch != prior.vt_epoch) return .full;
+            if (source.last_alt_screen != prior.last_alt_screen) return .full;
+            if (source.scrollback_count != prior.scrollback_count or source.scrollback_offset != prior.scrollback_offset) return .scroll;
+            if (source.selectionActive() != prior.selectionActive() or
+                source.focused != prior.focused or
+                source.hover_link_id != prior.hover_link_id or
+                source.hover_underline_style != prior.hover_underline_style)
+            {
+                return .partial;
+            }
+            return .none;
+        }
+    };
     pub const RenderRuntime = struct {
+        pub const Owner = struct {
+            runtime: RenderRuntime,
+
+            pub fn create() ?*Owner {
+                const owner = std.heap.c_allocator.create(Owner) catch return null;
+                owner.runtime = RenderRuntime.init(std.heap.c_allocator);
+                return owner;
+            }
+
+            pub fn destroy(self: *Owner) void {
+                self.runtime.deinit();
+                std.heap.c_allocator.destroy(self);
+            }
+
+            pub fn fromHandle(raw: usize) ?*Owner {
+                if (raw == 0) return null;
+                return @ptrFromInt(raw);
+            }
+
+            pub fn handle(self: *Owner) usize {
+                return @intFromPtr(self);
+            }
+        };
+
         pub const Metrics = Render.Metrics;
         allocator: std.mem.Allocator,
         surface_owner: FrameQueue.TerminalSurface = .{},
@@ -126,17 +270,14 @@ pub const Render = struct {
         cell_px: types.CellSize = .{ .width = 0, .height = 0 },
         font_size_px: u16 = 1,
         geometry_epoch: u64 = 0,
-        publication: ?Publication = null,
-        pending_publication: bool = false,
+        publication_state: PublicationState = .{},
 
         pub fn init(allocator: std.mem.Allocator) RenderRuntime {
             return .{ .allocator = allocator };
         }
 
         pub fn deinit(self: *RenderRuntime) void {
-            if (self.publication) |*publication| publication.deinit(self.allocator);
-            self.publication = null;
-            self.pending_publication = false;
+            self.publication_state.deinit(self.allocator);
         }
 
         pub fn setFontSizePx(self: *RenderRuntime, font_size_px: u16) void {
@@ -149,38 +290,7 @@ pub const Render = struct {
             std.debug.assert(source.snapshot.cols == source.cols);
             std.debug.assert(source.snapshot.rows == source.rows);
             std.debug.assert(source.scrollback_offset <= source.scrollback_count);
-
-            const damage_kind = self.classifySource(source);
-            const published = damage_kind != .none;
-            if (published) {
-                if (self.publication == null) {
-                    self.publication = Publication{};
-                    if (self.publication) |*publication| {
-                        errdefer publication.deinit(self.allocator);
-                        publication.snapshot = FrameSnapshot.init(self.allocator, source.rows, source.cols) catch @panic("render publication allocation failed");
-                    }
-                } else if (self.publication) |*publication| {
-                    if (publication.snapshot.rows != source.rows or publication.snapshot.cols != source.cols) {
-                        publication.snapshot.deinit(self.allocator);
-                        publication.snapshot = FrameSnapshot.init(self.allocator, source.rows, source.cols) catch @panic("render publication allocation failed");
-                    }
-                }
-                if (self.publication) |*publication| {
-                    publication.copyFrom(self.allocator, source, damage_kind) catch @panic("render publication allocation failed");
-                }
-                std.debug.assert(self.publication != null);
-                std.debug.assert(self.publication.?.snapshot.cols == source.cols);
-                std.debug.assert(self.publication.?.snapshot.rows == source.rows);
-                std.debug.assert(self.publication.?.damage_kind == damage_kind);
-                self.pending_publication = true;
-            }
-            return .{
-                .published = published,
-                .queued = self.pending_publication,
-                .damage_kind = damage_kind,
-                .source_seq = source.snapshot_seq,
-                .geometry_epoch = self.geometry_epoch,
-            };
+            return self.publication_state.acceptSource(self.allocator, source, self.geometry_epoch);
         }
 
         pub fn syncGeometry(self: *RenderRuntime, layout: Geometry) GeometryReceipt {
@@ -215,20 +325,14 @@ pub const Render = struct {
         }
 
         pub fn prepare(self: *RenderRuntime) ?frame_pipeline.RenderRequest {
-            if (self.pending_publication) {
-                const publication = self.publication orelse return null;
-                std.debug.assert(publication.snapshot.cols == publication.cols);
-                std.debug.assert(publication.snapshot.rows == publication.rows);
-                std.debug.assert(publication.damage_kind != .none);
-                const token = self.makeTokenFromPublication(publication);
+            if (self.publication_state.takePendingToken(self.geometry_epoch, self.surface_owner.submittedToken())) |token| {
                 _ = self.surface_owner.publishSnapshot(token, .opportunistic);
-                self.pending_publication = false;
             }
-            return self.surface_owner.beginSynchronousRender();
+            return self.surface_owner.takePrepare();
         }
 
         pub fn hasPendingPublication(self: *const RenderRuntime) bool {
-            return self.pending_publication;
+            return self.publication_state.hasPending();
         }
 
         pub fn publishPrepared(self: *RenderRuntime, prepared: frame_pipeline.PreparedFrame) u64 {
@@ -237,7 +341,15 @@ pub const Render = struct {
         }
 
         pub fn submit(self: *RenderRuntime) FrameQueue.TerminalSurface.SubmitDecision {
-            return self.surface_owner.takeValidatedSubmit();
+            return switch (self.surface_owner.takeSubmitTransition()) {
+                .idle => .idle,
+                .stale => |token| .{ .stale = token },
+                .submit => |prepared| .{ .submit = prepared },
+                .rejected => |rejected| blk: {
+                    self.surface_owner.requestFullPrepare(rejected.prepared.token);
+                    break :blk .{ .needs_full_prepare = rejected.reason };
+                },
+            };
         }
 
         pub fn acceptSubmitted(self: *RenderRuntime, frame: frame_pipeline.SubmittedFrame) void {
@@ -265,36 +377,6 @@ pub const Render = struct {
 
         pub fn resetMetrics(self: *RenderRuntime) void {
             self.surface_owner.resetMetrics();
-        }
-
-        fn classifySource(self: *const RenderRuntime, source: SourceView) frame_pipeline.DamageKind {
-            const prior = self.publication orelse return .full;
-            if (source.snapshot_seq == prior.snapshot_seq) return .none;
-            if (source.cols != prior.cols or source.rows != prior.rows) return .full;
-            if (source.vt_epoch != prior.vt_epoch) return .full;
-            if (source.last_alt_screen != prior.last_alt_screen) return .full;
-            if (source.scrollback_count != prior.scrollback_count or source.scrollback_offset != prior.scrollback_offset) return .scroll;
-            if (source.selectionActive() != prior.selectionActive() or
-                source.focused != prior.focused or
-                source.hover_link_id != prior.hover_link_id or
-                source.hover_underline_style != prior.hover_underline_style)
-            {
-                return .partial;
-            }
-            return .none;
-        }
-
-        fn makeTokenFromPublication(self: *const RenderRuntime, publication: Publication) frame_pipeline.SnapshotToken {
-            std.debug.assert(publication.snapshot.cols == publication.cols);
-            std.debug.assert(publication.snapshot.rows == publication.rows);
-            std.debug.assert(publication.damage_kind != .none);
-            return .{
-                .snapshot_seq = publication.snapshot_seq,
-                .dirty_epoch = publication.snapshot_seq,
-                .geometry_epoch = self.geometry_epoch,
-                .damage_base_seq = if (self.surface_owner.submittedToken()) |token| token.snapshot_seq else 0,
-                .damage_kind = publication.damage_kind,
-            };
         }
 
     };
@@ -404,16 +486,10 @@ pub const Render = struct {
     pub const RasterizeGlyphOp = text_pipeline.RasterizeGlyphOp;
     pub const ResolveFallbackFaceOp = text_pipeline.ResolveFallbackFaceOp;
     pub const Text = text;
-    pub const TextEngine = text.Engine.Engine;
-    pub const TextEngineAnalysisOptions = text.Engine.AnalysisOptions;
-    pub const TextFontSession = text.FontSession.FontSession;
-    pub const TextFaceRecord = text.FontSession.FontFaceRecord;
     pub const FrameGeometryError = error{
         InvalidSurfaceSize,
         InvalidGridSize,
     };
-    pub const defaultTheme = frame_input.default_theme;
-
     config: types.BackendConfig,
     capability: types.BackendCapability,
 
@@ -441,14 +517,6 @@ pub const Render = struct {
         return frame_input.vtStateToFrameTextInput(allocator, state);
     }
 
-    pub fn buildFrameTextInput(
-        self: *const Render,
-        allocator: std.mem.Allocator,
-        state: anytype,
-    ) !OwnedFrameTextInput {
-        return self.vtStateToFrameTextInput(allocator, state);
-    }
-
     /// Derive grid dimensions from pixel-space area and cell-size policy.
     pub fn deriveGridSize(grid_px: PixelSize, cell_px: CellSize) GridSize {
         const cell_w: u16 = if (cell_px.width == 0) 1 else cell_px.width;
@@ -465,11 +533,6 @@ pub const Render = struct {
         if (grid_px.width == 0 or grid_px.height == 0) return error.InvalidGridSize;
         return deriveGridSize(grid_px, cell_px);
     }
-};
-
-pub const geometry = struct {
-    pub const deriveGridSize = Render.deriveGridSize;
-    pub const deriveGridForFrame = Render.deriveGridForFrame;
 };
 
 test "render runtime owns source publication and retained-frame queue" {
@@ -510,9 +573,9 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expect(clean_receipt.published);
     try std.testing.expect(clean_receipt.queued);
     try std.testing.expectEqual(frame_pipeline.DamageKind.full, clean_receipt.damage_kind);
-    try std.testing.expect(runtime.publication != null);
-    try std.testing.expectEqual(@as(u21, 'a'), runtime.publication.?.snapshot.cells.items[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication.?.snapshot.cells.items[5].codepoint);
+    try std.testing.expect(runtime.publication_state.publication != null);
+    try std.testing.expectEqual(@as(u21, 'a'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[5].codepoint);
     const request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 1), request.token.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 1), request.known_target_epoch);
@@ -567,8 +630,8 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expectEqual(frame_pipeline.DamageKind.full, republished_receipt.damage_kind);
     const republished_request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 4), republished_request.token.snapshot_seq);
-    try std.testing.expectEqual(@as(u21, 'a'), runtime.publication.?.snapshot.cells.items[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication.?.snapshot.cells.items[5].codepoint);
+    try std.testing.expectEqual(@as(u21, 'a'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[5].codepoint);
 
     var scroll_source = clean_source;
     scroll_source.snapshot_seq = 5;
@@ -593,11 +656,11 @@ test "render runtime owns source publication and retained-frame queue" {
     const scroll_request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 5), scroll_request.token.snapshot_seq);
     try std.testing.expectEqual(frame_pipeline.DamageKind.scroll, scroll_request.token.damage_kind);
-    try std.testing.expectEqual(@as(u21, 'd'), runtime.publication.?.snapshot.cells.items[0].codepoint);
-    try std.testing.expectEqual(@as(u21, 'e'), runtime.publication.?.snapshot.cells.items[1].codepoint);
-    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication.?.snapshot.cells.items[2].codepoint);
-    try std.testing.expectEqual(@as(u21, 'X'), runtime.publication.?.snapshot.cells.items[4].codepoint);
-    try std.testing.expectEqual(@as(u21, 'Y'), runtime.publication.?.snapshot.cells.items[5].codepoint);
+    try std.testing.expectEqual(@as(u21, 'd'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
+    try std.testing.expectEqual(@as(u21, 'e'), runtime.publication_state.publication.?.snapshot.cells.items[1].codepoint);
+    try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[2].codepoint);
+    try std.testing.expectEqual(@as(u21, 'X'), runtime.publication_state.publication.?.snapshot.cells.items[4].codepoint);
+    try std.testing.expectEqual(@as(u21, 'Y'), runtime.publication_state.publication.?.snapshot.cells.items[5].codepoint);
 
     var selection_source = scroll_source;
     selection_source.snapshot_seq = 6;
@@ -614,7 +677,7 @@ test "render runtime owns source publication and retained-frame queue" {
     const selection_receipt = runtime.acceptSource(selection_source);
     try std.testing.expect(selection_receipt.published);
     try std.testing.expectEqual(frame_pipeline.DamageKind.partial, selection_receipt.damage_kind);
-    try std.testing.expectEqual(@as(u21, 'Q'), runtime.publication.?.snapshot.cells.items[2].codepoint);
+    try std.testing.expectEqual(@as(u21, 'Q'), runtime.publication_state.publication.?.snapshot.cells.items[2].codepoint);
 
     var focus_source = selection_source;
     focus_source.snapshot_seq = 7;

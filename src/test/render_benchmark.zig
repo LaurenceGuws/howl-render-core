@@ -6,11 +6,11 @@ const std = @import("std");
 const render = @import("howl_render");
 
 const OutputFormat = enum { ndjson, text };
-const LaneReport = render.Render.TextLaneReport;
+const LaneReport = render.Render.Text.Lane.LaneReport;
 
 const WorkloadInput = union(enum) {
-    cells: []render.Render.TextCellInput,
-    cell_texts: []const render.Render.CellTextInput,
+    cells: []render.Render.CellInput,
+    cell_texts: []const render.Render.Text.Cluster.CellTextInput,
 };
 
 const Options = struct {
@@ -239,9 +239,9 @@ fn defaultCellMetrics(cell_px: render.Render.CellSize) render.Render.CellMetrics
     };
 }
 
-fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Render.Rgba8) ![]render.Render.TextCellInput {
+fn initCells(allocator: std.mem.Allocator, rows: u16, cols: u16, bg: render.Render.Rgba8) ![]render.Render.CellInput {
     const len = @as(usize, rows) * @as(usize, cols);
-    const cells = try allocator.alloc(render.Render.TextCellInput, len);
+    const cells = try allocator.alloc(render.Render.CellInput, len);
     for (cells) |*cell| {
         cell.* = .{ .codepoint = ' ', .fg = rgba(240, 240, 240), .bg = bg };
     }
@@ -396,7 +396,7 @@ fn buildComplexTextWorkload(allocator: std.mem.Allocator) !Workload {
     const fg = rgba(232, 236, 242);
     const combining = &[_]u32{ 'i', 0x0332 };
     const emoji = &[_]u32{0x1f642};
-    const cells = try allocator.alloc(render.Render.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const cells = try allocator.alloc(render.Render.Text.Cluster.CellTextInput, @as(usize, rows) * @as(usize, cols));
     const dirty = try initDirtyAll(allocator, rows, cols);
     for (cells, 0..) |*cell, idx| {
         const cp = if (idx % 2 == 0) combining else emoji;
@@ -423,7 +423,7 @@ fn buildCellTextAsciiFullWorkload(allocator: std.mem.Allocator) !Workload {
     const bg = rgba(12, 12, 18);
     const fg = rgba(235, 238, 242);
     const ascii = [_]u32{'a'};
-    const cells = try allocator.alloc(render.Render.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const cells = try allocator.alloc(render.Render.Text.Cluster.CellTextInput, @as(usize, rows) * @as(usize, cols));
     const dirty = try initDirtyAll(allocator, rows, cols);
     for (cells) |*cell| {
         cell.* = .{
@@ -450,7 +450,7 @@ fn buildCellTextMixedWorkload(allocator: std.mem.Allocator) !Workload {
     const accent = rgba(166, 212, 255);
     const ascii = [_]u32{'a'};
     const combining = [_]u32{ 'i', 0x0332 };
-    const cells = try allocator.alloc(render.Render.CellTextInput, @as(usize, rows) * @as(usize, cols));
+    const cells = try allocator.alloc(render.Render.Text.Cluster.CellTextInput, @as(usize, rows) * @as(usize, cols));
     const dirty = try initDirtyAll(allocator, rows, cols);
     for (cells, 0..) |*cell, idx| {
         const even = idx % 2 == 0;
@@ -536,11 +536,11 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     defer allocator.free(upload_values);
 
     const cell_metrics = defaultCellMetrics(workload.cell_px);
-    const session = render.Render.TextFontSession{
+    const session = render.Render.Text.FontSession.FontSession{
         .primary_face = .{ .value = 1 },
         .metrics = cell_metrics,
     };
-    const analysis_options = render.Render.TextEngineAnalysisOptions{
+    const analysis_options = render.Render.Text.Engine.AnalysisOptions{
         .scene = .{
             .damage = .{
                 .full = workload.damage.full,
@@ -553,7 +553,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     };
     var lane_report: ?LaneReport = null;
     var counting = CountingAllocator.init(allocator);
-    var engine = render.Render.TextEngine.init(counting.allocator());
+    var engine = render.Render.Text.Engine.Engine.init(counting.allocator());
     defer engine.deinit();
 
     counting.resetWindow();
