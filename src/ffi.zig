@@ -51,6 +51,12 @@ pub const FfiFrameGridResult = extern struct {
     grid: FfiGridSize,
 };
 
+pub const FfiFrameLayoutResult = extern struct {
+    status: c_int,
+    cell_px: FfiCellSize,
+    grid: FfiGridSize,
+};
+
 pub const FfiCellFlags = extern struct {
     continuation: u8,
     reserved0: u8 = 0,
@@ -440,6 +446,14 @@ pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_
     return .{ .status = 0, .grid = gridOut(grid) };
 }
 
+pub fn rendererDeriveFrameLayout(handle: RendererHandle, render_px: FfiPixelSize, grid_px: FfiPixelSize) callconv(.c) FfiFrameLayoutResult {
+    const owner = rendererOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .cell_px = .{ .width = 0, .height = 0 }, .grid = .{ .cols = 0, .rows = 0 } };
+    const layout = owner.renderer.deriveFrameLayout(pixelIn(render_px), pixelIn(grid_px)) catch {
+        return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .cell_px = .{ .width = 0, .height = 0 }, .grid = .{ .cols = 0, .rows = 0 } };
+    };
+    return .{ .status = 0, .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height }, .grid = gridOut(layout.grid) };
+}
+
 pub fn snapshotInit(rows: u16, cols: u16) callconv(.c) SnapshotHandle {
     const owner = Render.SnapshotOwner.create(rows, cols) orelse return 0;
     return owner.handle();
@@ -519,6 +533,11 @@ pub fn runtimePublishSnapshot(handle: RuntimeHandle, source: FfiSourceView) call
     const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
     const typed = sourceViewIn(source) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
     return sourceReceiptOut(owner.runtime.acceptSource(typed));
+}
+
+pub fn runtimeHasPendingPublication(handle: RuntimeHandle) callconv(.c) u8 {
+    const owner = runtimeOwnerFromHandle(handle) orelse return 0;
+    return if (owner.runtime.hasPendingPublication()) 1 else 0;
 }
 
 pub fn runtimeAction(handle: RuntimeHandle) callconv(.c) u8 {
@@ -603,6 +622,25 @@ pub fn rendererSetFontPath(handle: RendererHandle, ptr: ?[*]const u8, len: usize
     const owned = std.heap.c_allocator.dupeZ(u8, ptr.?[0..len]) catch return @intFromEnum(HowlRenderCallStatus.failed);
     owner.font_path = owned;
     owner.renderer.setFontPath(owned);
+    return @intFromEnum(HowlRenderCallStatus.ok);
+}
+
+pub fn rendererSetFallbackFontPaths(handle: RendererHandle, ptrs: ?[*]const ?[*]const u8, count: usize) callconv(.c) c_int {
+    const owner = rendererOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    for (owner.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
+    owner.fallback_font_paths.clearRetainingCapacity();
+    if (count == 0) {
+        owner.renderer.setFallbackFontPaths(&.{});
+        return @intFromEnum(HowlRenderCallStatus.ok);
+    }
+    const raw_paths = ptrs orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const raw = raw_paths[i] orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
+        const owned = std.heap.c_allocator.dupeZ(u8, std.mem.sliceTo(raw, 0)) catch return @intFromEnum(HowlRenderCallStatus.failed);
+        owner.fallback_font_paths.append(std.heap.c_allocator, owned) catch return @intFromEnum(HowlRenderCallStatus.failed);
+    }
+    owner.renderer.setFallbackFontPaths(owner.fallback_font_paths.items);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 

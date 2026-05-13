@@ -68,6 +68,12 @@ typedef struct {
 } HowlRenderFrameGridResult;
 
 typedef struct {
+  int status;
+  HowlRenderCellSize cell_px;
+  HowlRenderGridSize grid;
+} HowlRenderFrameLayoutResult;
+
+typedef struct {
   uint8_t continuation;
   uint8_t reserved0;
   uint8_t reserved1;
@@ -233,6 +239,7 @@ typedef struct {
 
 HowlRenderGridSize howl_render_derive_grid_size(HowlRenderPixelSize grid_px, HowlRenderCellSize cell_px);
 HowlRenderFrameGridResult howl_render_derive_frame_grid_size(HowlRenderPixelSize render_px, HowlRenderPixelSize grid_px, HowlRenderCellSize cell_px);
+HowlRenderFrameLayoutResult howl_render_renderer_derive_frame_layout(HowlRenderRendererHandle handle, HowlRenderPixelSize render_px, HowlRenderPixelSize grid_px);
 
 HowlRenderSnapshotHandle howl_render_snapshot_init(uint16_t rows, uint16_t cols);
 void howl_render_snapshot_deinit(HowlRenderSnapshotHandle handle);
@@ -248,6 +255,7 @@ void howl_render_runtime_deinit(HowlRenderRuntimeHandle handle);
 int howl_render_runtime_set_font_size_px(HowlRenderRuntimeHandle handle, uint16_t font_size_px);
 HowlRenderGeometryReceipt howl_render_runtime_sync_geometry(HowlRenderRuntimeHandle handle, HowlRenderGeometry geometry);
 HowlRenderSourceReceipt howl_render_runtime_publish_snapshot(HowlRenderRuntimeHandle handle, HowlRenderSourceView source);
+uint8_t howl_render_runtime_has_pending_publication(HowlRenderRuntimeHandle handle);
 uint8_t howl_render_runtime_action(HowlRenderRuntimeHandle handle);
 void howl_render_runtime_mark_presented(HowlRenderRuntimeHandle handle);
 HowlRenderSurfaceQuery howl_render_runtime_surface_query(HowlRenderRuntimeHandle handle);
@@ -258,6 +266,7 @@ HowlRenderRendererHandle howl_render_renderer_init(HowlRenderBackendConfig confi
 void howl_render_renderer_deinit(HowlRenderRendererHandle handle);
 int howl_render_renderer_set_font_size_px(HowlRenderRendererHandle handle, uint16_t font_size_px);
 int howl_render_renderer_set_font_path(HowlRenderRendererHandle handle, const uint8_t *ptr, size_t len);
+int howl_render_renderer_set_fallback_font_paths(HowlRenderRendererHandle handle, const uint8_t *const *ptrs, size_t count);
 int howl_render_renderer_prepare(HowlRenderRendererHandle renderer_handle, HowlRenderRuntimeHandle runtime_handle, HowlRenderSnapshotHandle snapshot_handle);
 HowlRenderSubmitStatus howl_render_renderer_submit(HowlRenderRendererHandle renderer_handle, HowlRenderRuntimeHandle runtime_handle, HowlRenderSurfaceHandle *surface_out, HowlRenderBackendMetrics *metrics_out);
 

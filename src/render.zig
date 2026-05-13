@@ -353,7 +353,10 @@ pub const Render = struct {
         }
 
         pub fn acceptSubmitted(self: *RenderRuntime, frame: frame_pipeline.SubmittedFrame) void {
-            std.debug.assert(frame.token.geometry_epoch == self.geometry_epoch);
+            if (frame.token.geometry_epoch != self.geometry_epoch) {
+                self.surface_owner.requestFullPrepare(frame.token);
+                return;
+            }
             self.surface_owner.acceptSubmitted(frame);
         }
 

@@ -187,6 +187,7 @@ pub const Renderer = struct {
         renderer: Renderer,
         prepared: ?FrameRecord = null,
         font_path: ?[:0]u8 = null,
+        fallback_font_paths: std.ArrayList([:0]u8) = .empty,
 
         pub fn create(config: render.BackendConfig) ?*Owner {
             const owner = std.heap.c_allocator.create(Owner) catch return null;
@@ -199,6 +200,8 @@ pub const Renderer = struct {
             self.prepared = null;
             if (self.font_path) |path| std.heap.c_allocator.free(path);
             self.font_path = null;
+            for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
+            self.fallback_font_paths.deinit(std.heap.c_allocator);
             self.renderer.deinit();
             std.heap.c_allocator.destroy(self);
         }
