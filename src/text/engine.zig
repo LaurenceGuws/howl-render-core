@@ -107,7 +107,9 @@ pub const Engine = struct {
     }
 
     pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
-        if (try self.analyzeDirectNormalCells(cells, grid_metrics, session, options)) |analysis| return analysis;
+        if (try self.analyzeDirectNormal(.{ .raw_cells = cells }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
+            return self.finishDirectNormalAnalysis(direct.damage, direct.lane_report, direct.build, .{});
+        }
         var timings = PrepareTimings{};
         const sparse_start_ns = monotonicNs();
         var sparse = try cluster.buildSparseCellsWithDamage(self.allocator, cells, grid_metrics, options.scene.damage);
@@ -116,66 +118,10 @@ pub const Engine = struct {
         return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options, timings);
     }
 
-    fn analyzeDirectNormalCells(
-        self: *Engine,
-        cells: []const types.CellInput,
-        grid_metrics: contract.GridMetrics,
-        session: font_session.FontSession,
-        options: AnalysisOptions,
-    ) !?OwnedTextAnalysis {
-        const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-        var visible_count: u32 = 0;
-        for (cells, 0..) |cell, idx| {
-            if (cell.continuation or cell.empty) continue;
-            const renderable = rawRenderableCell(cell, @intCast(idx), cells);
-            if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
-            const codepoints = [_]u32{cell.codepoint};
-            const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &codepoints };
-            if (text_lane.classifyRenderableCell(renderable, text).lane != .normal) return null;
-            visible_count += 1;
-        }
-
-        try initDirectNormalBuffers(self, visible_count, @intCast(cells.len), grid_metrics.rows);
-
-        var lane_report = text_lane.LaneReport{};
-        var row: u16 = 0;
-        while (row < grid_metrics.rows) : (row += 1) {
-            if (!directRowDirty(damage, row)) continue;
-            var col: u16 = 0;
-            while (col < grid_metrics.cols) {
-                const idx = gridCellOffset(row, col, grid_metrics.cols);
-                if (idx >= cells.len) break;
-                const cell = cells[@intCast(idx)];
-                if (cell.continuation or cell.empty) {
-                    col += 1;
-                    continue;
-                }
-                const renderable = rawRenderableCell(cell, @intCast(idx), cells);
-                if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) {
-                    col += renderable.cell_span;
-                    continue;
-                }
-                const codepoints = [_]u32{cell.codepoint};
-                const text = contract.CellText{ .id = .{ .value = 0 }, .first_cp = cell.codepoint, .codepoints = &codepoints };
-                std.debug.assert(text_lane.classifyRenderableCell(renderable, text).lane == .normal);
-                lane_report.visible_cells += 1;
-                lane_report.normal_cells += 1;
-                if (!blankText(text)) lane_report.normal_clusters += 1;
-                try appendDirectNormalRenderable(self, renderable, text, grid_metrics, session, &lane_report);
-                col += renderable.cell_span;
-            }
-        }
-
-        appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
-        appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-        const direct = try finishDirectNormalScene(self, damage, &lane_report);
-        return self.finishDirectNormalAnalysis(damage, lane_report, direct, .{});
-    }
-
     pub fn analyzeCellTextInputsOptions(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
-        if (try self.analyzeDirectNormalTextInputs(inputs, grid_metrics, session, options)) |analysis| return analysis;
+        if (try self.analyzeDirectNormal(.{ .inputs = inputs }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
+            return self.finishDirectNormalAnalysis(direct.damage, direct.lane_report, direct.build, .{});
+        }
         var text_cache = try cluster.buildLineTextCacheFromInputs(self.allocator, inputs);
         errdefer text_cache.deinit();
         var renderable = try cluster.buildRenderableCellsFromInputs(self.allocator, inputs, text_cache.view());
@@ -202,51 +148,17 @@ pub const Engine = struct {
         timings.clusters_us = elapsedUs(clusters_start_ns);
         errdefer clusters.deinit();
         var final_lane_report = text_lane.LaneReport.init(owned_text_cache.view(), owned_renderable.cells, clusters.clusters);
-        const direct = try buildDirectNormalPrepared(self, owned_renderable.cells, owned_text_cache.view(), grid_metrics, session, options, &final_lane_report);
+        const direct = (try self.analyzeDirectNormal(
+            .{ .prepared = .{ .cells = owned_renderable.cells, .text_cache = owned_text_cache.view() } },
+            .skip_complex,
+            grid_metrics,
+            session,
+            options,
+            &final_lane_report,
+        )).?;
 
         if (final_lane_report.complex_cells == 0) {
-            final_lane_report.assertValid();
-            const counters = pipeline.TextEngineCounters{
-                .cell_texts = final_lane_report.visible_cells,
-                .clusters = final_lane_report.normal_clusters,
-                .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
-                .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
-                .rasterized_sprites = @intCast(direct.outputs.len),
-                .missing_glyphs = self.normal_missing.items.len,
-            };
-            self.counters.cell_texts += counters.cell_texts;
-            self.counters.clusters += counters.clusters;
-            self.counters.sprite_cache_hits += counters.sprite_cache_hits;
-            self.counters.sprite_cache_misses += counters.sprite_cache_misses;
-            self.counters.rasterized_sprites += counters.rasterized_sprites;
-            self.counters.missing_glyphs += counters.missing_glyphs;
-
-            return .{
-                .text_cache = owned_text_cache,
-                .renderable = owned_renderable,
-                .clusters = clusters,
-                .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
-                .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
-                .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-                .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-                .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-                .scene = .{ .allocator = self.allocator, .scene = .{
-                    .cells = owned_renderable.cells,
-                    .full_redraw = direct.damage.full,
-                    .scroll_up_px = direct.damage.scroll_up_px,
-                    .clear_draws = self.normal_clear_draws.items,
-                    .background_draws = self.normal_background_draws.items,
-                    .sprite_draws = self.normal_sprite_draws.items,
-                    .decoration_draws = self.normal_decoration_draws.items,
-                    .cursor_draws = self.normal_cursor_draws.items,
-                    .raster_requests = &.{},
-                    .missing = self.normal_missing.items,
-                }, .owned = false },
-                .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
-                .counters = counters,
-                .lane_report = final_lane_report,
-                .timings = timings,
-            };
+            return self.finishPreparedDirectNormalAnalysis(owned_text_cache, owned_renderable, clusters, direct.build, final_lane_report, timings);
         }
 
         var complex = try cluster.selectComplexWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), clusters.clusters, grid_metrics, options.scene.damage);
@@ -300,7 +212,7 @@ pub const Engine = struct {
         errdefer self.allocator.free(merged_decoration_draws);
         const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.normal_missing.items, scene.scene.missing);
         errdefer self.allocator.free(merged_missing);
-        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.outputs, direct.outputs_owned, &raster_plan);
+        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, &raster_plan);
         errdefer merged_raster_plan.deinit();
 
         self.allocator.free(scene.scene.clear_draws);
@@ -360,44 +272,6 @@ pub const Engine = struct {
         };
     }
 
-    fn analyzeDirectNormalTextInputs(
-        self: *Engine,
-        inputs: []const cluster.CellTextInput,
-        grid_metrics: contract.GridMetrics,
-        session: font_session.FontSession,
-        options: AnalysisOptions,
-    ) !?OwnedTextAnalysis {
-        const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-        var lane_report = text_lane.LaneReport{};
-        var visible_count: u32 = 0;
-        for (inputs, 0..) |input, idx| {
-            if (input.continuation) continue;
-            const renderable = inputRenderableCell(input, @intCast(idx), inputs);
-            if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
-            const text = inputCellText(input);
-            const choice = text_lane.classifyRenderableCell(renderable, text);
-            if (choice.lane != .normal) return null;
-            visible_count += 1;
-            lane_report.visible_cells += 1;
-            lane_report.normal_cells += 1;
-            if (!blankText(text)) lane_report.normal_clusters += 1;
-        }
-
-        try initDirectNormalBuffers(self, visible_count, @intCast(inputs.len), grid_metrics.rows);
-        for (inputs, 0..) |input, idx| {
-            if (input.continuation) continue;
-            const renderable = inputRenderableCell(input, @intCast(idx), inputs);
-            if (!includeDirectSpan(damage, grid_metrics, renderable.first_cell, renderable.cell_span)) continue;
-            try appendDirectNormalRenderable(self, renderable, inputCellText(input), grid_metrics, session, &lane_report);
-        }
-        appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
-        appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-        const direct = try finishDirectNormalScene(self, damage, &lane_report);
-        return self.finishDirectNormalAnalysis(damage, lane_report, direct, .{});
-    }
-
     fn finishDirectNormalAnalysis(
         self: *Engine,
         damage: DirectDamage,
@@ -449,6 +323,111 @@ pub const Engine = struct {
         };
     }
 
+    fn finishPreparedDirectNormalAnalysis(
+        self: *Engine,
+        owned_text_cache: cluster.OwnedLineTextCache,
+        owned_renderable: cluster.OwnedRenderableCells,
+        clusters: cluster.OwnedClusters,
+        direct: DirectNormalBuild,
+        lane_report: text_lane.LaneReport,
+        timings: PrepareTimings,
+    ) OwnedTextAnalysis {
+        var final_lane_report = lane_report;
+        final_lane_report.assertValid();
+        const counters = pipeline.TextEngineCounters{
+            .cell_texts = final_lane_report.visible_cells,
+            .clusters = final_lane_report.normal_clusters,
+            .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
+            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
+            .rasterized_sprites = @intCast(direct.outputs.len),
+            .missing_glyphs = self.normal_missing.items.len,
+        };
+        self.counters.cell_texts += counters.cell_texts;
+        self.counters.clusters += counters.clusters;
+        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
+        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
+        self.counters.rasterized_sprites += counters.rasterized_sprites;
+        self.counters.missing_glyphs += counters.missing_glyphs;
+        return .{
+            .text_cache = owned_text_cache,
+            .renderable = owned_renderable,
+            .clusters = clusters,
+            .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
+            .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
+            .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
+            .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
+            .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
+            .scene = .{ .allocator = self.allocator, .scene = .{
+                .cells = owned_renderable.cells,
+                .full_redraw = direct.damage.full,
+                .scroll_up_px = direct.damage.scroll_up_px,
+                .clear_draws = self.normal_clear_draws.items,
+                .background_draws = self.normal_background_draws.items,
+                .sprite_draws = self.normal_sprite_draws.items,
+                .decoration_draws = self.normal_decoration_draws.items,
+                .cursor_draws = self.normal_cursor_draws.items,
+                .raster_requests = &.{},
+                .missing = self.normal_missing.items,
+            }, .owned = false },
+            .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
+            .counters = counters,
+            .lane_report = final_lane_report,
+            .timings = timings,
+        };
+    }
+
+    fn analyzeDirectNormal(
+        self: *Engine,
+        source: DirectNormalSource,
+        policy: DirectNormalPolicy,
+        grid_metrics: contract.GridMetrics,
+        session: font_session.FontSession,
+        options: AnalysisOptions,
+        lane_report_ptr: ?*text_lane.LaneReport,
+    ) !?DirectNormalAnalysis {
+        const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
+        var direct_lane_report = text_lane.LaneReport{};
+        const lane_report = lane_report_ptr orelse &direct_lane_report;
+        const source_len = directNormalSourceLen(source);
+        var visible_count: u32 = 0;
+        var idx: u32 = 0;
+        while (idx < source_len) : (idx += 1) {
+            var item = directNormalSourceItem(source, idx) orelse continue;
+            const text = item.text();
+            if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) continue;
+            const choice = text_lane.classifyRenderableCell(item.renderable, text);
+            switch (policy) {
+                .require_all_normal => {
+                    if (choice.lane != .normal) return null;
+                    visible_count += 1;
+                    recordDirectNormalLane(lane_report, text);
+                },
+                .skip_complex => {
+                    if (choice.lane != .normal) continue;
+                    visible_count += 1;
+                },
+            }
+        }
+
+        try initDirectNormalBuffers(self, visible_count, @intCast(source_len), grid_metrics.rows);
+        idx = 0;
+        while (idx < source_len) : (idx += 1) {
+            var item = directNormalSourceItem(source, idx) orelse continue;
+            const text = item.text();
+            if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) continue;
+            const lane = text_lane.classifyRenderableCell(item.renderable, text).lane;
+            if (policy == .require_all_normal) std.debug.assert(lane == .normal);
+            if (lane != .normal) continue;
+            try appendDirectNormalRenderable(self, item.renderable, text, grid_metrics, session, lane_report);
+        }
+
+        appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
+        appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
+        appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
+        appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
+        return .{ .damage = damage, .lane_report = lane_report.*, .build = try finishDirectNormalScene(self, damage, lane_report) };
+    }
+
 };
 
 pub const OwnedTextAnalysis = struct {
@@ -487,39 +466,84 @@ const DirectNormalBuild = struct {
     outputs_owned: bool = false,
 };
 
-fn buildDirectNormalPrepared(
-    self: *Engine,
-    cells: []const contract.RenderableCell,
-    text_cache: contract.LineTextCache,
-    grid_metrics: contract.GridMetrics,
-    session: font_session.FontSession,
-    options: AnalysisOptions,
-    lane_report: *text_lane.LaneReport,
-) !DirectNormalBuild {
-    const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-    var visible_count: u32 = 0;
-    for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-        const text = textForRenderableCell(text_cache, cell);
-        if (text_lane.classifyRenderableCell(cell, text).lane == .complex) continue;
-        visible_count += 1;
-    }
+const DirectNormalAnalysis = struct {
+    damage: DirectDamage,
+    lane_report: text_lane.LaneReport,
+    build: DirectNormalBuild,
+};
 
-    try initDirectNormalBuffers(self, visible_count, @intCast(cells.len), grid_metrics.rows);
-    for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-        const text = textForRenderableCell(text_cache, cell);
-        if (text_lane.classifyRenderableCell(cell, text).lane == .complex) continue;
-        try appendDirectNormalRenderable(self, cell, text, grid_metrics, session, lane_report);
-    }
+const DirectNormalPolicy = enum {
+    require_all_normal,
+    skip_complex,
+};
 
-    appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-    appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
-    appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-    appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-    return finishDirectNormalScene(self, damage, lane_report);
+const DirectNormalSource = union(enum) {
+    raw_cells: []const types.CellInput,
+    inputs: []const cluster.CellTextInput,
+    prepared: struct {
+        cells: []const contract.RenderableCell,
+        text_cache: contract.LineTextCache,
+    },
+};
+
+const DirectNormalItem = struct {
+    renderable: contract.RenderableCell,
+
+    first_cp: u32,
+    borrowed_codepoints: []const u32 = &.{},
+    inline_codepoints: [1]u32 = .{0},
+
+    fn text(self: *const DirectNormalItem) contract.CellText {
+        const codepoints = if (self.borrowed_codepoints.len > 0)
+            self.borrowed_codepoints
+        else
+            self.inline_codepoints[0..1];
+        return .{ .id = .{ .value = 0 }, .first_cp = self.first_cp, .codepoints = codepoints };
+    }
+};
+
+fn directNormalSourceLen(source: DirectNormalSource) u32 {
+    return switch (source) {
+        .raw_cells => |cells| @intCast(cells.len),
+        .inputs => |inputs| @intCast(inputs.len),
+        .prepared => |prepared| @intCast(prepared.cells.len),
+    };
+}
+
+fn directNormalSourceItem(source: DirectNormalSource, idx: u32) ?DirectNormalItem {
+    return switch (source) {
+        .raw_cells => |cells| {
+            const cell = cells[idx];
+            if (cell.continuation or cell.empty) return null;
+            return .{
+                .renderable = rawRenderableCell(cell, idx, cells),
+                .first_cp = cell.codepoint,
+                .inline_codepoints = .{cell.codepoint},
+            };
+        },
+        .inputs => |inputs| {
+            const input = inputs[idx];
+            if (input.continuation) return null;
+            const text = inputCellText(input);
+            return .{
+                .renderable = inputRenderableCell(input, idx, inputs),
+                .first_cp = text.first_cp,
+                .borrowed_codepoints = text.codepoints,
+            };
+        },
+        .prepared => |prepared| {
+            const renderable = prepared.cells[idx];
+            if (renderable.continuation) return null;
+            const text = textForRenderableCell(prepared.text_cache, renderable);
+            return .{ .renderable = renderable, .first_cp = text.first_cp, .borrowed_codepoints = text.codepoints };
+        },
+    };
+}
+
+fn recordDirectNormalLane(lane_report: *text_lane.LaneReport, text: contract.CellText) void {
+    lane_report.visible_cells += 1;
+    lane_report.normal_cells += 1;
+    if (!blankText(text)) lane_report.normal_clusters += 1;
 }
 
 fn initDirectNormalBuffers(self: *Engine, visible_count: u32, cell_count: u32, rows: u16) !void {
