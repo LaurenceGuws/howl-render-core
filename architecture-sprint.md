@@ -748,11 +748,13 @@ Must do:
 
 - delete tests that exist only for deleted backend-owned pipeline surfaces
 - rewrite tests to prove surviving backend leaf work or renderer-owned sequencing
+- move retained-target, damage, and reused-atlas orchestration proof to renderer/runtime seams
 
 Checkpoint 4C closes only when:
 
 - no backend test asserts the deleted owner model
 - moved tests prove the new owner model at the correct seam
+- backend tests prove only backend leaf behavior after the split
 
 ### Checkpoint 5A
 

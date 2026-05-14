@@ -160,6 +160,64 @@ test "render runtime stale retained-base validation stays explicit" {
     try std.testing.expectEqual(Render.FramePipeline.SubmitValidation.stale_target, Render.FramePipeline.validatePreparedFrame(stale_target, submitted));
 }
 
+test "renderer reuses retained atlas across matching frames" {
+    var renderer = Renderer.init(.{ .surface_px = .{ .width = 8, .height = 16 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
+    defer renderer.deinit();
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = runtime.syncGeometry(.{ .render_px = .{ .width = 8, .height = 16 }, .grid_px = .{ .width = 8, .height = 16 }, .cell_px = .{ .width = 8, .height = 16 } });
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 1, 1);
+    defer snapshot.deinit(std.testing.allocator);
+    const cells = [_]Render.SurfaceCell{.{ .codepoint = 'A' }};
+    const frame = frameData(&cells, 1, 1, true, 0, &[_]bool{}, &[_]u16{}, &[_]u16{});
+
+    const first = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 1, 1);
+    try std.testing.expect(first.report.raster_uploads_committed == 1);
+    const second = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 1, 2);
+    try std.testing.expect(second.report.raster_uploads_committed == 0);
+}
+
+test "renderer forces full redraw while target contents are invalid" {
+    var renderer = Renderer.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
+    defer renderer.deinit();
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = runtime.syncGeometry(.{ .render_px = .{ .width = 16, .height = 32 }, .grid_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 } });
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 1);
+    defer snapshot.deinit(std.testing.allocator);
+    const cells = [_]Render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_start = [_]u16{ 0, 0 };
+    const dirty_end = [_]u16{ 0, 0 };
+    const frame = frameData(&cells, 1, 2, false, 1, &dirty_rows, &dirty_start, &dirty_end);
+
+    const submitted = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 2, 1);
+    try std.testing.expect(submitted.report.full_redraw);
+    try std.testing.expectEqual(@as(u16, 0), submitted.report.scroll_up_px);
+}
+
+test "renderer preserves partial scroll damage once retained target is valid" {
+    var renderer = Renderer.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
+    defer renderer.deinit();
+    try renderer.backend.bindTargetTexture(1);
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = runtime.syncGeometry(.{ .render_px = .{ .width = 16, .height = 32 }, .grid_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 } });
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 1);
+    defer snapshot.deinit(std.testing.allocator);
+    const cells = [_]Render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
+    const full_frame = frameData(&cells, 1, 2, true, 0, &[_]bool{}, &[_]u16{}, &[_]u16{});
+    _ = try runRendererFrame(&renderer, &runtime, &snapshot, full_frame, 1, 2, 1);
+
+    const dirty_rows = [_]bool{ false, true };
+    const dirty_start = [_]u16{ 0, 0 };
+    const dirty_end = [_]u16{ 0, 0 };
+    const scroll_frame = frameData(&cells, 1, 2, false, 1, &dirty_rows, &dirty_start, &dirty_end);
+    const submitted = try runRendererFrame(&renderer, &runtime, &snapshot, scroll_frame, 1, 2, 2);
+    try std.testing.expect(!submitted.report.full_redraw);
+    try std.testing.expectEqual(@as(u16, 16), submitted.report.scroll_up_px);
+}
+
 const RendererStress = struct {
     fn resize(renderer: *Renderer, failed: *std.atomic.Value(bool)) void {
         _ = failed;
@@ -189,3 +247,57 @@ const RendererStress = struct {
         }
     }
 };
+
+fn runRendererFrame(
+    renderer: *Renderer,
+    runtime: *Render.RenderRuntime,
+    snapshot: *Render.FrameSnapshot,
+    frame: Render.SurfaceFrameData,
+    cols: u16,
+    rows: u16,
+    seq: u64,
+) !Renderer.Submitted {
+    const source = Render.SourceView{
+        .snapshot = snapshot,
+        .cols = cols,
+        .rows = rows,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .hover_link_id = 0,
+        .hover_underline_style = .straight,
+        .snapshot_seq = seq,
+        .vt_epoch = seq,
+        .last_alt_screen = false,
+    };
+    _ = runtime.acceptSource(source);
+    if (try renderer.prepareFrame(std.testing.allocator, runtime, frame) != .prepared) return error.TestUnexpectedResult;
+    return switch (try renderer.submitFrame(runtime)) {
+        .rendered => |submitted| submitted,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn frameData(
+    cells: []const Render.SurfaceCell,
+    cols: u16,
+    rows: u16,
+    full: bool,
+    scroll_up_rows: u16,
+    dirty_rows: []const bool,
+    dirty_cols_start: []const u16,
+    dirty_cols_end: []const u16,
+) Render.SurfaceFrameData {
+    return .{
+        .viewport = .{ .cols = cols, .rows = rows },
+        .grid = .{ .cells = cells, .cols = cols, .rows = rows },
+        .cursor = .{},
+        .damage = .{
+            .full = full,
+            .scroll_up_rows = scroll_up_rows,
+            .dirty_rows = dirty_rows,
+            .dirty_cols_start = dirty_cols_start,
+            .dirty_cols_end = dirty_cols_end,
+        },
+    };
+}
