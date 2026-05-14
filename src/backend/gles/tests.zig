@@ -7,13 +7,13 @@ const Backend = backend_mod.Backend;
 
 const TestSpine = struct {
     backend: *Backend,
-    engine: render.Text.Engine.Engine,
+    preparer: render.Text.TextFramePreparer,
 
     fn init(backend: *Backend) !TestSpine {
         var ft_hb = backend.textProvider();
         return .{
             .backend = backend,
-            .engine = try render.Text.Engine.Engine.initWithProvider(
+            .preparer = try render.Text.TextFramePreparer.initWithProvider(
                 std.testing.allocator,
                 backend.capabilities().max_atlas_slots,
                 ft_hb.textProvider(),
@@ -22,24 +22,24 @@ const TestSpine = struct {
     }
 
     fn deinit(self: *TestSpine) void {
-        self.engine.deinit();
+        self.preparer.deinit();
         self.* = undefined;
     }
 
-    fn analyzeCells(
+    fn prepareCells(
         self: *TestSpine,
         _: std.mem.Allocator,
         cells: []const render.CellInput,
         grid: render.GridMetrics,
-        options: render.Text.Engine.AnalysisOptions,
-    ) !render.Text.Engine.OwnedPreparedTextFrame {
+        options: render.Text.PrepareOptions,
+    ) !render.Text.OwnedPreparedTextFrame {
         var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
-        return self.engine.analyzeCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
+        return self.preparer.prepareCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
     }
 
-    fn uploadPrepared(self: *TestSpine, prepared: *const render.Text.Engine.OwnedPreparedTextFrame) !u32 {
+    fn uploadPrepared(self: *TestSpine, prepared: *const render.Text.OwnedPreparedTextFrame) !u32 {
         const committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
-        markRenderedOutputs(&self.engine.atlas, prepared.raster_plan.outputs);
+        markRenderedOutputs(&self.preparer.atlas, prepared.raster_plan.outputs);
         return @intCast(committed);
     }
 
@@ -48,7 +48,7 @@ const TestSpine = struct {
     }
 };
 
-test "gles backend analyzes text cells through provider-backed engine" {
+test "gles backend prepares text cells through provider-backed preparer" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -61,7 +61,7 @@ test "gles backend analyzes text cells through provider-backed engine" {
     try std.testing.expect(provider.glyph_lookup.lookupGlyph(.{ .value = 1 }, 'A', .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }).glyph_id != 0);
 }
 
-test "gles backend uploads text analysis raster outputs into atlas memory" {
+test "gles backend uploads prepared text raster outputs into atlas memory" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -73,7 +73,7 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
     var spine = try TestSpine.init(&backend);
     defer spine.deinit();
-    var analysis = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
+    var analysis = try spine.prepareCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer analysis.deinit();
     const committed = try spine.uploadPrepared(&analysis);
     try std.testing.expectEqual(@as(u32, 1), committed);

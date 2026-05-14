@@ -421,7 +421,7 @@ pub const Render = struct {
         counters: ResolveCounters = .{},
         stage: ResolveStage = .style_policy,
     };
-    pub const TextEngineCounters = text_pipeline.TextEngineCounters;
+    pub const TextPrepareCounters = text_pipeline.TextPrepareCounters;
     pub const BuildRunsRequest = text_pipeline.BuildRunsRequest;
     pub const BuildRunsOutput = text_pipeline.BuildRunsOutput;
     pub const GroupGlyphsRequest = text_pipeline.GroupGlyphsRequest;

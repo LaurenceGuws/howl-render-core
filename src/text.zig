@@ -1,7 +1,8 @@
 
-/// Canonical public text support surface.
-/// Mature text-engine orchestration owner with options-bearing analyze entrypoints.
-pub const Engine = @import("text/engine.zig");
+pub const TextFramePreparer = @import("text/text_frame_preparer.zig").TextFramePreparer;
+pub const PrepareOptions = @import("text/text_frame_preparer.zig").PrepareOptions;
+pub const PrepareTimings = @import("text/text_frame_preparer.zig").PrepareTimings;
+pub const OwnedPreparedTextFrame = @import("text/text_frame_preparer.zig").OwnedPreparedTextFrame;
 /// Font session/group vocabulary.
 pub const FontSession = @import("text/font_session.zig");
 /// Backend-independent font resolver vocabulary.
@@ -40,7 +41,10 @@ pub const Fallback = @import("text/fallback.zig");
 pub const SpecialGlyphs = @import("text/special_glyphs.zig");
 
 test "text module surface imports" {
-    _ = Engine;
+    _ = TextFramePreparer;
+    _ = PrepareOptions;
+    _ = PrepareTimings;
+    _ = OwnedPreparedTextFrame;
     _ = FontSession;
     _ = FontResolver;
     _ = Cluster;

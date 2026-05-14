@@ -511,7 +511,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .primary_face = .{ .value = 1 },
         .metrics = cell_metrics,
     };
-    const analysis_options = render.Render.Text.Engine.AnalysisOptions{
+    const prepare_options = render.Render.Text.PrepareOptions{
         .scene = .{
             .damage = .{
                 .full = workload.damage.full,
@@ -523,23 +523,23 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         },
     };
     var counting = CountingAllocator.init(allocator);
-    var engine = render.Render.Text.Engine.Engine.init(counting.allocator());
-    defer engine.deinit();
+    var preparer = render.Render.Text.TextFramePreparer.init(counting.allocator());
+    defer preparer.deinit();
 
     counting.resetWindow();
     const cold_start = nowNs(io);
     var cold = switch (workload.input) {
-        .cells => |cells| try engine.analyzeCellsWithSessionOptions(
+        .cells => |cells| try preparer.prepareCellsWithSessionOptions(
             cells,
             workload.grid,
             session,
-            analysis_options,
+            prepare_options,
         ),
-        .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
+        .cell_texts => |cells| try preparer.prepareCellTextInputsWithSessionOptions(
             cells,
             workload.grid,
             session,
-            analysis_options,
+            prepare_options,
         ),
     };
     const cold_end = nowNs(io);
@@ -556,7 +556,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     const cold_fills = cold.scene.scene.background_draws.len + cold.scene.scene.decoration_draws.len + cold.scene.scene.cursor_draws.len;
     const cold_glyphs = cold.scene.scene.sprite_draws.len;
     const cold_uploads = cold.raster_plan.outputs.len;
-    for (cold.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
+    for (cold.raster_plan.outputs) |output| _ = preparer.atlas.markRendered(output.key);
     cold.deinit();
 
     var i: usize = 0;
@@ -564,17 +564,17 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         counting.resetWindow();
         const start = nowNs(io);
         var analysis = switch (workload.input) {
-            .cells => |cells| try engine.analyzeCellsWithSessionOptions(
+            .cells => |cells| try preparer.prepareCellsWithSessionOptions(
                 cells,
                 workload.grid,
                 session,
-                analysis_options,
+                prepare_options,
             ),
-            .cell_texts => |cells| try engine.analyzeCellTextInputsOptions(
+            .cell_texts => |cells| try preparer.prepareCellTextInputsWithSessionOptions(
                 cells,
                 workload.grid,
                 session,
-                analysis_options,
+                prepare_options,
             ),
         };
         const end = nowNs(io);
@@ -589,7 +589,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
             .group_us = analysis.timings.group_us,
             .scene_us = analysis.timings.scene_us,
         };
-        for (analysis.raster_plan.outputs) |output| _ = engine.atlas.markRendered(output.key);
+        for (analysis.raster_plan.outputs) |output| _ = preparer.atlas.markRendered(output.key);
         fill_values[i] = analysis.scene.scene.background_draws.len + analysis.scene.scene.decoration_draws.len + analysis.scene.scene.cursor_draws.len;
         glyph_values[i] = analysis.scene.scene.sprite_draws.len;
         upload_values[i] = analysis.raster_plan.outputs.len;

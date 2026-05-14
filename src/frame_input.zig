@@ -2,7 +2,7 @@
 const std = @import("std");
 const surface = @import("surface.zig");
 const types = @import("types.zig");
-const text_engine = @import("text/engine.zig");
+const text_frame_preparer = @import("text/text_frame_preparer.zig");
 const text_scene = @import("text/scene.zig");
 
 pub const FrameTheme = struct {
@@ -170,7 +170,7 @@ pub const OwnedFrameTextInput = struct {
     allocator: std.mem.Allocator,
     cells: []types.CellInput,
     grid: @import("text_contract.zig").GridMetrics,
-    options: text_engine.AnalysisOptions,
+    options: text_frame_preparer.PrepareOptions,
 
     pub fn deinit(self: *OwnedFrameTextInput) void {
         self.allocator.free(self.cells);

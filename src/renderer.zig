@@ -32,7 +32,7 @@ fn lockMutex(mutex: *ThreadMutex) void {
 pub const Renderer = struct {
     backend: backend_mod.Backend,
     mutex: ThreadMutex = .{},
-    text_engine: ?render.Text.Engine.Engine = null,
+    text_preparer: ?render.Text.TextFramePreparer = null,
     prepared: ?FrameRecord = null,
     resolve: render.ResolveObservability = .{},
     target_valid: bool = false,
@@ -74,7 +74,7 @@ pub const Renderer = struct {
     };
 
     pub const PreparedFrame = struct {
-        prepared: backend_mod.PreparedTextScene,
+        prepared: backend_mod.PreparedTextFrame,
 
         pub fn deinit(self: *PreparedFrame) void {
             self.prepared.deinit();
@@ -213,9 +213,9 @@ pub const Renderer = struct {
         defer self.mutex.unlock();
         if (self.prepared) |*prepared| prepared.deinit();
         self.prepared = null;
-        if (self.text_engine) |*engine| {
-            engine.deinit();
-            self.text_engine = null;
+        if (self.text_preparer) |*preparer| {
+            preparer.deinit();
+            self.text_preparer = null;
         }
         self.backend.deinit();
     }
@@ -273,13 +273,13 @@ pub const Renderer = struct {
         var input = try frame_input.vtStateToTextSceneInput(allocator, state);
         defer input.deinit();
         if (!self.target_valid) {
-            if (self.text_engine) |*engine| engine.clearAtlas();
+            if (self.text_preparer) |*preparer| preparer.clearAtlas();
             input.options.scene.damage.full = true;
             input.options.scene.damage.scroll_up_rows = 0;
         }
         self.resolve = .{};
-        const engine = try self.ensureTextEngine(allocator);
-        var prepared = try engine.analyzeCellsWithSessionOptions(
+        const preparer = try self.ensureTextPreparer(allocator);
+        var prepared = try preparer.prepareCellsWithSessionOptions(
             input.cells,
             input.grid,
             self.backend.fontSession(&faces, &self.resolve),
@@ -287,7 +287,7 @@ pub const Renderer = struct {
         );
         errdefer prepared.deinit();
         const raster_uploads_committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
-        markRenderedOutputs(&self.text_engine.?.atlas, prepared.raster_plan.outputs);
+        markRenderedOutputs(&self.text_preparer.?.atlas, prepared.raster_plan.outputs);
         self.prepared = .{
             .render_seq = request.token.snapshot_seq,
             .render_dirty_epoch = request.token.dirty_epoch,
@@ -361,7 +361,7 @@ pub const Renderer = struct {
         self.target_valid = false;
         if (self.prepared) |*prepared| prepared.deinit();
         self.prepared = null;
-        if (self.text_engine) |*engine| engine.clearAtlas();
+        if (self.text_preparer) |*preparer| preparer.clearAtlas();
     }
 
     fn monotonicNs() u64 {
@@ -374,19 +374,19 @@ pub const Renderer = struct {
         return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);
     }
 
-    fn ensureTextEngine(self: *Renderer, allocator: std.mem.Allocator) !*render.Text.Engine.Engine {
-        if (self.text_engine == null) {
+    fn ensureTextPreparer(self: *Renderer, allocator: std.mem.Allocator) !*render.Text.TextFramePreparer {
+        if (self.text_preparer == null) {
             var ft_hb = self.backend.textProvider();
-            self.text_engine = try render.Text.Engine.Engine.initWithProvider(
+            self.text_preparer = try render.Text.TextFramePreparer.initWithProvider(
                 allocator,
                 self.backend.capabilities().max_atlas_slots,
                 ft_hb.textProvider(),
             );
         }
-        return &self.text_engine.?;
+        return &self.text_preparer.?;
     }
 
-    fn prepareMetrics(timings: render.Text.Engine.PrepareTimings) render.PrepareMetrics {
+    fn prepareMetrics(timings: render.Text.PrepareTimings) render.PrepareMetrics {
         const total = timings.input_us + timings.sparse_us + timings.clusters_us + timings.resolve_us + timings.shape_us + timings.group_us + timings.scene_us + timings.raster_us + timings.atlas_us;
         return .{
             .us = total,

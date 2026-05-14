@@ -53,7 +53,7 @@ pub const ResolveCounters = struct {
     shape_cache_hits: u64 = 0,
 };
 
-pub const TextEngineCounters = struct {
+pub const TextPrepareCounters = struct {
     cell_texts: u64 = 0,
     clusters: u64 = 0,
     resolved_runs: u64 = 0,
