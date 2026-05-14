@@ -272,6 +272,52 @@ pub fn providerGlyphAdvance(self: anytype, face_id: render.FontFaceId, glyph_id:
     return glyphAdvanceFromFace(self, shaped_face.face, glyph_id, cell_metrics);
 }
 
+pub fn rasterizeFromFont(self: anytype, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
+    if (!ensureFont(self)) return null;
+    lockFt(self);
+    defer unlockFt(self);
+    if (self.ft_face) |face| {
+        if (rasterizeGlyphFromFace(self, dst, self.hb_font, face, codepoint, primary_face_id, gw, gh)) |key| {
+            self.resolve_stage = .loaded_exact_match;
+            if (self.active_resolve) |obs| obs.stage = .loaded_exact_match;
+            return key;
+        }
+    }
+
+    const lib = self.ft_lib orelse return null;
+    var i: u8 = 0;
+    while (i < self.fallback_font_paths_len) : (i += 1) {
+        const font_path = self.fallback_font_paths[i] orelse continue;
+        var face: FtFace = undefined;
+        if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
+        defer _ = c.FT_Done_Face(face);
+
+        const fallback_hb = c_api.createHbFont(face);
+        defer c_api.destroyHbFont(fallback_hb);
+
+        const face_id = fallbackFaceId(i);
+        if (rasterizeGlyphFromFace(self, dst, fallback_hb, face, codepoint, face_id, gw, gh)) |key| {
+            self.resolve_stage = .discovery_fallback;
+            if (self.active_resolve) |obs| {
+                obs.stage = .discovery_fallback;
+                obs.counters.fallback_hits += 1;
+            }
+            self.resolve_counters.fallback_hits += 1;
+            return key;
+        }
+    }
+
+    self.resolve_stage = .missing_glyph;
+    if (self.active_resolve) |obs| {
+        obs.stage = .missing_glyph;
+        obs.counters.fallback_misses += 1;
+        obs.counters.missing_glyphs += 1;
+    }
+    self.resolve_counters.fallback_misses += 1;
+    self.resolve_counters.missing_glyphs += 1;
+    return null;
+}
+
 pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
     const backend: *Backend = @ptrCast(@alignCast(ctx));
     const key = shared_text_cache.GlyphCellKey{
@@ -479,6 +525,46 @@ fn ensureFreeTypeLibraryLocked(self: anytype) bool {
     return true;
 }
 
+fn rasterizeGlyphFromFace(self: anytype, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, face_id: u32, gw: u16, gh: u16) ?ResolvedGlyphKey {
+    if (!setFacePixelHeight(self, face)) return null;
+    const glyph_id = shapeGlyphId(hb_font, face, codepoint);
+    if (glyph_id == 0) return null;
+    if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return null;
+    const glyph = face.*.glyph;
+    if (glyph == null) return null;
+    const bitmap = glyph.*.bitmap;
+    if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return null;
+    const bw: u16 = @intCast(bitmap.width);
+    const bh: u16 = @intCast(bitmap.rows);
+    const pitch_abs: u16 = @intCast(@abs(bitmap.pitch));
+    const pitch_is_negative = bitmap.pitch < 0;
+    const placement = render.Text.Metrics.bitmapPlacement(
+        .{ .cell_w_px = gw, .cell_h_px = gh, .baseline_px = @intCast(computeBaselineFromFace(face, gh)) },
+        faceMetricsInput(face, 1),
+        glyph.*.bitmap_left,
+        glyph.*.bitmap_top,
+        @intCast(bitmap.width),
+        @intCast(bitmap.rows),
+    );
+
+    for (0..bh) |yy| {
+        for (0..bw) |xx| {
+            const dx_i = placement.x_px + @as(i32, @intCast(xx));
+            const dy_i = placement.y_px + @as(i32, @intCast(yy));
+            if (dx_i < 0 or dy_i < 0) continue;
+            const dx: u16 = @intCast(dx_i);
+            const dy: u16 = @intCast(dy_i);
+            if (dx >= gw or dy >= gh) continue;
+            const src_y: u16 = if (pitch_is_negative) (bh - 1 - yy) else yy;
+            const src_idx = @as(usize, src_y) * @as(usize, pitch_abs) + xx;
+            dst[rasterPixelOffset(gw, dx, dy)] = bitmap.buffer[src_idx];
+        }
+    }
+    self.resolve_counters.shaped_clusters += 1;
+    if (self.active_resolve) |obs| obs.counters.shaped_clusters += 1;
+    return .{ .codepoint = codepoint, .face_id = face_id, .glyph_id = glyph_id };
+}
+
 fn fallbackProviderShapeRun(
     backend: anytype,
     allocator: std.mem.Allocator,
@@ -573,11 +659,11 @@ fn rasterizeProviderGlyphFromFace(_: anytype, dst: []u8, width: u16, height: u16
     if (glyph == null) return false;
     const bitmap = glyph.*.bitmap;
     if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return false;
-    const bw: usize = @intCast(bitmap.width);
-    const bh: usize = @intCast(bitmap.rows);
+    const bw: u16 = @intCast(bitmap.width);
+    const bh: u16 = @intCast(bitmap.rows);
     const visual_w = bitmapVisualWidth(bitmap.pixel_mode, bw);
     const visual_h = bitmapVisualHeight(bitmap.pixel_mode, bh);
-    const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
+    const pitch_abs: u16 = @intCast(@abs(bitmap.pitch));
     const pitch_is_negative = bitmap.pitch < 0;
     const baseline: i32 = if (baseline_px > 0) baseline_px else computeBaselineFromFace(face, height);
     const origin = cellBitmapOrigin(width, baseline, glyph.*.bitmap_left, glyph.*.bitmap_top, @intCast(visual_w), x_origin_px, y_origin_px, glyph_index);
@@ -590,34 +676,34 @@ fn rasterizeProviderGlyphFromFace(_: anytype, dst: []u8, width: u16, height: u16
             const dx: u16 = @intCast(dx_i);
             const dy: u16 = @intCast(dy_i);
             if (dx >= width or dy >= height) continue;
-            dst[rasterPixelOffset(width, dx, dy)] = bitmapAlpha(bitmap.buffer[0 .. pitch_abs * bh], bitmap.pixel_mode, pitch_abs, pitch_is_negative, bw, bh, xx, yy);
+            dst[rasterPixelOffset(width, dx, dy)] = bitmapAlpha(bitmap.buffer[0 .. @as(usize, pitch_abs) * @as(usize, bh)], bitmap.pixel_mode, pitch_abs, pitch_is_negative, bw, bh, xx, yy);
         }
     }
     return true;
 }
 
-fn bitmapVisualWidth(pixel_mode: anytype, bitmap_width: usize) usize {
+fn bitmapVisualWidth(pixel_mode: anytype, bitmap_width: u16) u16 {
     return switch (pixelModeValue(pixel_mode)) {
         5 => @max(bitmap_width / 3, 1),
         else => bitmap_width,
     };
 }
 
-fn bitmapVisualHeight(pixel_mode: anytype, bitmap_height: usize) usize {
+fn bitmapVisualHeight(pixel_mode: anytype, bitmap_height: u16) u16 {
     return switch (pixelModeValue(pixel_mode)) {
         6 => @max(bitmap_height / 3, 1),
         else => bitmap_height,
     };
 }
 
-fn bitmapAlpha(buffer: []const u8, pixel_mode: anytype, pitch_abs: usize, pitch_is_negative: bool, bitmap_width: usize, bitmap_height: usize, x: usize, y: usize) u8 {
+fn bitmapAlpha(buffer: []const u8, pixel_mode: anytype, pitch_abs: u16, pitch_is_negative: bool, bitmap_width: u16, bitmap_height: u16, x: u16, y: u16) u8 {
     _ = bitmap_width;
     const src_y = switch (pixelModeValue(pixel_mode)) {
         6 => @min(y * 3, bitmap_height - 1),
         else => y,
     };
     const row_y = if (pitch_is_negative) bitmap_height - 1 - src_y else src_y;
-    const row = buffer[row_y * pitch_abs ..][0..pitch_abs];
+    const row = buffer[@as(usize, row_y) * @as(usize, pitch_abs) ..][0..pitch_abs];
     return switch (pixelModeValue(pixel_mode)) {
         1 => if ((row[x / 8] & (@as(u8, 0x80) >> @intCast(x & 7))) != 0) 255 else 0,
         2 => row[x],
