@@ -31,7 +31,11 @@ Target outcome:
   - ABI-handle wrapper storage moved to `src/ffi.zig`
   - `src/render.zig` no longer carries non-render source metadata fields
   - `src/renderer.zig` no longer carries FFI-only owner state or stale observability passthroughs
-- remaining active scope is Checkpoint 5 host proof only
+- accepted host proof already landed:
+  - `howl-linux-host` builds on the cleaned render ABI path
+  - `howl-linux-host` runs on the owned render ABI path
+  - no stale host assumption forced an ABI reopen or repo-local cleanup rollback
+- render ABI sprint is closed
 
 ## Baseline
 
