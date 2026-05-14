@@ -22,6 +22,54 @@ Target outcome:
 
 The render ABI sprint is already closed. This sprint is about architecture, not ABI shape.
 
+## Closure Status
+
+This architecture sprint is closed.
+
+Closed result:
+
+- `Renderer` owns prepare/submit sequencing end to end
+- `RenderRuntime` owns retained publication and queue transitions only
+- GL and GLES backend roots expose only the reduced leaf contract
+- backend tests prove backend leaf behavior only
+- `src/test/runtime_proof.zig` proves renderer/runtime orchestration, retained-target consequences,
+  and queue-transition behavior
+- parity is closed on outcome under the explicit parity definition in this document, not on matching
+  old backend internals
+
+Closure proof commands:
+
+- `git diff --check`
+- `zig build test`
+- `zig build test:render`
+- `zig build test:runtime-proof`
+- `zig build render-benchmark`
+- `nu "./style.nu" --touched-files --json`
+- `nu "./style.nu" --failures --json`
+
+## Retrospective
+
+Good:
+
+- the sprint deleted the largest owner lie instead of preserving it behind wrappers
+- `Renderer` now owns staged prepare/submit sequencing in one visible control spine
+- GL and GLES backend roots now read like leaf wrappers instead of partial renderers
+- proof ownership is sharper: backend suites prove leaf work, runtime proof proves orchestration
+
+Bad:
+
+- the sprint closed architecture truth before closing the broader style hotspot debt in the text spine
+- closure proof shows owner truth and seam truth, not TigerBeetle-grade simplicity yet
+- some root and sprint docs lagged behind accepted code for too long and had to be corrected late
+
+Operational lessons learned:
+
+- lock the owner contract before touching code or the diff will drift into negotiation with old shapes
+- accept checkpoints only from a clean tree or handoff quality drops fast
+- move tests with the owner boundary as soon as the code boundary moves; do not leave proof behind
+- parity should close on outcome and owner truth, not on preserving matching internals
+- after the large owner lie is removed, the next bottleneck is usually oversized control flow, not another boundary rewrite
+
 ## Operating Model
 
 This document is the control plan for the render rewrite.
@@ -70,9 +118,9 @@ If a proposed change preserves the current backwards contract shape for comfort,
 
 If a proposed change keeps a slow or owner-wrong path alive "until later", reject it.
 
-## Current Inversion
+## Historical Inversion
 
-Today the render stack still works backwards in these ways:
+At sprint start the render stack still worked backwards in these ways:
 
 - `src/renderer.zig` delegates top-level staged work into backend roots through:
   - `prepareFrame(...)`
@@ -86,7 +134,7 @@ Today the render stack still works backwards in these ways:
 - renderer still reads backend-owned observability like:
   - `resolveCounters()`
   - `surfaceHandle()`
-- Checkpoint 1 fixed the docs, but the code still carries this staged backend contract shape
+- the early code still carried this staged backend contract shape
 
 ## Correct Owner Model
 
@@ -122,6 +170,9 @@ Today the render stack still works backwards in these ways:
 ## Milestone Map
 
 The sprint is split into milestones so planning, execution, and review stay local and exact.
+
+This milestone map is now historical execution scaffolding. Active follow-up work should use the
+current workspace sprint doc and a fresh checkpoint packet instead of reopening this plan in place.
 
 ### Milestone 1
 
@@ -205,6 +256,13 @@ Milestone closes when:
 - GL and GLES close on equivalent renderer-owned sequencing
 - host proof closes on the owned ABI path
 - final docs describe the surviving contract and deleted surfaces without ambiguity
+
+Closed result:
+
+- repo proof closes on the reduced renderer/backend architecture
+- backend-vs-renderer proof split is explicit in `design.md`
+- benchmark/proof surface naming remains owner-true
+- sprint docs now record the closed architecture result instead of a pending rewrite
 
 ## Checkpoint Packet
 
@@ -758,6 +816,8 @@ Checkpoint 4C closes only when:
 
 ### Checkpoint 5A
 
+Closed. Retained below as the historical execution contract.
+
 Milestone: 4
 
 Theme: repo proof and parity proof.
@@ -784,6 +844,8 @@ Checkpoint 5A closes only when:
 - parity proof is explicit, not implied
 
 ### Checkpoint 5B
+
+Closed. Retained below as the historical execution contract.
 
 Milestone: 4
 

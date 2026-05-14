@@ -28,7 +28,7 @@ It turns render-facing terminal state into frame inputs, retained publication st
   - non-render metadata no longer survives in `Render.SourceView`
   - stale repo-local observability passthroughs are removed
   - Linux host builds and runs on the cleaned render ABI path
-- This checkpoint does not change the shipped ABI. `include/howl_render.h` and `howl_render_*` remain the only public surface.
+- The shipped ABI remains `include/howl_render.h` plus `howl_render_*` only.
 
 ```mermaid
 classDiagram
@@ -237,8 +237,10 @@ sequenceDiagram
 - `zig build test:render` proves the pure render contract surface.
 - `zig build test:unit` proves the integrated module surface, including text and backend behavior.
 - `zig build test:runtime-proof` proves the retained runtime and staged renderer owner chain directly through `src/test/runtime_proof.zig`.
+  It owns proof for prepare/submit orchestration, retained-target consequences, queue transitions,
+  and renderer-owned atlas reuse across frames.
 - backend test suites prove backend leaf behavior only: provider glue, upload/draw leaves, atlas/storage
-  mutation, and backend-local geometry mutation.
+  mutation, draw report shape, and backend-local geometry mutation.
 - runtime proof is no longer hidden behind the package-root unit test surface.
 - `zig build render-benchmark` runs the synthetic text-spine benchmark surface in `src/test/render_benchmark.zig`.
 - Benchmark output names describe direct-normal and complex-path behavior; they should not use stale wrapper-era surface names.
