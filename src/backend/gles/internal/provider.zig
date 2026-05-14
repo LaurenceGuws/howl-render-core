@@ -495,17 +495,6 @@ pub fn ensureFallbackFace(self: anytype, fallback_index: u32) ?FtFace {
     return face;
 }
 
-pub fn resolveGlyphKey(self: anytype, codepoint: u21) ?ResolvedGlyphKey {
-    if (!ensureFont(self)) return null;
-    lockFt(self);
-    defer unlockFt(self);
-    const face = self.ft_face orelse return null;
-    if (!setFacePixelHeight(self, face)) return null;
-    const glyph_id = shapeGlyphId(self.hb_font, face, codepoint);
-    if (glyph_id == 0) return null;
-    return .{ .codepoint = codepoint, .face_id = primary_face_id, .glyph_id = glyph_id };
-}
-
 pub fn deriveCellMetrics(self: anytype) render.CellMetrics {
     if (ensurePrimaryFont(self)) {
         lockFt(self);

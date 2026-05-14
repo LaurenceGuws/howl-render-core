@@ -15,11 +15,9 @@ pub fn uploadTextSceneRaster(
     for (outputs) |output| {
         const slot = findSceneSpriteSlot(scene, output.key) orelse continue;
         if (textSceneSlotCached(self, slot, output)) {
-            markOutputRendered(self, output);
             continue;
         }
         copyRasterOutputToAtlas(self, slot, output);
-        markOutputRendered(self, output);
         committed += 1;
     }
     return committed;
@@ -285,10 +283,6 @@ fn markSlotAlpha(self: anytype, slot: u32, pixels: []const u8, gw: u16, gh: u16)
         }
     }
     self.atlas_slot_has_alpha[slot_idx] = false;
-}
-
-fn markOutputRendered(self: anytype, output: render.Text.Rasterizer.RasterSpriteOutput) void {
-    if (self.text_engine) |*engine| _ = engine.atlas.markRendered(output.key);
 }
 
 fn findSceneSpriteSlot(scene: render.TextScene, key: render.SpriteKey) ?u32 {

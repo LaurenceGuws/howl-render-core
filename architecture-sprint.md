@@ -715,6 +715,8 @@ Must do:
 - keep GL/GLES parity on the reduced contract
 - move or rewrite backend-root tests that currently prove the wrong owner shape
 - delete convenience passthrough geometry surfaces from backend roots
+- remove backend-owned text-engine support paths that only existed to mirror renderer upload/atlas
+  consequences
 
 Checkpoint 4B closes only when:
 
@@ -722,6 +724,7 @@ Checkpoint 4B closes only when:
 - backend roots no longer export one-shot render-policy surfaces
 - backend roots no longer export backend-local `deriveGrid*` convenience surfaces
 - remaining backend-root public functions all fit the target backend contract above
+- backend upload internals no longer hide renderer-owned atlas-state consequences
 - GL and GLES still close on equivalent renderer-owned sequencing
 
 ### Checkpoint 4C

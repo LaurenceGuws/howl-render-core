@@ -124,7 +124,8 @@ sequenceDiagram
 - `Renderer` owns backend selection, backend-facing prepare/submit behavior, and prepared-frame lifetime.
 - `Renderer` repo-local surface should expose only owner-true backend behavior. ABI handle boxes and font-path retention live in `src/ffi.zig`.
 - backend root files are leaf wrappers only. They may translate renderer-owned requests into backend-local storage mutation, GPU upload steps, and draw submission steps, but they do not own render-policy control flow.
-- backend internal atlas files own backend-local atlas storage and GPU upload mutation only.
+- backend internal atlas files own backend-local atlas storage and GPU upload mutation only. They do
+  not own renderer text-engine atlas-state consequences after upload.
 - backend internal provider files own FT/HB callback translation and backend-local cache wiring only.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.
 - text-lane contracts should be read through `Render.Text.Lane` and adjacent `Render.Text.Cluster` input types, not through duplicate `Render` aliases.
@@ -193,7 +194,8 @@ sequenceDiagram
     3. `Renderer` performs text analysis and raster planning
     4. `Renderer` records prepared-frame observability
     5. `Renderer` calls the backend upload leaf primitive
-    6. `Renderer` publishes prepared-frame metadata through `RenderRuntime.publishPrepared(...)`
+    6. `Renderer` records uploaded sprite residency on its own text-engine atlas state
+    7. `Renderer` publishes prepared-frame metadata through `RenderRuntime.publishPrepared(...)`
   - submit path:
     1. `Renderer` calls `RenderRuntime.submit()`
     2. `Renderer` stops on `.idle`

@@ -32,21 +32,13 @@ const TestSpine = struct {
 
     fn analyzeCells(
         self: *TestSpine,
-        allocator: std.mem.Allocator,
+        _: std.mem.Allocator,
         cells: []const render.CellInput,
         grid: render.GridMetrics,
         options: render.Text.Engine.AnalysisOptions,
     ) !render.Text.Engine.OwnedTextAnalysis {
-        if (self.backend.text_engine == null) {
-            var ft_hb = self.backend.textProvider();
-            self.backend.text_engine = try render.Text.Engine.Engine.initWithProvider(
-                allocator,
-                self.backend.capabilities().max_atlas_slots,
-                ft_hb.textProvider(),
-            );
-        }
         var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
-        return self.backend.text_engine.?.analyzeCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
+        return self.engine.analyzeCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
     }
 
     fn prepareState(
@@ -70,11 +62,21 @@ const TestSpine = struct {
     }
 
     fn submitPrepared(self: *TestSpine, prepared: *render.Text.Engine.OwnedTextAnalysis) !backend_mod.TextSceneRenderReport {
-        const committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
+        const committed = try self.uploadPrepared(prepared);
         var report = try self.backend.drawPreparedScene(prepared.scene.scene);
         report.raster_uploads_committed = committed;
         self.target_valid = report.texture_id != 0;
         return report;
+    }
+
+    fn uploadPrepared(self: *TestSpine, prepared: *const render.Text.Engine.OwnedTextAnalysis) !u32 {
+        const committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
+        markRenderedOutputs(&self.engine.atlas, prepared.raster_plan.outputs);
+        return @intCast(committed);
+    }
+
+    fn markRenderedOutputs(atlas: *render.Text.AtlasCache.OwnedAtlasCache, outputs: []const render.Text.Rasterizer.RasterSpriteOutput) void {
+        for (outputs) |output| _ = atlas.markRendered(output.key);
     }
 };
 
@@ -114,10 +116,10 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     defer spine.deinit();
     var analysis = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer analysis.deinit();
-    const committed = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
-    try std.testing.expectEqual(@as(usize, 1), committed);
-    const committed_scene = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
-    try std.testing.expectEqual(@as(usize, 0), committed_scene);
+    const committed = try spine.uploadPrepared(&analysis);
+    try std.testing.expectEqual(@as(u32, 1), committed);
+    const committed_scene = try spine.uploadPrepared(&analysis);
+    try std.testing.expectEqual(@as(u32, 0), committed_scene);
     const slot = analysis.scene.scene.sprite_draws[0].sprite.slot;
     const slot_idx = @as(usize, slot);
     try std.testing.expect(backend.atlas_pixels.len > 0);
@@ -141,7 +143,7 @@ test "gles backend text analysis reuses retained scene atlas for unchanged glyph
     var first = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
-    _ = try backend.uploadTextSceneRaster(first.scene.scene, first.raster_plan.outputs);
+    _ = try spine.uploadPrepared(&first);
 
     var second = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer second.deinit();

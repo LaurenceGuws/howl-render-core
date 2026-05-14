@@ -43,10 +43,6 @@ fn fallbackFaceId(index: u32) u32 {
     return index + 2;
 }
 
-fn missingGlyphKey(codepoint: u21) ResolvedGlyphKey {
-    return .{ .codepoint = codepoint, .face_id = 0, .glyph_id = codepoint };
-}
-
 fn monotonicNs() u64 {
     var ts: time_c.struct_timespec = undefined;
     if (time_c.clock_gettime(time_c.CLOCK_MONOTONIC, &ts) != 0) return 0;
@@ -162,7 +158,6 @@ pub const Backend = struct {
     resolve_counters: render.ResolveCounters = .{},
     resolve_stage: render.ResolveStage = .style_policy,
     active_resolve: ?*render.ResolveObservability = null,
-    text_engine: ?render.Text.Engine.Engine = null,
     face_text_cache: text_cache.FaceTextCache,
     shape_run_cache: text_cache.ShapeRunCache,
     glyph_cell_cache: text_cache.GlyphCellCache,
@@ -179,10 +174,6 @@ pub const Backend = struct {
 
     /// Release backend resources and prevent further rendering.
     pub fn deinit(self: *Backend) void {
-        if (self.text_engine) |*engine| {
-            engine.deinit();
-            self.text_engine = null;
-        }
         self.deinitAtlasStorage();
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
@@ -457,15 +448,6 @@ pub const Backend = struct {
 
     fn clearAtlasCache(self: *Backend) void {
         atlas_mod.clearAtlasCache(self);
-        if (self.text_engine) |*engine| engine.clearAtlas();
-    }
-
-    fn ensureTextEngine(self: *Backend, allocator: std.mem.Allocator) !*render.Text.Engine.Engine {
-        if (self.text_engine == null) {
-            var ft_hb = self.textProvider();
-            self.text_engine = try render.Text.Engine.Engine.initWithProvider(allocator, self.capabilities().max_atlas_slots, ft_hb.textProvider());
-        }
-        return &self.text_engine.?;
     }
 
     fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
@@ -512,10 +494,6 @@ pub const Backend = struct {
         self.resolve_counters.fallback_misses += 1;
         self.resolve_counters.missing_glyphs += 1;
         return null;
-    }
-
-    fn resolveGlyphKey(self: *Backend, codepoint: u21) ?ResolvedGlyphKey {
-        return provider_mod.resolveGlyphKey(self, codepoint);
     }
 
     fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, face_id: u32, gw: u16, gh: u16) ?ResolvedGlyphKey {
@@ -692,31 +670,6 @@ fn asciiCellAdvance(face: FtFace, fallback_advance: i32) i32 {
 
 fn hasCurrentContext() bool {
     return c.glGetString(c.GL_VERSION) != null;
-}
-
-fn mapTextSceneRenderError(err: anyerror) BackendError {
-    return switch (err) {
-        error.BackendClosed => error.BackendClosed,
-        error.NoContext => error.NoContext,
-        error.TargetTextureUnset => error.TargetTextureUnset,
-        error.FramebufferIncomplete => error.FramebufferIncomplete,
-        error.OutOfMemory => error.OutOfMemory,
-        else => error.OutOfMemory,
-    };
-}
-
-fn renderReportFromTextScene(report: TextSceneRenderReport) RenderReport {
-    return .{
-        .stats = .{
-            .fills = report.clear_draws + report.background_draws + report.decoration_draws + report.cursor_draws,
-            .glyphs = report.sprite_draws,
-            .atlas_uploads = report.raster_uploads_committed,
-            .has_cursor = report.cursor_draws > 0,
-            .full_redraw = true,
-        },
-        .pass_index = report.pass_index,
-        .atlas_uploads_committed = report.raster_uploads_committed,
-    };
 }
 
 fn drawTextScene(backend: *const Backend, surface: render.PixelSize, scene: render.TextScene) void {

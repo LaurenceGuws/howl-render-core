@@ -290,6 +290,7 @@ pub const Renderer = struct {
         );
         errdefer prepared.deinit();
         const raster_uploads_committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
+        markRenderedOutputs(&self.text_engine.?.atlas, prepared.raster_plan.outputs);
         self.prepared = .{
             .render_seq = request.token.snapshot_seq,
             .render_dirty_epoch = request.token.dirty_epoch,
@@ -409,6 +410,10 @@ pub const Renderer = struct {
         return token.snapshot_seq == prepared.render_seq and
             token.dirty_epoch == prepared.render_dirty_epoch and
             token.geometry_epoch == prepared.geometry_epoch;
+    }
+
+    fn markRenderedOutputs(atlas: *render.Text.AtlasCache.OwnedAtlasCache, outputs: []const render.Text.Rasterizer.RasterSpriteOutput) void {
+        for (outputs) |output| _ = atlas.markRendered(output.key);
     }
 
 };
