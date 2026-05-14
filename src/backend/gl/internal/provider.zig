@@ -170,29 +170,38 @@ fn shapeRunViaProviderOrFallback(
         return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
     }
 
+    return try shapeRunViaProvider(
+        backend,
+        allocator,
+        run,
+        clusters,
+        cell_metrics,
+        buffer,
+        input.cluster_map.items,
+    ) orelse fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
+}
+
+fn shapeRunViaProvider(
+    backend: anytype,
+    allocator: std.mem.Allocator,
+    run: render.ResolvedRun,
+    clusters: []const render.CellCluster,
+    cell_metrics: render.CellMetrics,
+    buffer: ?*c.hb_buffer_t,
+    cluster_map: []const u32,
+) anyerror!?render.Text.ShapeRun.OwnedShapedRun {
     lockFt(backend);
     defer unlockFt(backend);
-    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse {
-        unlockFt(backend);
-        defer lockFt(backend);
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
-    };
-    defer releaseShapingFace(shaped_face);
-    const hb_font = shaped_face.hb_font orelse {
-        unlockFt(backend);
-        defer lockFt(backend);
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
-    };
+    const shaped_face = acquireShapingFaceLocked(backend, run.run.font.face_id) orelse return null;
+    const hb_font = shaped_face.hb_font orelse return null;
     c.hb_shape(hb_font, buffer, null, 0);
 
     var glyph_count: c_uint = 0;
     const infos = c.hb_buffer_get_glyph_infos(buffer, &glyph_count);
     const positions = c.hb_buffer_get_glyph_positions(buffer, &glyph_count);
-    if (infos == null or positions == null or glyph_count == 0) {
-        return fallbackProviderShapeRun(backend, allocator, run, clusters, cell_metrics, window);
-    }
+    if (infos == null or positions == null or glyph_count == 0) return null;
 
-    return buildProviderShapedRun(allocator, run, clusters, cell_metrics, shaped_face.face, infos, positions, glyph_count, input.cluster_map.items);
+    return buildProviderShapedRun(allocator, run, clusters, cell_metrics, shaped_face.face, infos, positions, glyph_count, cluster_map);
 }
 
 fn shapePlainAsciiRun(
@@ -272,20 +281,16 @@ pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: ren
         .cell_h_px = cell_metrics.cell_h_px,
         .baseline_px = cell_metrics.baseline_px,
     };
-    const entry = backend.glyph_cell_cache.map.getOrPut(key) catch return .{
-        .glyph_id = providerGlyphId(backend, face_id, codepoint),
-        .advance_px = providerGlyphAdvance(backend, face_id, providerGlyphId(backend, face_id, codepoint), cell_metrics),
-    };
-    if (!entry.found_existing) {
-        const glyph_id = providerGlyphId(backend, face_id, codepoint);
-        entry.value_ptr.* = .{
-            .glyph_id = glyph_id,
-            .advance_px = providerGlyphAdvance(backend, face_id, glyph_id, cell_metrics),
-        };
-    }
+    const entry = backend.glyph_cell_cache.map.getOrPut(key) catch return uncachedProviderLookupGlyph(backend, face_id, codepoint, cell_metrics);
+    if (!entry.found_existing) entry.value_ptr.* = uncachedProviderLookupGlyph(backend, face_id, codepoint, cell_metrics);
+    return entry.value_ptr.*;
+}
+
+fn uncachedProviderLookupGlyph(backend: anytype, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
+    const glyph_id = providerGlyphId(backend, face_id, codepoint);
     return .{
-        .glyph_id = entry.value_ptr.glyph_id,
-        .advance_px = entry.value_ptr.advance_px,
+        .glyph_id = glyph_id,
+        .advance_px = providerGlyphAdvance(backend, face_id, glyph_id, cell_metrics),
     };
 }
 
@@ -518,13 +523,6 @@ fn acquireShapingFaceLocked(self: anytype, face_id: render.FontFaceId) ?ShapingF
     const slot = fallbackSlot(self, fallback_index) orelse return null;
     const face = self.fallback_faces[slot] orelse return null;
     return .{ .face = face, .hb_font = self.fallback_hb_fonts[slot], .owns_face = false };
-}
-
-fn releaseShapingFace(shaped: ShapingFace) void {
-    if (shaped.owns_face) {
-        c_api.destroyHbFont(shaped.hb_font);
-        _ = c.FT_Done_Face(shaped.face);
-    }
 }
 
 fn textForCluster(text_cache: render.LineTextCache, cluster: render.CellCluster) render.CellText {
