@@ -215,21 +215,14 @@ pub const Engine = struct {
         var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, &raster_plan);
         errdefer merged_raster_plan.deinit();
 
-        self.allocator.free(scene.scene.clear_draws);
-        self.allocator.free(scene.scene.cursor_draws);
-        self.allocator.free(scene.scene.background_draws);
-        self.allocator.free(scene.scene.sprite_draws);
-        self.allocator.free(scene.scene.decoration_draws);
-        self.allocator.free(scene.scene.missing);
-        scene.scene.cells = owned_renderable.cells;
-        scene.scene.full_redraw = direct.damage.full;
-        scene.scene.scroll_up_px = direct.damage.scroll_up_px;
-        scene.scene.clear_draws = merged_clear_draws;
-        scene.scene.cursor_draws = merged_cursor_draws;
-        scene.scene.background_draws = merged_background_draws;
-        scene.scene.sprite_draws = merged_sprite_draws;
-        scene.scene.decoration_draws = merged_decoration_draws;
-        scene.scene.missing = merged_missing;
+        installMergedScene(&scene, owned_renderable.cells, direct.damage, .{
+            .clear_draws = merged_clear_draws,
+            .cursor_draws = merged_cursor_draws,
+            .background_draws = merged_background_draws,
+            .sprite_draws = merged_sprite_draws,
+            .decoration_draws = merged_decoration_draws,
+            .missing = merged_missing,
+        });
 
         final_lane_report.assertValid();
         var counters = pipeline.TextEngineCounters{
@@ -244,16 +237,7 @@ pub const Engine = struct {
             .missing_glyphs = scene.scene.missing.len,
         };
         for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
-        self.counters.cell_texts += counters.cell_texts;
-        self.counters.clusters += counters.clusters;
-        self.counters.resolved_runs += counters.resolved_runs;
-        self.counters.shaped_runs += counters.shaped_runs;
-        self.counters.shaped_glyphs += counters.shaped_glyphs;
-        self.counters.glyph_groups += counters.glyph_groups;
-        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
-        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
-        self.counters.rasterized_sprites += counters.rasterized_sprites;
-        self.counters.missing_glyphs += counters.missing_glyphs;
+        applyCounters(&self.counters, counters);
 
         return .{
             .text_cache = owned_text_cache,
@@ -279,48 +263,15 @@ pub const Engine = struct {
         direct: DirectNormalBuild,
         timings: PrepareTimings,
     ) OwnedTextAnalysis {
-        var final_lane_report = lane_report;
-        final_lane_report.assertValid();
-        const counters = pipeline.TextEngineCounters{
-            .cell_texts = final_lane_report.visible_cells,
-            .clusters = final_lane_report.normal_clusters,
-            .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
-            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
-            .rasterized_sprites = @intCast(direct.outputs.len),
-            .missing_glyphs = self.normal_missing.items.len,
-        };
-        self.counters.cell_texts += counters.cell_texts;
-        self.counters.clusters += counters.clusters;
-        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
-        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
-        self.counters.rasterized_sprites += counters.rasterized_sprites;
-        self.counters.missing_glyphs += counters.missing_glyphs;
-        return .{
-            .text_cache = .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
-            .renderable = .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
-            .clusters = .{ .allocator = self.allocator, .clusters = &.{}, .owned = false },
-            .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
-            .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
-            .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .scene = .{ .allocator = self.allocator, .scene = .{
-                .cells = self.normal_renderable.items,
-                .full_redraw = damage.full,
-                .scroll_up_px = damage.scroll_up_px,
-                .clear_draws = self.normal_clear_draws.items,
-                .background_draws = self.normal_background_draws.items,
-                .sprite_draws = self.normal_sprite_draws.items,
-                .decoration_draws = self.normal_decoration_draws.items,
-                .cursor_draws = self.normal_cursor_draws.items,
-                .raster_requests = &.{},
-                .missing = self.normal_missing.items,
-            }, .owned = false },
-            .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
-            .counters = counters,
-            .lane_report = final_lane_report,
-            .timings = timings,
-        };
+        return self.finishNormalOnlyAnalysis(
+            .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
+            .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
+            .{ .allocator = self.allocator, .clusters = &.{}, .owned = false },
+            damage,
+            direct,
+            lane_report,
+            timings,
+        );
     }
 
     fn finishPreparedDirectNormalAnalysis(
@@ -332,43 +283,33 @@ pub const Engine = struct {
         lane_report: text_lane.LaneReport,
         timings: PrepareTimings,
     ) OwnedTextAnalysis {
+        return self.finishNormalOnlyAnalysis(owned_text_cache, owned_renderable, clusters, direct.damage, direct, lane_report, timings);
+    }
+
+    fn finishNormalOnlyAnalysis(
+        self: *Engine,
+        text_cache: cluster.OwnedLineTextCache,
+        renderable: cluster.OwnedRenderableCells,
+        clusters: cluster.OwnedClusters,
+        damage: DirectDamage,
+        direct: DirectNormalBuild,
+        lane_report: text_lane.LaneReport,
+        timings: PrepareTimings,
+    ) OwnedTextAnalysis {
         var final_lane_report = lane_report;
         final_lane_report.assertValid();
-        const counters = pipeline.TextEngineCounters{
-            .cell_texts = final_lane_report.visible_cells,
-            .clusters = final_lane_report.normal_clusters,
-            .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
-            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
-            .rasterized_sprites = @intCast(direct.outputs.len),
-            .missing_glyphs = self.normal_missing.items.len,
-        };
-        self.counters.cell_texts += counters.cell_texts;
-        self.counters.clusters += counters.clusters;
-        self.counters.sprite_cache_hits += counters.sprite_cache_hits;
-        self.counters.sprite_cache_misses += counters.sprite_cache_misses;
-        self.counters.rasterized_sprites += counters.rasterized_sprites;
-        self.counters.missing_glyphs += counters.missing_glyphs;
+        const counters = directNormalCounters(self, final_lane_report, direct);
+        applyCounters(&self.counters, counters);
         return .{
-            .text_cache = owned_text_cache,
-            .renderable = owned_renderable,
+            .text_cache = text_cache,
+            .renderable = renderable,
             .clusters = clusters,
             .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
             .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
             .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
             .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
             .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .scene = .{ .allocator = self.allocator, .scene = .{
-                .cells = owned_renderable.cells,
-                .full_redraw = direct.damage.full,
-                .scroll_up_px = direct.damage.scroll_up_px,
-                .clear_draws = self.normal_clear_draws.items,
-                .background_draws = self.normal_background_draws.items,
-                .sprite_draws = self.normal_sprite_draws.items,
-                .decoration_draws = self.normal_decoration_draws.items,
-                .cursor_draws = self.normal_cursor_draws.items,
-                .raster_requests = &.{},
-                .missing = self.normal_missing.items,
-            }, .owned = false },
+            .scene = directScene(self.allocator, renderable.cells, damage, self),
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .counters = counters,
             .lane_report = final_lane_report,
@@ -428,6 +369,15 @@ pub const Engine = struct {
         return .{ .damage = damage, .lane_report = lane_report.*, .build = try finishDirectNormalScene(self, damage, lane_report) };
     }
 
+};
+
+const MergedSceneBuffers = struct {
+    clear_draws: []contract.TextClearDraw,
+    cursor_draws: []contract.TextCursorDraw,
+    background_draws: []contract.TextBackgroundDraw,
+    sprite_draws: []contract.TextSpriteDraw,
+    decoration_draws: []contract.TextDecorationDraw,
+    missing: []contract.MissingGlyph,
 };
 
 pub const OwnedTextAnalysis = struct {
@@ -508,6 +458,66 @@ fn directNormalSourceLen(source: DirectNormalSource) u32 {
         .inputs => |inputs| @intCast(inputs.len),
         .prepared => |prepared| @intCast(prepared.cells.len),
     };
+}
+
+fn applyCounters(total: *pipeline.TextEngineCounters, delta: pipeline.TextEngineCounters) void {
+    total.cell_texts += delta.cell_texts;
+    total.clusters += delta.clusters;
+    total.resolved_runs += delta.resolved_runs;
+    total.shaped_runs += delta.shaped_runs;
+    total.shaped_glyphs += delta.shaped_glyphs;
+    total.glyph_groups += delta.glyph_groups;
+    total.sprite_cache_hits += delta.sprite_cache_hits;
+    total.sprite_cache_misses += delta.sprite_cache_misses;
+    total.rasterized_sprites += delta.rasterized_sprites;
+    total.missing_glyphs += delta.missing_glyphs;
+}
+
+fn directNormalCounters(self: *Engine, lane_report: text_lane.LaneReport, direct: DirectNormalBuild) pipeline.TextEngineCounters {
+    return .{
+        .cell_texts = lane_report.visible_cells,
+        .clusters = lane_report.normal_clusters,
+        .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
+        .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
+        .rasterized_sprites = @intCast(direct.outputs.len),
+        .missing_glyphs = self.normal_missing.items.len,
+    };
+}
+
+fn directScene(allocator: std.mem.Allocator, cells: []const contract.RenderableCell, damage: DirectDamage, engine: *const Engine) scene_mod.OwnedTextScene {
+    return .{ .allocator = allocator, .scene = .{
+        .cells = cells,
+        .full_redraw = damage.full,
+        .scroll_up_px = damage.scroll_up_px,
+        .clear_draws = engine.normal_clear_draws.items,
+        .background_draws = engine.normal_background_draws.items,
+        .sprite_draws = engine.normal_sprite_draws.items,
+        .decoration_draws = engine.normal_decoration_draws.items,
+        .cursor_draws = engine.normal_cursor_draws.items,
+        .raster_requests = &.{},
+        .missing = engine.normal_missing.items,
+    }, .owned = false };
+}
+
+fn installMergedScene(scene: *scene_mod.OwnedTextScene, cells: []const contract.RenderableCell, damage: DirectDamage, merged: MergedSceneBuffers) void {
+    std.debug.assert(scene.owned);
+    std.debug.assert(scene.scene.raster_requests.len <= scene.scene.sprite_draws.len);
+    std.debug.assert(scene.scene.cells.len == 0 or scene.scene.cells.len <= cells.len);
+    scene.allocator.free(scene.scene.clear_draws);
+    scene.allocator.free(scene.scene.cursor_draws);
+    scene.allocator.free(scene.scene.background_draws);
+    scene.allocator.free(scene.scene.sprite_draws);
+    scene.allocator.free(scene.scene.decoration_draws);
+    scene.allocator.free(scene.scene.missing);
+    scene.scene.cells = cells;
+    scene.scene.full_redraw = damage.full;
+    scene.scene.scroll_up_px = damage.scroll_up_px;
+    scene.scene.clear_draws = merged.clear_draws;
+    scene.scene.cursor_draws = merged.cursor_draws;
+    scene.scene.background_draws = merged.background_draws;
+    scene.scene.sprite_draws = merged.sprite_draws;
+    scene.scene.decoration_draws = merged.decoration_draws;
+    scene.scene.missing = merged.missing;
 }
 
 fn directNormalSourceItem(source: DirectNormalSource, idx: u32) ?DirectNormalItem {
