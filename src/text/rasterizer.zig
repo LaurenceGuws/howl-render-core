@@ -112,7 +112,10 @@ pub fn appendPendingRequest(
     req: contract.SpriteRasterRequest,
 ) !void {
     if (!pending) return;
-    try appendUniqueRequest(allocator, requests, req);
+    std.debug.assert(req.width_px > 0);
+    std.debug.assert(req.height_px > 0);
+    if (hasRequestKey(requests.items, req.key)) return;
+    try requests.append(allocator, req);
 }
 
 test "raster output reports non-empty alpha bounds" {
@@ -223,15 +226,35 @@ fn generatedSpecialMetrics(width_px: u16, height_px: u16) contract.BoxDrawingRas
 }
 
 fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {
-    const handled = rasterizeGeneratedBoxAlpha(pixels, width, height, codepoint, box_drawing) or
-        rasterizeGeneratedPowerlineAlpha(pixels, width, height, codepoint, box_drawing) or
-        rasterizeGeneratedBlockAlpha(pixels, width, height, codepoint) or
-        rasterizeGeneratedSextantAlpha(pixels, width, height, codepoint) or
-        rasterizeGeneratedOctantAlpha(pixels, width, height, codepoint);
-    std.debug.assert(handled);
+    switch (generatedSpecialFamily(codepoint) orelse unreachable) {
+        .box => rasterizeGeneratedBoxAlpha(pixels, width, height, codepoint, box_drawing),
+        .powerline => rasterizeGeneratedPowerlineAlpha(pixels, width, height, codepoint, box_drawing),
+        .block => rasterizeGeneratedBlockAlpha(pixels, width, height, codepoint),
+        .sextant => rasterizeGeneratedSextantAlpha(pixels, width, height, codepoint),
+        .octant => rasterizeGeneratedOctantAlpha(pixels, width, height, codepoint),
+    }
 }
 
-fn rasterizeGeneratedBoxAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
+const GeneratedSpecialFamily = enum {
+    box,
+    powerline,
+    block,
+    sextant,
+    octant,
+};
+
+fn generatedSpecialFamily(codepoint: u32) ?GeneratedSpecialFamily {
+    return switch (codepoint) {
+        0x2500...0x257f => .box,
+        0xe0b0...0xe0bf => .powerline,
+        0x2580...0x259f, 0x2800...0x28ff => .block,
+        0x1fb00...0x1fb3b => .sextant,
+        0x1cd00...0x1cde5, 0x1fbe6, 0x1fbe7 => .octant,
+        else => null,
+    };
+}
+
+fn rasterizeGeneratedBoxAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {
     switch (codepoint) {
         0x2504 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 2),
         0x2505 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 2),
@@ -256,12 +279,11 @@ fn rasterizeGeneratedBoxAlpha(pixels: []u8, width: u16, height: u16, codepoint: 
         0x256e => rasterizeRoundedCorner(pixels, width, height, .top_right, box_drawing),
         0x256f => rasterizeRoundedCorner(pixels, width, height, .bottom_right, box_drawing),
         0x2570 => rasterizeRoundedCorner(pixels, width, height, .bottom_left, box_drawing),
-        else => return false,
+        else => unreachable,
     }
-    return true;
 }
 
-fn rasterizeGeneratedPowerlineAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
+fn rasterizeGeneratedPowerlineAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {
     switch (codepoint) {
         0xe0b0 => rasterizePowerlineTriangle(pixels, width, height, true, false),
         0xe0b2 => rasterizePowerlineTriangle(pixels, width, height, false, false),
@@ -277,24 +299,21 @@ fn rasterizeGeneratedPowerlineAlpha(pixels: []u8, width: u16, height: u16, codep
         0xe0bb, 0xe0bd => rasterizeCrossLine(pixels, width, height, false, box_drawing),
         0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
-        else => return false,
+        else => unreachable,
     }
-    return true;
 }
 
-fn rasterizeGeneratedBlockAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
+fn rasterizeGeneratedBlockAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) void {
     switch (codepoint) {
         0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
-        else => return false,
+        else => unreachable,
     }
-    return true;
 }
 
-fn rasterizeGeneratedSextantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
-    const sextant = generatedSextantPattern(codepoint) orelse return false;
+fn rasterizeGeneratedSextantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) void {
+    const sextant = generatedSextantPattern(codepoint) orelse unreachable;
     rasterizeSextantAlpha(pixels, width, height, sextant);
-    return true;
 }
 
 fn generatedSextantPattern(codepoint: u32) ?u8 {
@@ -306,10 +325,9 @@ fn generatedSextantPattern(codepoint: u32) ?u8 {
     };
 }
 
-fn rasterizeGeneratedOctantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
-    const octant = generatedOctantPattern(codepoint) orelse return false;
+fn rasterizeGeneratedOctantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) void {
+    const octant = generatedOctantPattern(codepoint) orelse unreachable;
     rasterizeOctantAlpha(pixels, width, height, octant);
-    return true;
 }
 
 fn generatedOctantPattern(codepoint: u32) ?u8 {
