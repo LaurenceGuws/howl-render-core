@@ -102,7 +102,7 @@ pub const TextSceneRenderReport = struct {
     cursor_draws: usize,
 };
 
-pub const PreparedTextScene = render.Text.Engine.OwnedTextAnalysis;
+pub const PreparedTextScene = render.Text.Engine.OwnedPreparedTextFrame;
 
 fn elapsedUs(start_ns: u64) u64 {
     return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);

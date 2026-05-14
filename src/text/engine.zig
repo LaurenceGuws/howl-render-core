@@ -106,7 +106,7 @@ pub const Engine = struct {
         self.atlas.next_slot = 0;
     }
 
-    pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
+    pub fn analyzeCellsWithSessionOptions(self: *Engine, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedPreparedTextFrame {
         if (try self.analyzeDirectNormal(.{ .raw_cells = cells }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
             return self.finishDirectNormalAnalysis(direct.damage, direct.lane_report, direct.build, .{});
         }
@@ -118,7 +118,7 @@ pub const Engine = struct {
         return self.analyzePrepared(sparse.text_cache, sparse.renderable, grid_metrics, session, options, timings);
     }
 
-    pub fn analyzeCellTextInputsOptions(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedTextAnalysis {
+    pub fn analyzeCellTextInputsOptions(self: *Engine, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: AnalysisOptions) !OwnedPreparedTextFrame {
         if (try self.analyzeDirectNormal(.{ .inputs = inputs }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
             return self.finishDirectNormalAnalysis(direct.damage, direct.lane_report, direct.build, .{});
         }
@@ -137,7 +137,7 @@ pub const Engine = struct {
         session: font_session.FontSession,
         options: AnalysisOptions,
         initial_timings: PrepareTimings,
-    ) !OwnedTextAnalysis {
+    ) !OwnedPreparedTextFrame {
         var timings = initial_timings;
         var owned_text_cache = text_cache;
         errdefer owned_text_cache.deinit();
@@ -158,7 +158,9 @@ pub const Engine = struct {
         )).?;
 
         if (final_lane_report.complex_cells == 0) {
-            return self.finishPreparedDirectNormalAnalysis(owned_text_cache, owned_renderable, clusters, direct.build, final_lane_report, timings);
+            owned_text_cache.deinit();
+            clusters.deinit();
+            return self.finishPreparedDirectNormalAnalysis(owned_renderable, direct.build, final_lane_report, timings);
         }
 
         return self.analyzePreparedComplex(
@@ -185,7 +187,7 @@ pub const Engine = struct {
         session: font_session.FontSession,
         options: AnalysisOptions,
         timings: *PrepareTimings,
-    ) !OwnedTextAnalysis {
+    ) !OwnedPreparedTextFrame {
         var final_lane_report = lane_report;
         var complex = try cluster.selectComplexWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), clusters.clusters, grid_metrics, options.scene.damage);
         defer complex.deinit();
@@ -233,13 +235,18 @@ pub const Engine = struct {
         runs: font_resolver.OwnedResolvedRuns,
         shaped_runs: shape_run.OwnedShapedRuns,
         grouped: PreparedGroups,
-    ) !OwnedTextAnalysis {
+    ) !OwnedPreparedTextFrame {
         var final_lane_report = lane_report;
+        var final_text_cache = owned_text_cache;
+        var final_clusters = clusters;
+        var final_runs = runs;
+        var final_shaped_runs = shaped_runs;
+        var final_grouped = grouped;
         const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex_cells, grouped.groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex_cells, final_grouped.groups.groups, final_runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
         timings.scene_us = elapsedUs(scene_start_ns);
         errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), complex_cells, draw);
+        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(final_text_cache.view(), complex_cells, draw);
 
         const raster_start_ns = monotonicNs();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
@@ -253,30 +260,27 @@ pub const Engine = struct {
         var counters = pipeline.TextEngineCounters{
             .cell_texts = final_lane_report.visible_cells,
             .clusters = final_lane_report.normal_clusters + final_lane_report.complex_clusters,
-            .resolved_runs = runs.runs.len,
-            .shaped_runs = shaped_runs.runs.len,
-            .glyph_groups = grouped.groups.groups.len,
+            .resolved_runs = final_runs.runs.len,
+            .shaped_runs = final_shaped_runs.runs.len,
+            .glyph_groups = final_grouped.groups.groups.len,
             .sprite_cache_hits = @intCast((self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len) + complex_sprite_cache_hits),
             .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len + scene.scene.raster_requests.len),
             .rasterized_sprites = @intCast(merged.raster_plan.outputs.len),
             .missing_glyphs = merged.scene.scene.missing.len,
         };
-        for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
+        for (final_shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
         applyCounters(&self.counters, counters);
 
+        final_text_cache.deinit();
+        final_clusters.deinit();
+        final_grouped.deinit();
+        final_shaped_runs.deinit();
+        final_runs.deinit();
+
         return .{
-            .text_cache = owned_text_cache,
             .renderable = owned_renderable,
-            .clusters = clusters,
-            .runs = runs,
-            .shaped_runs = shaped_runs,
-            .font_groups = grouped.font_groups,
-            .sprite_groups = grouped.sprite_groups,
-            .groups = grouped.groups,
             .scene = merged.scene,
             .raster_plan = merged.raster_plan,
-            .counters = counters,
-            .lane_report = final_lane_report,
             .timings = timings.*,
         };
     }
@@ -320,11 +324,9 @@ pub const Engine = struct {
         lane_report: text_lane.LaneReport,
         direct: DirectNormalBuild,
         timings: PrepareTimings,
-    ) OwnedTextAnalysis {
+    ) OwnedPreparedTextFrame {
         return self.finishNormalOnlyAnalysis(
-            .{ .allocator = self.allocator, .texts = &.{}, .codepoints = &.{}, .owned = false },
             .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
-            .{ .allocator = self.allocator, .clusters = &.{}, .owned = false },
             damage,
             direct,
             lane_report,
@@ -334,43 +336,30 @@ pub const Engine = struct {
 
     fn finishPreparedDirectNormalAnalysis(
         self: *Engine,
-        owned_text_cache: cluster.OwnedLineTextCache,
         owned_renderable: cluster.OwnedRenderableCells,
-        clusters: cluster.OwnedClusters,
         direct: DirectNormalBuild,
         lane_report: text_lane.LaneReport,
         timings: PrepareTimings,
-    ) OwnedTextAnalysis {
-        return self.finishNormalOnlyAnalysis(owned_text_cache, owned_renderable, clusters, direct.damage, direct, lane_report, timings);
+    ) OwnedPreparedTextFrame {
+        return self.finishNormalOnlyAnalysis(owned_renderable, direct.damage, direct, lane_report, timings);
     }
 
     fn finishNormalOnlyAnalysis(
         self: *Engine,
-        text_cache: cluster.OwnedLineTextCache,
         renderable: cluster.OwnedRenderableCells,
-        clusters: cluster.OwnedClusters,
         damage: DirectDamage,
         direct: DirectNormalBuild,
         lane_report: text_lane.LaneReport,
         timings: PrepareTimings,
-    ) OwnedTextAnalysis {
+    ) OwnedPreparedTextFrame {
         var final_lane_report = lane_report;
         final_lane_report.assertValid();
         const counters = directNormalCounters(self, final_lane_report, direct);
         applyCounters(&self.counters, counters);
         return .{
-            .text_cache = text_cache,
             .renderable = renderable,
-            .clusters = clusters,
-            .runs = .{ .allocator = self.allocator, .runs = &.{}, .missing = &.{}, .sprite_routes = &.{}, .owned = false },
-            .shaped_runs = .{ .allocator = self.allocator, .runs = &.{}, .owned = false },
-            .font_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .sprite_groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
-            .groups = .{ .allocator = self.allocator, .groups = &.{}, .owned = false },
             .scene = directScene(self.allocator, renderable.cells, damage, self),
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
-            .counters = counters,
-            .lane_report = final_lane_report,
             .timings = timings,
         };
     }
@@ -570,32 +559,16 @@ fn groupComplexRuns(
     return .{ .font_groups = font_groups, .sprite_groups = sprite_groups, .groups = groups };
 }
 
-pub const OwnedTextAnalysis = struct {
-    text_cache: cluster.OwnedLineTextCache,
+pub const OwnedPreparedTextFrame = struct {
     renderable: cluster.OwnedRenderableCells,
-    clusters: cluster.OwnedClusters,
-    runs: font_resolver.OwnedResolvedRuns,
-    shaped_runs: shape_run.OwnedShapedRuns,
-    font_groups: grouping.OwnedGlyphGroups,
-    sprite_groups: grouping.OwnedGlyphGroups,
-    groups: grouping.OwnedGlyphGroups,
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
-    counters: pipeline.TextEngineCounters = .{},
-    lane_report: text_lane.LaneReport = .{},
     timings: PrepareTimings = .{},
 
-    pub fn deinit(self: *OwnedTextAnalysis) void {
+    pub fn deinit(self: *OwnedPreparedTextFrame) void {
         self.raster_plan.deinit();
         self.scene.deinit();
-        self.groups.deinit();
-        self.sprite_groups.deinit();
-        self.font_groups.deinit();
-        self.shaped_runs.deinit();
-        self.runs.deinit();
-        self.clusters.deinit();
         self.renderable.deinit();
-        self.text_cache.deinit();
         self.* = undefined;
     }
 };
@@ -1222,23 +1195,12 @@ test "text engine analyzes cell inputs into clusters and runs" {
     var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), analysis.text_cache.texts.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.renderable.cells.len);
-    try std.testing.expectEqual(@as(usize, 0), analysis.clusters.clusters.len);
-    try std.testing.expectEqual(@as(usize, 0), analysis.runs.runs.len);
-    try std.testing.expectEqual(@as(usize, 0), analysis.shaped_runs.runs.len);
-    try std.testing.expectEqual(@as(usize, 0), analysis.groups.groups.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
     try std.testing.expectEqual(@as(u64, 2), engine.counters.cell_texts);
     try std.testing.expectEqual(@as(u64, 0), engine.counters.resolved_runs);
     try std.testing.expectEqual(@as(u64, 0), engine.counters.glyph_groups);
-    try std.testing.expect(analysis.lane_report.frameFullyNormalInput());
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
-    try std.testing.expect(analysis.lane_report.frameStayedOutOfLegacyPath());
 }
 
 test "text engine records sprite routes through resolver" {
@@ -1253,21 +1215,13 @@ test "text engine records sprite routes through resolver" {
     var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), analysis.runs.runs.len);
-    try std.testing.expectEqual(@as(usize, 1), analysis.runs.sprite_routes.len);
-    try std.testing.expectEqual(@as(usize, 0), analysis.font_groups.groups.len);
-    try std.testing.expectEqual(@as(usize, 1), analysis.sprite_groups.groups.len);
-    try std.testing.expectEqual(@as(usize, 1), analysis.groups.groups.len);
-    try std.testing.expectEqual(contract.GlyphGroupKind.box_fallback, analysis.groups.groups[0].kind);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
     try std.testing.expectEqual(@as(u32, 1), analysis.scene.scene.sprite_draws[1].first_cell);
+    try std.testing.expect(analysis.scene.scene.sprite_draws[1].placement.advance_px > 0);
+    try std.testing.expectEqual(@as(u64, 0), engine.counters.resolved_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.glyph_groups);
     try std.testing.expectEqual(@as(u64, 2), engine.counters.sprite_cache_misses);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.direct_normal_draws);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
 }
 
 test "text engine scene is grid positioned" {
@@ -1360,7 +1314,7 @@ test "text engine accepts configurable shaper" {
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
-    try std.testing.expectEqual(@as(usize, 1), analysis.shaped_runs.runs.len);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.shaped_runs);
 }
 
 test "text engine accepts unified provider rasterizer" {
@@ -1415,11 +1369,9 @@ test "text engine analyzes rich multi-codepoint cell inputs" {
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 4, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), analysis.text_cache.texts.len);
-    try std.testing.expectEqual(@as(u32, 'i'), analysis.clusters.clusters[0].first_cp);
-    try std.testing.expectEqual(contract.TextPresentation.emoji, analysis.clusters.clusters[1].presentation);
-    try std.testing.expectEqual(@as(u8, 2), analysis.groups.groups[1].cell_span);
-    try std.testing.expectEqual(contract.GlyphGroupKind.emoji, analysis.groups.groups[1].kind);
+    try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(u8, 2), analysis.scene.scene.sprite_draws[1].cell_span);
+    try std.testing.expectEqual(@as(u16, 2), analysis.scene.scene.sprite_draws[1].width_px);
 }
 
 test "text engine direct-renders pure normal cell text inputs" {
@@ -1436,15 +1388,10 @@ test "text engine direct-renders pure normal cell text inputs" {
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 2, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), analysis.text_cache.texts.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
-    try std.testing.expectEqual(@as(usize, 2), analysis.lane_report.direct_normal_draws);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
-    try std.testing.expect(analysis.lane_report.frameFullyNormalInput());
+    try std.testing.expectEqual(@as(u64, 0), engine.counters.resolved_runs);
+    try std.testing.expectEqual(@as(u64, 0), engine.counters.shaped_runs);
 }
 
 test "text engine keeps mixed cell text normals out of legacy path" {
@@ -1461,13 +1408,9 @@ test "text engine keeps mixed cell text normals out of legacy path" {
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 2, .rows = 1 }, .{}, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.direct_normal_draws);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.resolved_clusters.complex);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.shaped_clusters.complex);
+    try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.resolved_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.shaped_runs);
 }
 
 test "text engine marks curly underline cells complex before shaping" {
@@ -1482,18 +1425,11 @@ test "text engine marks curly underline cells complex before shaping" {
     var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.normal_cells);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_cells);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_curly_underline_cells);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.direct_normal_draws);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.resolved_clusters.complex);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.shaped_clusters.complex);
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.legacy.grouped_groups.complex);
-    try std.testing.expectEqual(@as(usize, 2), analysis.lane_report.legacy.scene_sprite_draws.complex);
+    try std.testing.expectEqual(@as(usize, 3), analysis.scene.scene.sprite_draws.len);
+    try std.testing.expectEqual(@as(usize, 0), analysis.scene.scene.decoration_draws.len);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.resolved_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.shaped_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.glyph_groups);
 }
 
 test "text engine keeps icon codepoints out of the normal lane" {
@@ -1528,18 +1464,25 @@ test "text engine keeps icon codepoints out of the normal lane" {
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 3, .rows = 1 }, .{ .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } }, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 1), analysis.lane_report.complex_icon_cells);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.resolved_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.shaped_clusters.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.grouped_groups.normal);
-    try std.testing.expectEqual(@as(usize, 0), analysis.lane_report.legacy.scene_sprite_draws.normal);
-    try std.testing.expectEqual(@as(usize, 1), analysis.groups.groups.len);
-    try std.testing.expectEqual(contract.GlyphGroupKind.icon, analysis.groups.groups[0].kind);
     try std.testing.expectEqual(@as(u16, 16), analysis.scene.scene.sprite_draws[0].width_px);
     try std.testing.expectEqual(@as(u8, 2), analysis.scene.scene.sprite_draws[0].cell_span);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.resolved_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.shaped_runs);
+    try std.testing.expectEqual(@as(u64, 1), engine.counters.glyph_groups);
 }
 
 test "text engine uses ft hb source coverage for fallback" {
+    const FallbackShaper = struct {
+        last_face_id: u32 = 0,
+        inner: shape_run.Shaper,
+
+        fn shape(ctx: *anyopaque, allocator: std.mem.Allocator, run: contract.ResolvedRun, text_cache: contract.LineTextCache, clusters: []const contract.CellCluster, cell_metrics: contract.CellMetrics) anyerror!shape_run.OwnedShapedRun {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.last_face_id = run.run.font.face_id.value;
+            return self.inner.shapeRun(allocator, run, text_cache, clusters, cell_metrics);
+        }
+    };
+
     const Backend = struct {
         fn has(ctx: *anyopaque, face_id: contract.FontFaceId, cp: u32) bool {
             _ = ctx;
@@ -1549,7 +1492,10 @@ test "text engine uses ft hb source coverage for fallback" {
     };
     var dummy: u8 = 0;
     var ft_hb = ft_hb_provider.FtHbSource{ .ctx = &dummy, .has_codepoint = Backend.has };
-    var engine = try Engine.initWithProvider(std.testing.allocator, 16, ft_hb.textProvider());
+    var provider = ft_hb.textProvider();
+    var shaper = FallbackShaper{ .inner = provider.shaper };
+    provider.shaper = .{ .ctx = &shaper, .shape_run = FallbackShaper.shape };
+    var engine = try Engine.initWithProvider(std.testing.allocator, 16, provider);
     defer engine.deinit();
     const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
@@ -1561,5 +1507,5 @@ test "text engine uses ft hb source coverage for fallback" {
     };
     var analysis = try engine.analyzeCellTextInputsOptions(&inputs, .{ .cols = 1, .rows = 1 }, ft_hb.textProvider().applyToSession(.{ .faces = &faces }), .{});
     defer analysis.deinit();
-    try std.testing.expectEqual(@as(u32, 2), analysis.runs.runs[0].run.font.face_id.value);
+    try std.testing.expectEqual(@as(u32, 2), shaper.last_face_id);
 }

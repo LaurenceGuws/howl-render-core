@@ -32,12 +32,12 @@ const TestSpine = struct {
         cells: []const render.CellInput,
         grid: render.GridMetrics,
         options: render.Text.Engine.AnalysisOptions,
-    ) !render.Text.Engine.OwnedTextAnalysis {
+    ) !render.Text.Engine.OwnedPreparedTextFrame {
         var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
         return self.engine.analyzeCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
     }
 
-    fn uploadPrepared(self: *TestSpine, prepared: *const render.Text.Engine.OwnedTextAnalysis) !u32 {
+    fn uploadPrepared(self: *TestSpine, prepared: *const render.Text.Engine.OwnedPreparedTextFrame) !u32 {
         const committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
         markRenderedOutputs(&self.engine.atlas, prepared.raster_plan.outputs);
         return @intCast(committed);

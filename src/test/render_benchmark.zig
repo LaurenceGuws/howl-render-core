@@ -3,8 +3,6 @@ const std = @import("std");
 const render = @import("../render.zig");
 
 const OutputFormat = enum { ndjson, text };
-const LaneReport = render.Render.Text.Lane.LaneReport;
-
 const WorkloadInput = union(enum) {
     cells: []render.Render.CellInput,
     cell_texts: []const render.Render.Text.Cluster.CellTextInput,
@@ -30,27 +28,6 @@ const WorkloadResult = struct {
     name: []const u8,
     grid_cols: u16,
     grid_rows: u16,
-    visible_cells: usize,
-    normal_cells: usize,
-    complex_cells: usize,
-    complex_multi_codepoint_cells: usize,
-    complex_emoji_cells: usize,
-    complex_special_sprite_cells: usize,
-    complex_icon_cells: usize,
-    complex_curly_underline_cells: usize,
-    normal_clusters: usize,
-    complex_clusters: usize,
-    direct_normal_draws: usize,
-    complex_path_resolved_normal_clusters: usize,
-    complex_path_resolved_complex_clusters: usize,
-    complex_path_shaped_normal_clusters: usize,
-    complex_path_shaped_complex_clusters: usize,
-    complex_path_grouped_normal_groups: usize,
-    complex_path_grouped_complex_groups: usize,
-    complex_path_scene_normal_sprite_draws: usize,
-    complex_path_scene_complex_sprite_draws: usize,
-    frame_fully_normal_input: bool,
-    frame_stayed_out_of_complex_path: bool,
     dirty_cells_per_run: usize,
     runs: usize,
     cold_ns: u64,
@@ -64,7 +41,6 @@ const WorkloadResult = struct {
     cold_fills: usize,
     cold_glyphs: usize,
     cold_uploads: usize,
-    cold_direct_normal_raster_misses: usize,
     warm_median_ns: u64,
     warm_p95_ns: u64,
     warm_median_resolve_us: u64,
@@ -77,8 +53,6 @@ const WorkloadResult = struct {
     warm_median_fills: usize,
     warm_median_glyphs: usize,
     warm_median_uploads: usize,
-    warm_direct_normal_raster_misses: usize,
-
     fn dirtyCellsPerSecond(self: WorkloadResult) f64 {
         const median_seconds = @as(f64, @floatFromInt(self.warm_median_ns)) / 1_000_000_000.0;
         if (median_seconds <= 0) return 0;
@@ -548,7 +522,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
             },
         },
     };
-    var lane_report: ?LaneReport = null;
     var counting = CountingAllocator.init(allocator);
     var engine = render.Render.Text.Engine.Engine.init(counting.allocator());
     defer engine.deinit();
@@ -570,7 +543,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         ),
     };
     const cold_end = nowNs(io);
-    const cold_lane_report = cold.lane_report;
     const cold_observation = RunObservation{
         .ns = cold_end - cold_start,
         .alloc_count = counting.window_alloc_count,
@@ -607,13 +579,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         };
         const end = nowNs(io);
         defer analysis.deinit();
-        const run_lane_report = analysis.lane_report;
-        if (lane_report) |existing| {
-            std.debug.assert(std.meta.eql(existing, run_lane_report));
-        } else {
-            lane_report = run_lane_report;
-            assertSameLaneCounts(cold_lane_report, run_lane_report);
-        }
         observations[i] = .{
             .ns = end - start,
             .alloc_count = counting.window_alloc_count,
@@ -658,8 +623,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         scene_values[idx] = obs.scene_us;
     }
 
-    const final_lane_report = lane_report orelse LaneReport{};
-    assertSameLaneCounts(cold_lane_report, final_lane_report);
     const warm_median_ns = medianU64(ns_values);
     const warm_p95_ns = p95U64(ns_values);
     const warm_median_resolve_us = medianU64(resolve_values);
@@ -673,33 +636,11 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
     const warm_median_glyphs = medianUsize(glyph_values);
     const warm_median_uploads = medianUsize(upload_values);
     std.debug.assert(cold_uploads >= warm_median_uploads);
-    std.debug.assert(cold_lane_report.direct_normal_raster_misses >= final_lane_report.direct_normal_raster_misses);
 
     return .{
         .name = workload.name,
         .grid_cols = workload.grid.cols,
         .grid_rows = workload.grid.rows,
-        .visible_cells = final_lane_report.visible_cells,
-        .normal_cells = final_lane_report.normal_cells,
-        .complex_cells = final_lane_report.complex_cells,
-        .complex_multi_codepoint_cells = final_lane_report.complex_multi_codepoint_cells,
-        .complex_emoji_cells = final_lane_report.complex_emoji_cells,
-        .complex_special_sprite_cells = final_lane_report.complex_special_sprite_cells,
-        .complex_icon_cells = final_lane_report.complex_icon_cells,
-        .complex_curly_underline_cells = final_lane_report.complex_curly_underline_cells,
-        .normal_clusters = final_lane_report.normal_clusters,
-        .complex_clusters = final_lane_report.complex_clusters,
-        .direct_normal_draws = final_lane_report.direct_normal_draws,
-        .complex_path_resolved_normal_clusters = final_lane_report.legacy.resolved_clusters.normal,
-        .complex_path_resolved_complex_clusters = final_lane_report.legacy.resolved_clusters.complex,
-        .complex_path_shaped_normal_clusters = final_lane_report.legacy.shaped_clusters.normal,
-        .complex_path_shaped_complex_clusters = final_lane_report.legacy.shaped_clusters.complex,
-        .complex_path_grouped_normal_groups = final_lane_report.legacy.grouped_groups.normal,
-        .complex_path_grouped_complex_groups = final_lane_report.legacy.grouped_groups.complex,
-        .complex_path_scene_normal_sprite_draws = final_lane_report.legacy.scene_sprite_draws.normal,
-        .complex_path_scene_complex_sprite_draws = final_lane_report.legacy.scene_sprite_draws.complex,
-        .frame_fully_normal_input = final_lane_report.frameFullyNormalInput(),
-        .frame_stayed_out_of_complex_path = final_lane_report.frameStayedOutOfLegacyPath(),
         .dirty_cells_per_run = workload.dirty_cells_per_run,
         .runs = runs,
         .cold_ns = cold_observation.ns,
@@ -713,7 +654,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .cold_fills = cold_fills,
         .cold_glyphs = cold_glyphs,
         .cold_uploads = cold_uploads,
-        .cold_direct_normal_raster_misses = cold_lane_report.direct_normal_raster_misses,
         .warm_median_ns = warm_median_ns,
         .warm_p95_ns = warm_p95_ns,
         .warm_median_resolve_us = warm_median_resolve_us,
@@ -726,30 +666,7 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .warm_median_fills = warm_median_fills,
         .warm_median_glyphs = warm_median_glyphs,
         .warm_median_uploads = warm_median_uploads,
-        .warm_direct_normal_raster_misses = final_lane_report.direct_normal_raster_misses,
     };
-}
-
-fn assertSameLaneCounts(expected: LaneReport, actual: LaneReport) void {
-    std.debug.assert(expected.visible_cells == actual.visible_cells);
-    std.debug.assert(expected.normal_cells == actual.normal_cells);
-    std.debug.assert(expected.complex_cells == actual.complex_cells);
-    std.debug.assert(expected.complex_multi_codepoint_cells == actual.complex_multi_codepoint_cells);
-    std.debug.assert(expected.complex_emoji_cells == actual.complex_emoji_cells);
-    std.debug.assert(expected.complex_special_sprite_cells == actual.complex_special_sprite_cells);
-    std.debug.assert(expected.complex_icon_cells == actual.complex_icon_cells);
-    std.debug.assert(expected.complex_curly_underline_cells == actual.complex_curly_underline_cells);
-    std.debug.assert(expected.normal_clusters == actual.normal_clusters);
-    std.debug.assert(expected.complex_clusters == actual.complex_clusters);
-    std.debug.assert(expected.direct_normal_draws == actual.direct_normal_draws);
-    std.debug.assert(expected.legacy.resolved_clusters.normal == actual.legacy.resolved_clusters.normal);
-    std.debug.assert(expected.legacy.resolved_clusters.complex == actual.legacy.resolved_clusters.complex);
-    std.debug.assert(expected.legacy.shaped_clusters.normal == actual.legacy.shaped_clusters.normal);
-    std.debug.assert(expected.legacy.shaped_clusters.complex == actual.legacy.shaped_clusters.complex);
-    std.debug.assert(expected.legacy.grouped_groups.normal == actual.legacy.grouped_groups.normal);
-    std.debug.assert(expected.legacy.grouped_groups.complex == actual.legacy.grouped_groups.complex);
-    std.debug.assert(expected.legacy.scene_sprite_draws.normal == actual.legacy.scene_sprite_draws.normal);
-    std.debug.assert(expected.legacy.scene_sprite_draws.complex == actual.legacy.scene_sprite_draws.complex);
 }
 
 fn parseArgs(argv: []const [:0]const u8) !Options {
@@ -783,29 +700,6 @@ fn printTextResult(result: WorkloadResult) void {
     std.debug.print("workload={s}\n", .{result.name});
     std.debug.print("grid_cols={d}\n", .{result.grid_cols});
     std.debug.print("grid_rows={d}\n", .{result.grid_rows});
-    std.debug.print("visible_cells={d}\n", .{result.visible_cells});
-    std.debug.print("normal_cells={d}\n", .{result.normal_cells});
-    std.debug.print("complex_cells={d}\n", .{result.complex_cells});
-    std.debug.print("complex_multi_codepoint_cells={d}\n", .{result.complex_multi_codepoint_cells});
-    std.debug.print("complex_emoji_cells={d}\n", .{result.complex_emoji_cells});
-    std.debug.print("complex_special_sprite_cells={d}\n", .{result.complex_special_sprite_cells});
-    std.debug.print("complex_icon_cells={d}\n", .{result.complex_icon_cells});
-    std.debug.print("complex_curly_underline_cells={d}\n", .{result.complex_curly_underline_cells});
-    std.debug.print("normal_clusters={d}\n", .{result.normal_clusters});
-    std.debug.print("complex_clusters={d}\n", .{result.complex_clusters});
-    std.debug.print("direct_normal_draws={d}\n", .{result.direct_normal_draws});
-    std.debug.print("cold_direct_normal_raster_misses={d}\n", .{result.cold_direct_normal_raster_misses});
-    std.debug.print("warm_direct_normal_raster_misses={d}\n", .{result.warm_direct_normal_raster_misses});
-    std.debug.print("complex_path_resolved_normal_clusters={d}\n", .{result.complex_path_resolved_normal_clusters});
-    std.debug.print("complex_path_resolved_complex_clusters={d}\n", .{result.complex_path_resolved_complex_clusters});
-    std.debug.print("complex_path_shaped_normal_clusters={d}\n", .{result.complex_path_shaped_normal_clusters});
-    std.debug.print("complex_path_shaped_complex_clusters={d}\n", .{result.complex_path_shaped_complex_clusters});
-    std.debug.print("complex_path_grouped_normal_groups={d}\n", .{result.complex_path_grouped_normal_groups});
-    std.debug.print("complex_path_grouped_complex_groups={d}\n", .{result.complex_path_grouped_complex_groups});
-    std.debug.print("complex_path_scene_normal_sprite_draws={d}\n", .{result.complex_path_scene_normal_sprite_draws});
-    std.debug.print("complex_path_scene_complex_sprite_draws={d}\n", .{result.complex_path_scene_complex_sprite_draws});
-    std.debug.print("frame_fully_normal_input={}\n", .{result.frame_fully_normal_input});
-    std.debug.print("frame_stayed_out_of_complex_path={}\n", .{result.frame_stayed_out_of_complex_path});
     std.debug.print("runs={d}\n", .{result.runs});
     std.debug.print("dirty_cells_per_run={d}\n", .{result.dirty_cells_per_run});
     std.debug.print("cold_ms={d:.3}\n", .{cold_ms});
@@ -837,39 +731,16 @@ fn printTextResult(result: WorkloadResult) void {
 
 fn printNdjsonResult(result: WorkloadResult) void {
     std.debug.print(
-        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},\"visible_cells\":{d},\"normal_cells\":{d},\"complex_cells\":{d},\"complex_multi_codepoint_cells\":{d},\"complex_emoji_cells\":{d},\"complex_special_sprite_cells\":{d},\"complex_icon_cells\":{d},\"complex_curly_underline_cells\":{d},\"normal_clusters\":{d},\"complex_clusters\":{d},\"direct_normal_draws\":{d},\"cold_direct_normal_raster_misses\":{d},\"warm_direct_normal_raster_misses\":{d},\"complex_path_resolved_normal_clusters\":{d},\"complex_path_resolved_complex_clusters\":{d},\"complex_path_shaped_normal_clusters\":{d},\"complex_path_shaped_complex_clusters\":{d},\"complex_path_grouped_normal_groups\":{d},\"complex_path_grouped_complex_groups\":{d},",
+        "{{\"workload\":\"{s}\",\"grid_cols\":{d},\"grid_rows\":{d},",
         .{
             result.name,
             result.grid_cols,
             result.grid_rows,
-            result.visible_cells,
-            result.normal_cells,
-            result.complex_cells,
-            result.complex_multi_codepoint_cells,
-            result.complex_emoji_cells,
-            result.complex_special_sprite_cells,
-            result.complex_icon_cells,
-            result.complex_curly_underline_cells,
-            result.normal_clusters,
-            result.complex_clusters,
-            result.direct_normal_draws,
-            result.cold_direct_normal_raster_misses,
-            result.warm_direct_normal_raster_misses,
-            result.complex_path_resolved_normal_clusters,
-            result.complex_path_resolved_complex_clusters,
-            result.complex_path_shaped_normal_clusters,
-            result.complex_path_shaped_complex_clusters,
-            result.complex_path_grouped_normal_groups,
-            result.complex_path_grouped_complex_groups,
         },
     );
     std.debug.print(
-        "\"complex_path_scene_normal_sprite_draws\":{d},\"complex_path_scene_complex_sprite_draws\":{d},\"frame_fully_normal_input\":{},\"frame_stayed_out_of_complex_path\":{},\"runs\":{d},\"dirty_cells_per_run\":{d},\"cold_ns\":{d},\"cold_resolve_us\":{d},\"cold_shape_us\":{d},\"cold_group_us\":{d},\"cold_scene_us\":{d},\"cold_alloc_count\":{d},\"cold_alloc_bytes\":{d},\"cold_peak_live_bytes\":{d},\"cold_fills\":{d},\"cold_glyphs\":{d},\"cold_uploads\":{d},\"warm_median_ns\":{d},\"warm_p95_ns\":{d},\"warm_median_resolve_us\":{d},\"warm_median_shape_us\":{d},\"warm_median_group_us\":{d},\"warm_median_scene_us\":{d},\"dirty_cells_per_second\":{d:.0},\"warm_median_alloc_count\":{d},\"warm_median_alloc_bytes\":{d},\"warm_median_peak_live_bytes\":{d},\"warm_median_fills\":{d},\"warm_median_glyphs\":{d},\"warm_median_uploads\":{d}}}\n",
+        "\"runs\":{d},\"dirty_cells_per_run\":{d},\"cold_ns\":{d},\"cold_resolve_us\":{d},\"cold_shape_us\":{d},\"cold_group_us\":{d},\"cold_scene_us\":{d},\"cold_alloc_count\":{d},\"cold_alloc_bytes\":{d},\"cold_peak_live_bytes\":{d},\"cold_fills\":{d},\"cold_glyphs\":{d},\"cold_uploads\":{d},\"warm_median_ns\":{d},\"warm_p95_ns\":{d},\"warm_median_resolve_us\":{d},\"warm_median_shape_us\":{d},\"warm_median_group_us\":{d},\"warm_median_scene_us\":{d},\"dirty_cells_per_second\":{d:.0},\"warm_median_alloc_count\":{d},\"warm_median_alloc_bytes\":{d},\"warm_median_peak_live_bytes\":{d},\"warm_median_fills\":{d},\"warm_median_glyphs\":{d},\"warm_median_uploads\":{d}}}\n",
         .{
-            result.complex_path_scene_normal_sprite_draws,
-            result.complex_path_scene_complex_sprite_draws,
-            result.frame_fully_normal_input,
-            result.frame_stayed_out_of_complex_path,
             result.runs,
             result.dirty_cells_per_run,
             result.cold_ns,
