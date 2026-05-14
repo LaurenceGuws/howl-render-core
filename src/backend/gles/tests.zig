@@ -8,6 +8,76 @@ const render = @import("../../render.zig").Render;
 
 const Backend = backend_mod.Backend;
 
+const TestSpine = struct {
+    backend: *Backend,
+    engine: render.Text.Engine.Engine,
+    target_valid: bool = false,
+
+    fn init(backend: *Backend) !TestSpine {
+        var ft_hb = backend.textProvider();
+        return .{
+            .backend = backend,
+            .engine = try render.Text.Engine.Engine.initWithProvider(
+                std.testing.allocator,
+                backend.capabilities().max_atlas_slots,
+                ft_hb.textProvider(),
+            ),
+        };
+    }
+
+    fn deinit(self: *TestSpine) void {
+        self.engine.deinit();
+        self.* = undefined;
+    }
+
+    fn analyzeCells(
+        self: *TestSpine,
+        allocator: std.mem.Allocator,
+        cells: []const render.CellInput,
+        grid: render.GridMetrics,
+        options: render.Text.Engine.AnalysisOptions,
+    ) !render.Text.Engine.OwnedTextAnalysis {
+        if (self.backend.text_engine == null) {
+            var ft_hb = self.backend.textProvider();
+            self.backend.text_engine = try render.Text.Engine.Engine.initWithProvider(
+                allocator,
+                self.backend.capabilities().max_atlas_slots,
+                ft_hb.textProvider(),
+            );
+        }
+        var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
+        return self.backend.text_engine.?.analyzeCellsWithSessionOptions(cells, grid, self.backend.fontSession(&faces, null), options);
+    }
+
+    fn prepareState(
+        self: *TestSpine,
+        allocator: std.mem.Allocator,
+        state: anytype,
+        surface_px: render.PixelSize,
+        cell_px: render.CellSize,
+    ) !render.Text.Engine.OwnedTextAnalysis {
+        const rc = render.init(self.backend.config, self.backend.capabilities());
+        try self.backend.applyFrameGeometry(surface_px, cell_px);
+        var input = try rc.vtStateToTextSceneInput(allocator, state);
+        defer input.deinit();
+        if (!self.target_valid) {
+            self.engine.clearAtlas();
+            input.options.scene.damage.full = true;
+            input.options.scene.damage.scroll_up_rows = 0;
+        }
+        var faces: [32]render.Text.FontSession.FontFaceRecord = undefined;
+        return self.engine.analyzeCellsWithSessionOptions(input.cells, input.grid, self.backend.fontSession(&faces, null), input.options);
+    }
+
+    fn submitPrepared(self: *TestSpine, prepared: *render.Text.Engine.OwnedTextAnalysis) !backend_mod.TextSceneRenderReport {
+        const committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
+        var report = try self.backend.drawPreparedScene(prepared.scene.scene);
+        report.raster_uploads_committed = committed;
+        self.target_valid = report.texture_id != 0;
+        return report;
+    }
+};
+
 test "gles backend analyzes text cells through provider-backed engine" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
@@ -21,8 +91,9 @@ test "gles backend analyzes text cells through provider-backed engine" {
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
     };
-    var faces: [8]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, &faces, .{});
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var analysis = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 2, .rows = 1 }, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 0), analysis.groups.groups.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
@@ -39,8 +110,9 @@ test "gles backend uploads text analysis raster outputs into atlas memory" {
     const white = render.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var analysis = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var analysis = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer analysis.deinit();
     const committed = try backend.uploadTextSceneRaster(analysis.scene.scene, analysis.raster_plan.outputs);
     try std.testing.expectEqual(@as(usize, 1), committed);
@@ -63,14 +135,15 @@ test "gles backend text analysis reuses retained scene atlas for unchanged glyph
     const white = render.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
     const black = render.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const cells = [_]render.CellInput{.{ .codepoint = 'A', .fg = white, .bg = black }};
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
 
-    var first = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
+    var first = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer first.deinit();
     try std.testing.expectEqual(@as(usize, 1), first.raster_plan.outputs.len);
     _ = try backend.uploadTextSceneRaster(first.scene.scene, first.raster_plan.outputs);
 
-    var second = try backend.analyzeTextCellsOptions(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, &faces, .{});
+    var second = try spine.analyzeCells(std.testing.allocator, &cells, .{ .cols = 1, .rows = 1 }, .{});
     defer second.deinit();
     try std.testing.expectEqual(@as(usize, 0), second.raster_plan.outputs.len);
     try std.testing.expectEqual(first.scene.scene.sprite_draws[0].sprite.slot, second.scene.scene.sprite_draws[0].sprite.slot);
@@ -115,7 +188,7 @@ test "gles backend stores raster visual bounds separately from logical sprite sp
     try std.testing.expectEqual(@as(u16, 2), backend.atlas_slot_draw_h[0]);
 }
 
-test "gles backend renderFrameState uses text scene renderer" {
+test "gles backend leaf path renders frame state" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -128,25 +201,29 @@ test "gles backend renderFrameState uses text scene renderer" {
         .cursor = .{ .visible = true, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    const report = try backend.renderFrameState(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var prepared = try spine.prepareState(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
+    defer prepared.deinit();
+    const report = try spine.submitPrepared(&prepared);
     try std.testing.expectEqual(@as(u64, 1), report.pass_index);
-    try std.testing.expectEqual(@as(usize, 1), report.stats.glyphs);
-    try std.testing.expect(report.stats.has_cursor);
+    try std.testing.expect(report.sprite_draws == 1);
+    try std.testing.expect(report.cursor_draws == 1);
 }
 
-test "backend resize updates config dimensions" {
+test "backend apply frame geometry updates config dimensions" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 320, .height = 240 },
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
 
-    try backend.resize(.{ .width = 1920, .height = 1080 }, .{ .width = 12, .height = 24 });
+    try backend.applyFrameGeometry(.{ .width = 1920, .height = 1080 }, .{ .width = 12, .height = 24 });
     try std.testing.expectEqual(@as(u16, 1920), backend.config.surface_px.width);
     try std.testing.expectEqual(@as(u16, 24), backend.config.cell_px.height);
 }
 
-test "gles backend prepares and submits text scene separately" {
+test "gles backend leaf path prepares and submits text scene separately" {
     var backend = Backend.init(.{
         .surface_px = .{ .width = 640, .height = 480 },
         .cell_px = .{ .width = 8, .height = 16 },
@@ -158,11 +235,12 @@ test "gles backend prepares and submits text scene separately" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var prepared = try spine.prepareState(std.testing.allocator, state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
     defer prepared.deinit();
     try std.testing.expectEqual(@as(usize, 1), prepared.scene.scene.sprite_draws.len);
-    const report = try backend.submitFrame(&prepared);
+    const report = try spine.submitPrepared(&prepared);
     try std.testing.expectEqual(@as(usize, 1), report.sprite_draws);
 }
 
@@ -182,10 +260,11 @@ test "gles backend forces full redraw while target contents are invalid" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var prepared = try spine.prepareState(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 });
     defer prepared.deinit();
-    const report = try backend.submitFrame(&prepared);
+    const report = try spine.submitPrepared(&prepared);
     try std.testing.expect(report.full_redraw);
     try std.testing.expectEqual(@as(u16, 0), report.scroll_up_px);
 }
@@ -196,7 +275,9 @@ test "gles backend preserves partial scroll damage when target contents are vali
         .cell_px = .{ .width = 8, .height = 16 },
     });
     defer backend.deinit();
-    backend.target_content_valid = true;
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    spine.target_valid = true;
 
     const cells = [_]render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
     const dirty_rows = [_]bool{ false, true };
@@ -207,10 +288,9 @@ test "gles backend preserves partial scroll damage when target contents are vali
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = false, .scroll_up_rows = 1, .dirty_rows = &dirty_rows, .dirty_cols_start = &dirty_start, .dirty_cols_end = &dirty_end },
     };
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var prepared = try backend.prepareFrame(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 }, &faces);
+    var prepared = try spine.prepareState(std.testing.allocator, state, .{ .width = 16, .height = 32 }, .{ .width = 8, .height = 16 });
     defer prepared.deinit();
-    const report = try backend.submitFrame(&prepared);
+    const report = try spine.submitPrepared(&prepared);
     try std.testing.expect(!report.full_redraw);
     try std.testing.expectEqual(@as(u16, 16), report.scroll_up_px);
 }
@@ -228,10 +308,11 @@ test "gles backend reanalyzes after atlas storage grows" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    var first_prepared = try backend.prepareFrame(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 }, &faces);
+    var spine = try TestSpine.init(&backend);
+    defer spine.deinit();
+    var first_prepared = try spine.prepareState(std.testing.allocator, first_state, .{ .width = 8, .height = 16 }, .{ .width = 8, .height = 16 });
     defer first_prepared.deinit();
-    const first = try backend.submitFrame(&first_prepared);
+    const first = try spine.submitPrepared(&first_prepared);
     try std.testing.expectEqual(@as(usize, 1), first.raster_uploads_committed);
 
     const second_cells = [_]render.SurfaceCell{
@@ -244,9 +325,9 @@ test "gles backend reanalyzes after atlas storage grows" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = render.SurfaceCursorShape.block },
         .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
     };
-    var second_prepared = try backend.prepareFrame(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 }, &faces);
+    var second_prepared = try spine.prepareState(std.testing.allocator, second_state, .{ .width = 24, .height = 16 }, .{ .width = 24, .height = 16 });
     defer second_prepared.deinit();
-    const second = try backend.submitFrame(&second_prepared);
+    const second = try spine.submitPrepared(&second_prepared);
     try std.testing.expect(backend.atlas_cell_w > 8);
     try std.testing.expectEqual(@as(usize, 2), second.raster_uploads_committed);
 }

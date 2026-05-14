@@ -142,35 +142,10 @@ pub const FrameLayout = struct {
     grid: render.GridSize,
 };
 
-/// Primary export surface for the GL renderer implementation.
-pub const test_primary_face_id: u32 = provider_mod.primary_face_id;
-
-pub fn testProviderGlyphId(self: *Backend, face_id: render.FontFaceId, codepoint: u32) u32 {
-    return provider_mod.providerGlyphId(self, face_id, codepoint);
-}
-
 pub const Config = render.BackendConfig;
 pub const Capability = render.BackendCapability;
 pub const Error = BackendError;
 pub const Report = RenderReport;
-
-pub fn init(config: Config) Backend {
-    return Backend.init(config);
-}
-
-/// Derive grid dimensions through the shared render policy.
-pub fn deriveGridSize(grid_px: render.PixelSize, cell_px: CellSize) render.GridSize {
-    return render.deriveGridSize(grid_px, cell_px);
-}
-
-/// Validate frame geometry and derive grid dimensions.
-pub fn deriveGridForFrame(
-    render_px: render.PixelSize,
-    grid_px: render.PixelSize,
-    cell_px: CellSize,
-) render.FrameGeometryError!render.GridSize {
-    return render.deriveGridForFrame(render_px, grid_px, cell_px);
-}
 
 /// GL backend implementation consuming render apis.
 pub const Backend = struct {
@@ -285,19 +260,6 @@ pub const Backend = struct {
         }
     }
 
-    pub fn targetTexture(self: *const Backend) u32 {
-        return self.target_texture orelse 0;
-    }
-
-    pub fn surfaceHandle(self: *const Backend) SurfaceHandle {
-        return .{
-            .texture_id = self.target_texture orelse 0,
-            .width = @max(self.config.surface_px.width, 1),
-            .height = @max(self.config.surface_px.height, 1),
-            .epoch = self.surface_epoch,
-        };
-    }
-
     pub fn setFontPath(self: *Backend, font_path: ?[:0]const u8) void {
         self.lockFontAnalysis();
         defer self.unlockFontAnalysis();
@@ -339,14 +301,6 @@ pub const Backend = struct {
         };
     }
 
-    pub fn resolveCounters(self: *const Backend) render.ResolveCounters {
-        return self.resolve_counters;
-    }
-
-    pub fn lastResolveStage(self: *const Backend) render.ResolveStage {
-        return self.resolve_stage;
-    }
-
     pub fn textProvider(self: *Backend) render.Text.FtHbProvider.FtHbSource {
         return .{
             .ctx = self,
@@ -379,66 +333,12 @@ pub const Backend = struct {
         };
     }
 
-    pub fn analyzeTextCellsOptions(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        cells: []const render.CellInput,
-        grid: render.GridMetrics,
-        faces: []render.Text.FontSession.FontFaceRecord,
-        options: render.Text.Engine.AnalysisOptions,
-    ) !render.Text.Engine.OwnedTextAnalysis {
-        self.lockFontAnalysis();
-        defer self.unlockFontAnalysis();
-        const engine = try self.ensureTextEngine(allocator);
-        return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces, null), options);
-    }
-
     pub fn uploadTextSceneRaster(
         self: *Backend,
         scene: render.TextScene,
         outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
     ) BackendError!usize {
         return atlas_mod.uploadTextSceneRaster(self, scene, outputs);
-    }
-
-    pub fn renderTextScene(
-        self: *Backend,
-        scene: render.TextScene,
-        outputs: []const render.Text.Rasterizer.RasterSpriteOutput,
-    ) !TextSceneRenderReport {
-        if (self.closed) return error.BackendClosed;
-        var committed_uploads: usize = 0;
-        if (hasCurrentContext()) {
-            if (self.target_texture == null and self.config.target_texture != 0) {
-                self.target_texture = self.config.target_texture;
-                self.surface_epoch +%= 1;
-                self.target_content_valid = false;
-            }
-            try self.ensureOwnedTargetTexture();
-            if (self.target_texture == null) return error.TargetTextureUnset;
-            try self.beginTargetPass();
-            defer self.endTargetPass();
-            committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
-            drawTextScene(self, self.config.surface_px, scene);
-            self.target_content_valid = true;
-        } else if (!builtin.is_test) {
-            return error.NoContext;
-        } else {
-            committed_uploads = try self.uploadTextSceneRaster(scene, outputs);
-        }
-        self.pass_count += 1;
-        return .{
-            .pass_index = self.pass_count,
-            .texture_id = self.target_texture orelse 0,
-            .raster_uploads_committed = committed_uploads,
-            .full_redraw = scene.full_redraw,
-            .scroll_up_px = scene.scroll_up_px,
-            .clear_draws = scene.clear_draws.len,
-            .background_draws = scene.background_draws.len,
-            .sprite_draws = scene.sprite_draws.len,
-            .decoration_draws = scene.decoration_draws.len,
-            .cursor_draws = scene.cursor_draws.len,
-        };
     }
 
     /// Report backend capabilities used by render batch generation.
@@ -451,7 +351,17 @@ pub const Backend = struct {
     }
 
     pub fn applyFrameGeometry(self: *Backend, surface_px: render.PixelSize, cell_px: render.CellSize) BackendError!void {
-        try self.resize(surface_px, cell_px);
+        if (self.closed) return error.BackendClosed;
+        const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
+        const cell_changed = self.config.cell_px.width != cell_px.width or self.config.cell_px.height != cell_px.height;
+        self.config.surface_px = surface_px;
+        self.config.cell_px = cell_px;
+        if (cell_changed) self.clearAtlasCache();
+        if (surface_changed) self.surface_epoch +%= 1;
+        if (surface_changed) self.target_content_valid = false;
+        if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
+            self.resizeOwnedTargetTexture();
+        }
     }
 
     pub fn drawPreparedScene(self: *Backend, scene: render.TextScene) !TextSceneRenderReport {
@@ -484,74 +394,6 @@ pub const Backend = struct {
             .decoration_draws = scene.decoration_draws.len,
             .cursor_draws = scene.cursor_draws.len,
         };
-    }
-
-    /// Update surface and cell dimensions after window resize.
-    pub fn resize(self: *Backend, surface_px: render.PixelSize, cell_px: render.CellSize) BackendError!void {
-        if (self.closed) return error.BackendClosed;
-        const surface_changed = self.config.surface_px.width != surface_px.width or self.config.surface_px.height != surface_px.height;
-        const cell_changed = self.config.cell_px.width != cell_px.width or self.config.cell_px.height != cell_px.height;
-        self.config.surface_px = surface_px;
-        self.config.cell_px = cell_px;
-        if (cell_changed) self.clearAtlasCache();
-        if (surface_changed) self.surface_epoch +%= 1;
-        if (surface_changed) self.target_content_valid = false;
-        if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            self.resizeOwnedTargetTexture();
-        }
-    }
-
-    /// Canonical active render path for frame snapshots.
-    pub fn renderFrameState(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: render.PixelSize,
-        cell_px: render.CellSize,
-    ) BackendError!RenderReport {
-        var faces: [MaxFallbackFonts + 1]render.Text.FontSession.FontFaceRecord = undefined;
-        var prepared = self.prepareFrame(allocator, state, surface_px, cell_px, &faces) catch |err| return mapTextSceneRenderError(err);
-        defer prepared.deinit();
-        const scene_report = self.submitFrame(&prepared) catch |err| return mapTextSceneRenderError(err);
-        return renderReportFromTextScene(scene_report);
-    }
-
-    pub fn prepareFrame(
-        self: *Backend,
-        allocator: std.mem.Allocator,
-        state: anytype,
-        surface_px: render.PixelSize,
-        cell_px: render.CellSize,
-        faces: []render.Text.FontSession.FontFaceRecord,
-    ) !PreparedTextScene {
-        try self.resize(surface_px, cell_px);
-        const rc = render.init(self.config, self.capabilities());
-        const input_start_ns = monotonicNs();
-        var input = try rc.vtStateToTextSceneInput(allocator, state);
-        const input_us = elapsedUs(input_start_ns);
-        defer input.deinit();
-        if (!self.target_content_valid) {
-            // Scroll/partial damage needs a retained target base. If the target content is
-            // invalid, the backend must escalate this frame to full redraw.
-            if (self.text_engine) |*engine| engine.clearAtlas();
-            self.clearAtlasCache();
-            input.options.scene.damage.full = true;
-            input.options.scene.damage.scroll_up_rows = 0;
-        }
-        var analysis = try self.analyzeTextCellsOptions(allocator, input.cells, input.grid, faces, input.options);
-        errdefer analysis.deinit();
-        const atlas_start_ns = monotonicNs();
-        try atlas_mod.ensureAtlasStorageForRasterOutputs(self, analysis.raster_plan.outputs);
-        analysis.timings.atlas_us += elapsedUs(atlas_start_ns);
-        analysis.timings.input_us = input_us;
-        return analysis;
-    }
-
-    pub fn submitFrame(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {
-        const committed = try self.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
-        var report = try self.drawPreparedScene(prepared.scene.scene);
-        report.raster_uploads_committed = committed;
-        return report;
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {

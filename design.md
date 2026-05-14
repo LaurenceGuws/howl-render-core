@@ -163,12 +163,12 @@ sequenceDiagram
   - `analyzeTextCellsOptions(...)`
   - `prepareFrame(...)`
   - `submitFrame(...)`
-  - `uploadTextSceneRaster(...)`
   - `renderTextScene(...)`
   - `renderFrameState(...)`
   - backend-root `deriveGridSize(...)`
   - backend-root `deriveGridForFrame(...)`
-  - backend-root observability passthroughs `resolveCounters()`, `surfaceHandle()`, and `lastResolveStage()`
+  - backend-root `resize(...)`
+  - backend-root observability passthroughs `targetTexture()`, `resolveCounters()`, `surfaceHandle()`, and `lastResolveStage()`
 - Current backend-root leaf contracts that may remain are exact:
   - `init(...)`
   - `deinit(...)`
@@ -177,10 +177,9 @@ sequenceDiagram
   - `setFallbackFontPaths(...)`
   - `setFontSizePx(...)`
   - `deriveFrameLayout(...)`
-  - `targetTexture(...)`
   - `textProvider(...)`
   - `fontSession(...)`
-- `capabilities(...)`
+  - `capabilities(...)`
 - `Renderer` must own staged prepare/submit orchestration and consume a smaller backend leaf contract instead of the reverse.
 - backend-root upload/draw submission entrypoints may survive only as renamed or reduced leaf primitives; they are not preservation targets in their current staged shape.
 

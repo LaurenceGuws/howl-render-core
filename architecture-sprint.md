@@ -263,7 +263,6 @@ The post-inversion backend root should be small and boring. The contract categor
   - `deinit(...)`
 - host-owned target binding:
   - `bindTargetTexture(...)`
-  - `targetTexture(...)`
 - font configuration needed by the backend's provider wiring:
   - `setFontPath(...)`
   - `setFallbackFontPaths(...)`
@@ -302,25 +301,25 @@ Unless stated otherwise, every row below applies to both:
 | `Backend.init(...)` | backend root | true leaf contract | backend root | keep |
 | `Backend.deinit(...)` | backend root | true leaf contract | backend root | keep |
 | `Backend.bindTargetTexture(...)` | backend root | true leaf contract | backend root | keep |
-| `Backend.targetTexture(...)` | backend root | true leaf contract | backend root | keep |
-| `Backend.surfaceHandle()` | backend root | backend convenience/observability leak that must move out | `Renderer` submitted/prepared frame record | move then delete from backend root public surface |
+| `Backend.targetTexture(...)` | backend root | backend convenience/observability leak that no longer earns public-surface value | renderer-owned submitted surface result | delete |
+| `Backend.surfaceHandle()` | backend root | backend convenience/observability leak that must move out | `Renderer` submitted/prepared frame record | delete |
 | `Backend.setFontPath(...)` | backend root | true leaf contract | backend root | keep |
 | `Backend.setFallbackFontPaths(...)` | backend root | true leaf contract | backend root | keep |
 | `Backend.setFontSizePx(...)` | backend root | true leaf contract | backend root | keep |
 | `Backend.deriveFrameLayout(...)` | backend root | true backend leaf contract | backend root | keep |
-| `Backend.resolveCounters()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` metric record | move then delete from backend root public surface |
-| `Backend.lastResolveStage()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` state record | move then delete from backend root public surface |
+| `Backend.resolveCounters()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` metric record | delete |
+| `Backend.lastResolveStage()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` state record | delete |
 | `Backend.textProvider(...)` | backend root | true backend leaf contract | backend root | keep |
 | `Backend.fontSession(...)` | backend root | true backend leaf contract | backend root | keep |
 | `Backend.analyzeTextCellsOptions(...)` | backend root | text/render policy that must move out | `Render.Text.Engine` | move then delete from backend root public surface |
-| `Backend.uploadTextSceneRaster(...)` | backend root | backend convenience surface that must move out | backend leaf upload primitive consumed by `Renderer` | replace |
-| `Backend.renderTextScene(...)` | backend root | text/render policy that must move out | backend leaf draw primitive consumed by `Renderer` | replace |
+| `Backend.uploadTextSceneRaster(...)` | backend root | backend leaf upload primitive | backend root | keep |
+| `Backend.renderTextScene(...)` | backend root | text/render policy that must move out | backend leaf draw primitive consumed by `Renderer` | delete |
 | `Backend.capabilities(...)` | backend root | true backend leaf contract | backend root | keep |
 | `Backend.applyFrameGeometry(...)` | backend root | true backend leaf contract | backend root | keep |
-| `Backend.resize(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` owns resize sequencing; backend keeps private apply-resize mutation only | move then delete from backend root public surface |
+| `Backend.resize(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` owns resize sequencing; backend keeps internal apply-resize mutation only | delete |
 | `Backend.renderFrameState(...)` | backend root | deletion-only convenience surface | no surviving owner | delete |
 | `Backend.prepareFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with `RenderRuntime` and `Render.Text` support | move then delete from backend root public surface |
-| `Backend.submitFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with backend leaf submit primitive only | move then replace |
+| `Backend.submitFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with backend leaf submit primitive only | delete |
 | `Backend.drawPreparedScene(...)` | backend root | true backend leaf contract | backend root | keep |
 
 Notes:
