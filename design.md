@@ -28,6 +28,7 @@ It turns render-facing terminal state into frame inputs, retained publication st
   - non-render metadata no longer survives in `Render.SourceView`
   - stale repo-local observability passthroughs are removed
   - Linux host builds and runs on the cleaned render ABI path
+- This checkpoint does not change the shipped ABI. `include/howl_render.h` and `howl_render_*` remain the only public surface.
 
 ```mermaid
 classDiagram
@@ -53,11 +54,11 @@ classDiagram
 - `src/howl_render.zig` is repo-local only. It is not an embedding surface and not a preservation target for host integration shape.
 - `Render` owns render-facing types, VT conversion, geometry derivation, retained-publication state, and runtime contracts behind the C ABI.
 - `Renderer` owns selected backend behavior and prepared-frame lifetime.
-- GL and GLES should expose the same staged backend spine to `Renderer`: prepare frame, upload/consume raster outputs, submit frame.
+- GL and GLES are leaf wrappers only. They may own external C-library glue, GPU objects, backend-local atlas storage, upload primitives, draw submission primitives, and true backend capability facts only.
 - `Render.Text` owns the public text support surface. `Render.Text.Lane` is the text-lane contract owner.
 - `Ffi` translates ABI contracts only. It owns ABI handle storage and marshalling, but not render policy.
 - `RenderRuntime` keeps retained publication mutation local before handing snapshot tokens to the frame queue.
-- Backend repos should depend on these contracts, not re-invent them privately.
+- Backend repos should depend on render contracts; they do not own render policy and must not re-invent it privately.
 - `GlyphQuad` is final GPU submission data. It is not the shaping input model.
 - Font and glyph decisions flow through one text path: cell text -> resolved runs -> shaped glyph groups -> sprite or atlas positions -> glyph quads.
 
@@ -73,15 +74,15 @@ stateDiagram-v2
 ## Main Flows
 ```mermaid
 sequenceDiagram
-    participant Backend
     participant RC as Render
     participant TE as Render.Text.Engine
     participant RR as RenderRuntime
     participant VT as VtState
     participant Renderer
+    participant Backend
 
     VT->>RC: vtStateToFrameTextInput(...)
-    Backend->>TE: analyze*Options(...)
+    Renderer->>TE: analyze*Options(...)
     TE->>TE: text cache -> renderable cells
     TE->>Render.Text.Cluster: extract clusters
     TE->>Render.Text.Cluster: select complex cells and clusters
@@ -90,15 +91,15 @@ sequenceDiagram
     TE->>shape_run: shape
     TE->>grouping: group
     TE->>scene: assemble scene
-    Backend->>RR: acceptSource(...)
-    Backend->>RR: prepare()
+    Renderer->>RR: acceptSource(...)
+    Renderer->>RR: prepare()
     RR->>RR: publish pending snapshot token
-    Backend->>Renderer: prepareFrame(...)
-    Backend->>RR: submit()
+    Renderer->>Backend: leaf upload/draw requests
+    Renderer->>RR: submit()
     RR->>RR: stale | submit | needs_full_prepare
-    Backend->>Renderer: submitFrame(...)
-    Backend->>RR: acceptSubmitted(...)
-    Backend->>RR: markPresented()
+    Renderer->>Backend: leaf submit request
+    Renderer->>RR: acceptSubmitted(...)
+    Renderer->>RR: markPresented()
 ```
 
 ## API Contracts
@@ -122,7 +123,7 @@ sequenceDiagram
 - `Render.Text.Lane`, `font_resolver`, `shape_run`, `grouping`, and `scene` stay leaf phase owners under the engine spine; they do not own top-level routing.
 - `Renderer` owns backend selection, backend-facing prepare/submit behavior, and prepared-frame lifetime.
 - `Renderer` repo-local surface should expose only owner-true backend behavior. ABI handle boxes and font-path retention live in `src/ffi.zig`.
-- backend root files own control flow only: prepare shared frame input, consume shared text analysis, upload atlas residency, and submit the target pass.
+- backend root files are leaf wrappers only. They may translate renderer-owned requests into backend-local storage mutation, GPU upload steps, and draw submission steps, but they do not own render-policy control flow.
 - backend internal atlas files own backend-local atlas storage and GPU upload mutation only.
 - backend internal provider files own FT/HB callback translation and backend-local cache wiring only.
 - `deriveGrid*` centralizes geometry policy shared by hosts/backends.
@@ -157,20 +158,28 @@ sequenceDiagram
 - `provider.zig` and `ft_hb_provider.zig` stay callback-glue owners only. They supply shaper/raster/glyph callbacks but do not own raster policy or atlas residency policy.
 
 ## Backend Spine
-- `Renderer.prepareFrame(...)` calls backend `prepareFrame(...)`.
-- `Renderer.submitFrame(...)` calls backend `submitFrame(...)`.
-- GL and GLES backend roots now share the same staged backend contract shape:
+- The current backend-root staged contract shape is not accepted architecture. Preserving it for compatibility or convenience fails review.
+- Current backend-root move or deletion targets are exact:
   - `analyzeTextCellsOptions(...)`
   - `prepareFrame(...)`
   - `uploadTextSceneRaster(...)`
   - `renderTextScene(...)`
-  - `submitFrame(...)`
   - `renderFrameState(...)`
-- `renderFrameState(...)` is the convenience owner path for one-shot rendering.
-- `prepareFrame(...)` and `submitFrame(...)` are the reviewable staged path for retained runtime integration.
-- backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
-- runtime action and publication state should close through explicit runtime transitions, not through exported convenience getters kept only because Zig internals have those names.
-- repo-local owner APIs should not keep non-render metadata or FFI-only ownership boxes alive just because earlier checkpoints exposed them.
+  - backend-root `deriveGridSize(...)`
+  - backend-root `deriveGridForFrame(...)`
+  - backend-root observability passthroughs `resolveCounters()`, `surfaceHandle()`, and `lastResolveStage()`
+- Current backend-root leaf contracts that may remain are exact:
+  - `init(...)`
+  - `deinit(...)`
+  - `bindTargetTexture(...)`
+  - `setFontPath(...)`
+  - `setFallbackFontPaths(...)`
+  - `setFontSizePx(...)`
+  - `deriveFrameLayout(...)`
+  - `targetTexture(...)`
+  - `textProvider(...)`
+  - `fontSession(...)`
+- `Renderer` must own staged prepare/submit orchestration and consume a smaller backend leaf contract instead of the reverse.
 
 ## Proof Surface
 - `zig build test --summary all` is the proof umbrella.

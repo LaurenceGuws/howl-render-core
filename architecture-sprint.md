@@ -85,6 +85,15 @@ Must do:
 - rewrite render design facts so backend layers are explicitly leaf wrappers only
 - name every current backend-root surface that is a deletion or move target
 - lock the review rule that preserving the backwards contract shape fails review
+- remove wording that treats the current staged backend contract as acceptable architecture
+
+Contract lock for this checkpoint:
+
+- the authoritative architecture statement lives in `design.md`
+- backend roots are not partial renderers
+- backend roots are not acceptable owners for text analysis, raster planning, retained-frame sequencing, or one-shot render policy
+- preserving the current backwards contract shape for convenience or compatibility fails review
+- this checkpoint does not change the shipped ABI surface
 
 ### Checkpoint 2
 
