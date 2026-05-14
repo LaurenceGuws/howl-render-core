@@ -162,6 +162,7 @@ sequenceDiagram
 - Current backend-root move or deletion targets are exact:
   - `analyzeTextCellsOptions(...)`
   - `prepareFrame(...)`
+  - `submitFrame(...)`
   - `uploadTextSceneRaster(...)`
   - `renderTextScene(...)`
   - `renderFrameState(...)`
@@ -179,7 +180,9 @@ sequenceDiagram
   - `targetTexture(...)`
   - `textProvider(...)`
   - `fontSession(...)`
+- `capabilities(...)`
 - `Renderer` must own staged prepare/submit orchestration and consume a smaller backend leaf contract instead of the reverse.
+- backend-root upload/draw submission entrypoints may survive only as renamed or reduced leaf primitives; they are not preservation targets in their current staged shape.
 
 ## Proof Surface
 - `zig build test --summary all` is the proof umbrella.
