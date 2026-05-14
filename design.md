@@ -24,10 +24,10 @@ It turns render-facing terminal state into frame inputs, retained publication st
   - `src/libhowl_render.zig` is the explicit ABI export root
   - render handles in `include/howl_render.h` and `src/ffi.zig` are opaque-pointer-shaped
   - runtime convenience ABI exports `howl_render_runtime_has_pending_publication` and `howl_render_runtime_action` are deleted
-- Remaining repo-local cleanup targets are exact:
-  - ABI-handle wrapper ownership should stay in `src/ffi.zig`, not in repo-local `Render` or `Renderer` owner surfaces
-  - non-render metadata should not survive in `Render.SourceView`
-  - repo-local observability passthroughs should not survive if they only mirror backend internals without a true owner boundary
+  - ABI-handle wrapper ownership now stays in `src/ffi.zig`
+  - non-render metadata no longer survives in `Render.SourceView`
+  - stale repo-local observability passthroughs are removed
+  - Linux host builds and runs on the cleaned render ABI path
 
 ```mermaid
 classDiagram
