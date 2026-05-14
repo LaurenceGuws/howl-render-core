@@ -201,7 +201,7 @@ fn shapeRunViaProvider(
     const positions = c.hb_buffer_get_glyph_positions(buffer, &glyph_count);
     if (infos == null or positions == null or glyph_count == 0) return null;
 
-    return buildProviderShapedRun(allocator, run, clusters, cell_metrics, shaped_face.face, infos, positions, glyph_count, cluster_map);
+    return try buildProviderShapedRun(allocator, run, clusters, cell_metrics, shaped_face.face, infos, positions, glyph_count, cluster_map);
 }
 
 fn shapePlainAsciiRun(
@@ -282,8 +282,11 @@ pub fn providerLookupGlyph(comptime Backend: type, ctx: *anyopaque, face_id: ren
         .baseline_px = cell_metrics.baseline_px,
     };
     const entry = backend.glyph_cell_cache.map.getOrPut(key) catch return uncachedProviderLookupGlyph(backend, face_id, codepoint, cell_metrics);
-    if (!entry.found_existing) entry.value_ptr.* = uncachedProviderLookupGlyph(backend, face_id, codepoint, cell_metrics);
-    return entry.value_ptr.*;
+    if (!entry.found_existing) entry.value_ptr.* = glyphCellValue(uncachedProviderLookupGlyph(backend, face_id, codepoint, cell_metrics));
+    return .{
+        .glyph_id = entry.value_ptr.glyph_id,
+        .advance_px = entry.value_ptr.advance_px,
+    };
 }
 
 fn uncachedProviderLookupGlyph(backend: anytype, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
@@ -292,6 +295,10 @@ fn uncachedProviderLookupGlyph(backend: anytype, face_id: render.FontFaceId, cod
         .glyph_id = glyph_id,
         .advance_px = providerGlyphAdvance(backend, face_id, glyph_id, cell_metrics),
     };
+}
+
+fn glyphCellValue(result: render.Text.Provider.LookupGlyphResult) shared_text_cache.GlyphCellValue {
+    return .{ .glyph_id = result.glyph_id, .advance_px = result.advance_px };
 }
 
 pub fn providerRasterizeSprite(
