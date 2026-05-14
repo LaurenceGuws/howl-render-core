@@ -12,9 +12,26 @@ It turns render-facing terminal state into frame inputs, retained publication st
 - `special-glyphs.md`: generated special-glyph coverage table.
 
 ## Public Surface
-- `Render`: main render owner.
-- `Renderer`: selected backend owner surface.
-- `Ffi`: C ABI translation surface when enabled.
+- `include/howl_render.h`: C ABI header.
+- `howl_render_*` exported symbols: C ABI contract for render runtime and renderer calls.
+- The shipped embedding boundary is C ABI only.
+- `src/howl_render.zig` is not an embedding surface. If it survives, it is repo-local only.
+- Internal workspace wiring is not a public contract and is not a preservation target.
+- Deletion targets for the current cleanup are exact:
+  - `src/render_namespace.zig`
+  - the Zig-shaped aggregation posture in `src/howl_render.zig`
+  - the fake dual-surface root/build posture in `build.zig`
+  - integer-handle posture in `include/howl_render.h`:
+    - `HowlRenderSnapshotHandle`
+    - `HowlRenderRuntimeHandle`
+    - `HowlRenderRendererHandle`
+  - matching integer-handle posture in `src/ffi.zig`:
+    - `SnapshotHandle`
+    - `RuntimeHandle`
+    - `RendererHandle`
+  - runtime-convenience ABI posture in `include/howl_render.h`:
+    - `howl_render_runtime_has_pending_publication`
+    - `howl_render_runtime_action`
 
 ```mermaid
 classDiagram
@@ -37,7 +54,8 @@ classDiagram
 ```
 
 ## Ownership Rules
-- `Render` is the public owner surface for render-facing types, VT conversion, geometry derivation, and runtime contracts.
+- `src/howl_render.zig` currently mixes ABI export duty and repo-local/public Zig root posture. That mixed root shape is a deletion target, not a preservation target.
+- `Render` owns render-facing types, VT conversion, geometry derivation, and runtime contracts behind the C ABI.
 - `Renderer` owns selected backend behavior and prepared-frame lifetime.
 - GL and GLES should expose the same staged backend spine to `Renderer`: prepare frame, upload/consume raster outputs, submit frame.
 - `Render.Text` owns the public text support surface. `Render.Text.Lane` is the text-lane contract owner.
@@ -88,6 +106,10 @@ sequenceDiagram
 ```
 
 ## API Contracts
+- The public compatibility promise is the C ABI only.
+- `include/howl_render.h` and `howl_render_*` exported symbols define the product surface.
+- Hosts and embedders consume `howl-render` through that header and those exported symbols only.
+- Zig root imports are not an acceptable host integration path and are not a preservation target.
 - `Render` owns render-facing types, VT-to-frame/text conversion, and geometry derivation.
 - `RenderRuntime` owns retained publication state, geometry epochs, prepare/submit queueing, and metrics.
 - retained publication storage, source classification, and pending-publication state mutate in one local runtime owner path.
@@ -149,6 +171,7 @@ sequenceDiagram
 - `renderFrameState(...)` is the convenience owner path for one-shot rendering.
 - `prepareFrame(...)` and `submitFrame(...)` are the reviewable staged path for retained runtime integration.
 - backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
+- runtime action and publication state should close through explicit runtime transitions, not through exported convenience getters kept only because Zig internals have those names.
 
 ## Proof Surface
 - `zig build test --summary all` is the proof umbrella.
