@@ -115,23 +115,6 @@ pub fn clusterForCell(text: contract.CellText, first_cell: u32, span: u8, style:
     };
 }
 
-fn canSkipCleanRows(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics) bool {
-    const row_count = @as(usize, grid_metrics.rows);
-    return !damage.full and
-        damage.dirty_rows.len == row_count and
-        damage.dirty_cols_start.len == row_count and
-        damage.dirty_cols_end.len == row_count;
-}
-
-fn cleanRowSkip(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics, enabled: bool, idx: usize, cells_len: usize) ?usize {
-    if (!enabled) return null;
-    const cols = @max(@as(usize, grid_metrics.cols), 1);
-    const row = idx / cols;
-    if (row >= damage.dirty_rows.len) return cells_len;
-    if (damage.dirty_rows[row]) return null;
-    return @min((row + 1) * cols, cells_len);
-}
-
 pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const types.CellInput) !OwnedLineTextCache {
     const texts = try allocator.alloc(contract.CellText, cells.len);
     errdefer allocator.free(texts);
@@ -156,10 +139,10 @@ pub fn buildSparseCellsWithDamage(
     grid_metrics: contract.GridMetrics,
     damage: scene_mod.DamageInput,
 ) !SparseCells {
-    const skip_clean_rows = canSkipCleanRows(damage, grid_metrics);
+    const damage_filter = DamageFilter.init(damage, grid_metrics);
     var renderable = try allocator.alloc(contract.RenderableCell, cells.len);
     errdefer allocator.free(renderable);
-    var texts = try allocator.alloc(contract.CellText, cells.len);
+    const texts = try allocator.alloc(contract.CellText, cells.len);
     errdefer allocator.free(texts);
     var codepoints = try allocator.alloc(u32, cells.len);
     errdefer allocator.free(codepoints);
@@ -171,7 +154,7 @@ pub fn buildSparseCellsWithDamage(
     var out_idx: usize = 0;
     var cell_idx: usize = 0;
     while (cell_idx < cells.len) {
-        if (cleanRowSkip(damage, grid_metrics, skip_clean_rows, cell_idx, cells.len)) |next_idx| {
+        if (damage_filter.cleanRowSkip(cell_idx, cells.len)) |next_idx| {
             cell_idx = next_idx;
             continue;
         }
@@ -182,42 +165,18 @@ pub fn buildSparseCellsWithDamage(
         if (cell.empty) continue;
         const first_cell: u32 = @intCast(idx);
         const span = inferredCellSpan(cells, idx);
-        if (!includeSpan(damage, grid_metrics, first_cell, span)) continue;
+        if (!damage_filter.includeSpan(first_cell, span)) continue;
         const entry = try unique_codepoints.getOrPut(cell.codepoint);
         const text_id: u32 = if (entry.found_existing)
             entry.value_ptr.*
         else blk: {
             const next_id: u32 = @intCast(unique_count);
             entry.value_ptr.* = next_id;
-            codepoints[unique_count] = cell.codepoint;
-            texts[unique_count] = .{
-                .id = .{ .value = next_id },
-                .first_cp = cell.codepoint,
-                .codepoints = codepoints[unique_count .. unique_count + 1],
-            };
+            writeSingleCodepointText(texts, codepoints, unique_count, next_id, cell.codepoint);
             unique_count += 1;
             break :blk next_id;
         };
-        renderable[out_idx] = .{
-            .text_id = .{ .value = text_id },
-            .first_cell = first_cell,
-            .cell_span = span,
-            .style = .regular,
-            .presentation = .any,
-            .fg = cell.fg,
-            .bg = cell.bg,
-            .underline_color = cell.underline_color,
-            .underline_style = switch (cell.underline_style) {
-                .straight => .straight,
-                .double => .double,
-                .curly => .curly,
-                .dotted => .dotted,
-                .dashed => .dashed,
-            },
-            .underline = cell.underline,
-            .strikethrough = cell.strikethrough,
-            .continuation = false,
-        };
+        renderable[out_idx] = renderableFromCellInput(.{ .value = text_id }, first_cell, span, cell, false);
         out_idx += 1;
     }
 
@@ -231,11 +190,7 @@ pub fn buildSparseCellsWithDamage(
     const final_texts = try allocator.alloc(contract.CellText, unique_count);
     errdefer allocator.free(final_texts);
     for (0..unique_count) |idx| {
-        final_texts[idx] = .{
-            .id = .{ .value = @intCast(idx) },
-            .first_cp = final_codepoints[idx],
-            .codepoints = final_codepoints[idx .. idx + 1],
-        };
+        writeSingleCodepointText(final_texts, final_codepoints, idx, @intCast(idx), final_codepoints[idx]);
     }
 
     allocator.free(texts);
@@ -306,26 +261,7 @@ pub fn buildRenderableCellsFromCells(
 
     for (cells, 0..) |cell, idx| {
         const text = cache.texts[idx];
-        out[idx] = .{
-            .text_id = text.id,
-            .first_cell = @intCast(idx),
-            .cell_span = inferredCellSpan(cells, idx),
-            .style = .regular,
-            .presentation = .any,
-            .fg = cell.fg,
-            .bg = cell.bg,
-            .underline_color = cell.underline_color,
-            .underline_style = switch (cell.underline_style) {
-                .straight => .straight,
-                .double => .double,
-                .curly => .curly,
-                .dotted => .dotted,
-                .dashed => .dashed,
-            },
-            .underline = cell.underline,
-            .strikethrough = cell.strikethrough,
-            .continuation = cell.continuation,
-        };
+        out[idx] = renderableFromCellInput(text.id, @intCast(idx), inferredCellSpan(cells, idx), cell, cell.continuation);
     }
 
     return .{ .allocator = allocator, .cells = out };
@@ -342,20 +278,7 @@ pub fn buildRenderableCellsFromInputs(
     for (inputs, 0..) |input, idx| {
         const cps = normalizedCodepoints(input.codepoints);
         const text_id = findText(cache.texts, cps) orelse 0;
-        out[idx] = .{
-            .text_id = .{ .value = @intCast(text_id) },
-            .first_cell = @intCast(idx),
-            .cell_span = @max(@max(input.cell_span, 1), inferredInputCellSpan(inputs, idx)),
-            .style = input.style,
-            .presentation = detectPresentation(cps, input.presentation),
-            .fg = input.fg,
-            .bg = input.bg,
-            .underline_color = input.underline_color,
-            .underline_style = input.underline_style,
-            .underline = input.underline,
-            .strikethrough = input.strikethrough,
-            .continuation = input.continuation,
-        };
+        out[idx] = renderableFromInput(.{ .value = @intCast(text_id) }, @intCast(idx), @max(@max(input.cell_span, 1), inferredInputCellSpan(inputs, idx)), detectPresentation(cps, input.presentation), input);
     }
 
     return .{ .allocator = allocator, .cells = out };
@@ -380,10 +303,11 @@ pub fn extractClustersWithDamage(
     grid_metrics: contract.GridMetrics,
     damage: scene_mod.DamageInput,
 ) !OwnedClusters {
+    const damage_filter = DamageFilter.init(damage, grid_metrics);
     var count: usize = 0;
     for (cells) |cell| {
         if (cell.continuation) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
         const text = textForCell(cell, cache);
         if (isBlankText(text)) continue;
         count += 1;
@@ -394,17 +318,10 @@ pub fn extractClustersWithDamage(
     var out_idx: usize = 0;
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
         const text = textForCell(cell, cache);
         if (isBlankText(text)) continue;
-        clusters[out_idx] = .{
-            .text_id = cell.text_id,
-            .first_cell = cell.first_cell,
-            .cell_span = @max(cell.cell_span, inferredRenderableCellSpan(cells, idx)),
-            .first_cp = text.first_cp,
-            .style = cell.style,
-            .presentation = cell.presentation,
-        };
+        clusters[out_idx] = renderableCluster(cell, text, inferredRenderableCellSpan(cells, idx));
         out_idx += 1;
     }
 
@@ -419,11 +336,12 @@ pub fn selectComplexWithDamage(
     grid_metrics: contract.GridMetrics,
     damage: scene_mod.DamageInput,
 ) !ComplexSelection {
+    const damage_filter = DamageFilter.init(damage, grid_metrics);
     var complex_cell_count: usize = 0;
     for (cells) |cell| {
         if (cell.continuation) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-        if (text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane == .complex) complex_cell_count += 1;
+        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
+        if (classifyComplexCell(cell, cache)) complex_cell_count += 1;
     }
 
     const complex_cells = try allocator.alloc(contract.RenderableCell, complex_cell_count);
@@ -431,45 +349,27 @@ pub fn selectComplexWithDamage(
     var complex_cell_idx: usize = 0;
     for (cells) |cell| {
         if (cell.continuation) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
-        if (text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane != .complex) continue;
+        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
+        if (!classifyComplexCell(cell, cache)) continue;
         complex_cells[complex_cell_idx] = cell;
         complex_cell_idx += 1;
     }
 
     var complex_cluster_count: usize = 0;
     for (clusters) |cluster_value| {
-        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane == .complex) complex_cluster_count += 1;
+        if (classifyComplexCluster(cells, cluster_value, cache)) complex_cluster_count += 1;
     }
 
     const complex_clusters = try allocator.alloc(contract.CellCluster, complex_cluster_count);
     errdefer allocator.free(complex_clusters);
     var complex_cluster_idx: usize = 0;
     for (clusters) |cluster_value| {
-        if (text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane != .complex) continue;
+        if (!classifyComplexCluster(cells, cluster_value, cache)) continue;
         complex_clusters[complex_cluster_idx] = cluster_value;
         complex_cluster_idx += 1;
     }
 
     return .{ .allocator = allocator, .cells = complex_cells, .clusters = complex_clusters };
-}
-
-fn includeSpan(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
-    if (damage.full) return true;
-    const row_count = @as(usize, grid_metrics.rows);
-    const valid = damage.dirty_rows.len == row_count and
-        damage.dirty_cols_start.len == row_count and
-        damage.dirty_cols_end.len == row_count;
-    if (!valid) return true;
-
-    const cols = @max(@as(u32, grid_metrics.cols), 1);
-    const row = @as(usize, @intCast(first_cell / cols));
-    if (row >= damage.dirty_rows.len or !damage.dirty_rows[row]) return false;
-    const start_col = @as(u16, @intCast(first_cell % cols));
-    const end_col = start_col +| (@max(cell_span, 1) - 1);
-    const dirty_start = damage.dirty_cols_start[row];
-    const dirty_end = damage.dirty_cols_end[row];
-    return !(end_col < dirty_start or start_col > dirty_end);
 }
 
 fn textForCell(cell: contract.RenderableCell, cache: contract.LineTextCache) contract.CellText {
@@ -490,6 +390,114 @@ fn isBlankText(text: contract.CellText) bool {
         if (cp != 0 and cp != ' ') return false;
     }
     return true;
+}
+
+const DamageFilter = struct {
+    cols: u32,
+    dirty_rows: []const bool,
+    dirty_cols_start: []const u16,
+    dirty_cols_end: []const u16,
+    valid: bool,
+
+    fn init(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics) DamageFilter {
+        const row_count = @as(usize, grid_metrics.rows);
+        const valid = !damage.full and
+            damage.dirty_rows.len == row_count and
+            damage.dirty_cols_start.len == row_count and
+            damage.dirty_cols_end.len == row_count;
+        return .{
+            .cols = @max(@as(u32, grid_metrics.cols), 1),
+            .dirty_rows = damage.dirty_rows,
+            .dirty_cols_start = damage.dirty_cols_start,
+            .dirty_cols_end = damage.dirty_cols_end,
+            .valid = valid,
+        };
+    }
+
+    fn cleanRowSkip(self: DamageFilter, idx: usize, cells_len: usize) ?usize {
+        if (!self.valid) return null;
+        const row = idx / self.cols;
+        if (row >= self.dirty_rows.len) return cells_len;
+        if (self.dirty_rows[row]) return null;
+        return @min((row + 1) * self.cols, cells_len);
+    }
+
+    fn includeSpan(self: DamageFilter, first_cell: u32, cell_span: u8) bool {
+        if (!self.valid) return true;
+        const row = @as(usize, @intCast(first_cell / self.cols));
+        if (row >= self.dirty_rows.len or !self.dirty_rows[row]) return false;
+        const start_col = @as(u16, @intCast(first_cell % self.cols));
+        const end_col = start_col +| (@max(cell_span, 1) - 1);
+        return !(end_col < self.dirty_cols_start[row] or start_col > self.dirty_cols_end[row]);
+    }
+};
+
+fn writeSingleCodepointText(texts: []contract.CellText, codepoints: []u32, idx: usize, text_id: u32, cp: u32) void {
+    codepoints[idx] = cp;
+    texts[idx] = .{
+        .id = .{ .value = text_id },
+        .first_cp = cp,
+        .codepoints = codepoints[idx .. idx + 1],
+    };
+}
+
+fn renderableFromCellInput(text_id: contract.CellTextId, first_cell: u32, cell_span: u8, cell: types.CellInput, continuation: bool) contract.RenderableCell {
+    return .{
+        .text_id = text_id,
+        .first_cell = first_cell,
+        .cell_span = cell_span,
+        .style = .regular,
+        .presentation = .any,
+        .fg = cell.fg,
+        .bg = cell.bg,
+        .underline_color = cell.underline_color,
+        .underline_style = switch (cell.underline_style) {
+            .straight => .straight,
+            .double => .double,
+            .curly => .curly,
+            .dotted => .dotted,
+            .dashed => .dashed,
+        },
+        .underline = cell.underline,
+        .strikethrough = cell.strikethrough,
+        .continuation = continuation,
+    };
+}
+
+fn renderableFromInput(text_id: contract.CellTextId, first_cell: u32, cell_span: u8, presentation: contract.TextPresentation, input: CellTextInput) contract.RenderableCell {
+    return .{
+        .text_id = text_id,
+        .first_cell = first_cell,
+        .cell_span = cell_span,
+        .style = input.style,
+        .presentation = presentation,
+        .fg = input.fg,
+        .bg = input.bg,
+        .underline_color = input.underline_color,
+        .underline_style = input.underline_style,
+        .underline = input.underline,
+        .strikethrough = input.strikethrough,
+        .continuation = input.continuation,
+    };
+}
+
+fn renderableCluster(cell: contract.RenderableCell, text: contract.CellText, cell_span: u8) contract.CellCluster {
+    return .{
+        .text_id = cell.text_id,
+        .first_cell = cell.first_cell,
+        .cell_span = @max(cell.cell_span, cell_span),
+        .first_cp = text.first_cp,
+        .style = cell.style,
+        .presentation = cell.presentation,
+    };
+}
+
+fn classifyComplexCell(cell: contract.RenderableCell, cache: contract.LineTextCache) bool {
+    return text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane == .complex;
+}
+
+fn classifyComplexCluster(cells: []const contract.RenderableCell, cluster_value: contract.CellCluster, cache: contract.LineTextCache) bool {
+    return text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane == .complex;
 }
 
 fn inferredCellSpan(cells: []const types.CellInput, idx: usize) u8 {
