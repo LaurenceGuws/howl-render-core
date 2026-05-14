@@ -17,21 +17,17 @@ It turns render-facing terminal state into frame inputs, retained publication st
 - The shipped embedding boundary is C ABI only.
 - `src/howl_render.zig` is not an embedding surface. If it survives, it is repo-local only.
 - Internal workspace wiring is not a public contract and is not a preservation target.
-- Deletion targets for the current cleanup are exact:
-  - `src/render_namespace.zig`
-  - the Zig-shaped aggregation posture in `src/howl_render.zig`
-  - the fake dual-surface root/build posture in `build.zig`
-  - integer-handle posture in `include/howl_render.h`:
-    - `HowlRenderSnapshotHandle`
-    - `HowlRenderRuntimeHandle`
-    - `HowlRenderRendererHandle`
-  - matching integer-handle posture in `src/ffi.zig`:
-    - `SnapshotHandle`
-    - `RuntimeHandle`
-    - `RendererHandle`
-  - runtime-convenience ABI posture in `include/howl_render.h`:
-    - `howl_render_runtime_has_pending_publication`
-    - `howl_render_runtime_action`
+- Accepted cleanup results now locked:
+  - `src/render_namespace.zig` is deleted
+  - `src/howl_render.zig` is repo-local only
+  - `build.zig` no longer preserves dual-surface or self-import posture
+  - `src/libhowl_render.zig` is the explicit ABI export root
+  - render handles in `include/howl_render.h` and `src/ffi.zig` are opaque-pointer-shaped
+  - runtime convenience ABI exports `howl_render_runtime_has_pending_publication` and `howl_render_runtime_action` are deleted
+- Remaining repo-local cleanup targets are exact:
+  - ABI-handle wrapper ownership should stay in `src/ffi.zig`, not in repo-local `Render` or `Renderer` owner surfaces
+  - non-render metadata should not survive in `Render.SourceView`
+  - repo-local observability passthroughs should not survive if they only mirror backend internals without a true owner boundary
 
 ```mermaid
 classDiagram
@@ -54,12 +50,12 @@ classDiagram
 ```
 
 ## Ownership Rules
-- `src/howl_render.zig` currently mixes ABI export duty and repo-local/public Zig root posture. That mixed root shape is a deletion target, not a preservation target.
-- `Render` owns render-facing types, VT conversion, geometry derivation, and runtime contracts behind the C ABI.
+- `src/howl_render.zig` is repo-local only. It is not an embedding surface and not a preservation target for host integration shape.
+- `Render` owns render-facing types, VT conversion, geometry derivation, retained-publication state, and runtime contracts behind the C ABI.
 - `Renderer` owns selected backend behavior and prepared-frame lifetime.
 - GL and GLES should expose the same staged backend spine to `Renderer`: prepare frame, upload/consume raster outputs, submit frame.
 - `Render.Text` owns the public text support surface. `Render.Text.Lane` is the text-lane contract owner.
-- `Ffi` translates ABI contracts only; it does not own render policy.
+- `Ffi` translates ABI contracts only. It owns ABI handle storage and marshalling, but not render policy.
 - `RenderRuntime` keeps retained publication mutation local before handing snapshot tokens to the frame queue.
 - Backend repos should depend on these contracts, not re-invent them privately.
 - `GlyphQuad` is final GPU submission data. It is not the shaping input model.
@@ -112,6 +108,7 @@ sequenceDiagram
 - Zig root imports are not an acceptable host integration path and are not a preservation target.
 - `Render` owns render-facing types, VT-to-frame/text conversion, and geometry derivation.
 - `RenderRuntime` owns retained publication state, geometry epochs, prepare/submit queueing, and metrics.
+- `RenderRuntime` does not own ABI handle boxes or renderer-side prepared-frame retention.
 - retained publication storage, source classification, and pending-publication state mutate in one local runtime owner path.
 - queue state reports explicit prepare/submit transitions; runtime decides when rejected submit turns into a full-prepare request.
 - runtime metric contracts live in `frame_metrics.zig`; queue transition counters mutate only at the queue transition that they count.
@@ -124,6 +121,7 @@ sequenceDiagram
 - `sprite_key` owns sprite output identity only; it does not own residency mutation.
 - `Render.Text.Lane`, `font_resolver`, `shape_run`, `grouping`, and `scene` stay leaf phase owners under the engine spine; they do not own top-level routing.
 - `Renderer` owns backend selection, backend-facing prepare/submit behavior, and prepared-frame lifetime.
+- `Renderer` repo-local surface should expose only owner-true backend behavior. ABI handle boxes and font-path retention live in `src/ffi.zig`.
 - backend root files own control flow only: prepare shared frame input, consume shared text analysis, upload atlas residency, and submit the target pass.
 - backend internal atlas files own backend-local atlas storage and GPU upload mutation only.
 - backend internal provider files own FT/HB callback translation and backend-local cache wiring only.
@@ -172,6 +170,7 @@ sequenceDiagram
 - `prepareFrame(...)` and `submitFrame(...)` are the reviewable staged path for retained runtime integration.
 - backend roots consume shared render/text contracts directly; they do not re-own text shaping, raster request policy, or atlas residency policy.
 - runtime action and publication state should close through explicit runtime transitions, not through exported convenience getters kept only because Zig internals have those names.
+- repo-local owner APIs should not keep non-render metadata or FFI-only ownership boxes alive just because earlier checkpoints exposed them.
 
 ## Proof Surface
 - `zig build test --summary all` is the proof umbrella.

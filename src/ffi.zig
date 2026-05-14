@@ -14,6 +14,64 @@ pub const SnapshotHandle = ?*HowlRenderSnapshot;
 pub const RuntimeHandle = ?*HowlRenderRuntime;
 pub const RendererHandle = ?*HowlRenderRenderer;
 
+const SnapshotOwner = struct {
+    snapshot: Render.FrameSnapshot,
+
+    fn create(rows: u16, cols: u16) ?*SnapshotOwner {
+        if (rows == 0 or cols == 0) return null;
+        const owner = std.heap.c_allocator.create(SnapshotOwner) catch return null;
+        owner.snapshot = Render.FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
+            std.heap.c_allocator.destroy(owner);
+            return null;
+        };
+        return owner;
+    }
+
+    fn destroy(self: *SnapshotOwner) void {
+        self.snapshot.deinit(std.heap.c_allocator);
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
+const RuntimeOwner = struct {
+    runtime: Render.RenderRuntime,
+
+    fn create() ?*RuntimeOwner {
+        const owner = std.heap.c_allocator.create(RuntimeOwner) catch return null;
+        owner.runtime = Render.RenderRuntime.init(std.heap.c_allocator);
+        return owner;
+    }
+
+    fn destroy(self: *RuntimeOwner) void {
+        self.runtime.deinit();
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
+const RendererOwner = struct {
+    renderer: Renderer,
+    prepared: ?Renderer.FrameRecord = null,
+    font_path: ?[:0]u8 = null,
+    fallback_font_paths: std.ArrayList([:0]u8) = .empty,
+
+    fn create(config: Render.BackendConfig) ?*RendererOwner {
+        const owner = std.heap.c_allocator.create(RendererOwner) catch return null;
+        owner.* = .{ .renderer = Renderer.init(config) };
+        return owner;
+    }
+
+    fn destroy(self: *RendererOwner) void {
+        if (self.prepared) |*prepared| prepared.deinit();
+        self.prepared = null;
+        if (self.font_path) |path| std.heap.c_allocator.free(path);
+        self.font_path = null;
+        for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
+        self.fallback_font_paths.deinit(std.heap.c_allocator);
+        self.renderer.deinit();
+        std.heap.c_allocator.destroy(self);
+    }
+};
+
 pub const HowlRenderCallStatus = enum(c_int) {
     ok = 0,
     missing_handle = -1,
@@ -421,17 +479,17 @@ fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     };
 }
 
-fn snapshotOwnerFromHandle(handle: SnapshotHandle) ?*Render.SnapshotOwner {
+fn snapshotOwnerFromHandle(handle: SnapshotHandle) ?*SnapshotOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
 
-fn runtimeOwnerFromHandle(handle: RuntimeHandle) ?*Render.RenderRuntime.Owner {
+fn runtimeOwnerFromHandle(handle: RuntimeHandle) ?*RuntimeOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
 
-fn rendererOwnerFromHandle(handle: RendererHandle) ?*Renderer.Owner {
+fn rendererOwnerFromHandle(handle: RendererHandle) ?*RendererOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
@@ -462,7 +520,7 @@ pub fn rendererDeriveFrameLayout(handle: RendererHandle, render_px: FfiPixelSize
 }
 
 pub fn snapshotInit(rows: u16, cols: u16) callconv(.c) SnapshotHandle {
-    const owner = Render.SnapshotOwner.create(rows, cols) orelse return null;
+    const owner = SnapshotOwner.create(rows, cols) orelse return null;
     return @ptrCast(owner);
 }
 
@@ -512,7 +570,7 @@ pub fn snapshotWriteCell(handle: SnapshotHandle, row: u16, col: u16, cell: FfiCe
 }
 
 pub fn runtimeInit() callconv(.c) RuntimeHandle {
-    const owner = Render.RenderRuntime.Owner.create() orelse return null;
+    const owner = RuntimeOwner.create() orelse return null;
     return @ptrCast(owner);
 }
 
@@ -584,7 +642,7 @@ pub fn runtimeResetMetrics(handle: RuntimeHandle) callconv(.c) c_int {
 pub fn rendererInit(config: FfiBackendConfig) callconv(.c) RendererHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return null;
     if (config.cell_px.width == 0 or config.cell_px.height == 0) return null;
-    const owner = Renderer.Owner.create(.{
+    const owner = RendererOwner.create(.{
         .surface_px = pixelIn(config.surface_px),
         .cell_px = cellInSize(config.cell_px),
         .font_size_px = if (config.font_size_px == 0) config.cell_px.height else config.font_size_px,

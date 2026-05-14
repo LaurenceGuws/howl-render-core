@@ -21,21 +21,17 @@ Target outcome:
 
 ## Current Smells
 
-- `src/howl_render.zig` mixes ABI export duty and repo-local/public Zig root posture
-- `src/render_namespace.zig` is wrapper namespace theater
-- `build.zig` preserves fake dual-surface posture with self-import wiring around the same root
-- `include/howl_render.h` still uses integer handle posture:
-  - `HowlRenderSnapshotHandle`
-  - `HowlRenderRuntimeHandle`
-  - `HowlRenderRendererHandle`
-- `src/ffi.zig` still mirrors that integer handle posture with `usize` handles and pointer casts
-- `include/howl_render.h` still exports runtime convenience helpers that may be deletion targets:
-  - `howl_render_runtime_has_pending_publication`
-  - `howl_render_runtime_action`
-- Linux host already consumes the render ABI, but current seam shape may still preserve convenience
-  posture that should read as explicit runtime transitions instead
-- `design.md` still presents Zig owner surfaces as the public render surface instead of naming the C ABI
-  as the real embedding boundary
+- accepted cleanup already landed:
+  - `src/render_namespace.zig` deleted
+  - `src/libhowl_render.zig` is the explicit ABI export root
+  - `build.zig` no longer preserves fake dual-surface posture
+  - shipped ABI handle posture is opaque-pointer-shaped
+  - shipped runtime convenience ABI getters are deleted
+- accepted owner cleanup already landed:
+  - ABI-handle wrapper storage moved to `src/ffi.zig`
+  - `src/render.zig` no longer carries non-render source metadata fields
+  - `src/renderer.zig` no longer carries FFI-only owner state or stale observability passthroughs
+- remaining active scope is Checkpoint 5 host proof only
 
 ## Baseline
 
@@ -118,6 +114,12 @@ Must do:
 - keep render contracts, runtime state, retained publication mutation, and backend submission owner-separated
 - remove remaining repo-local public shape that suggests host-facing Zig owner access
 - tighten docs so shipped ABI and repo-local owner APIs are not mixed
+
+Accepted result:
+
+- shipped ABI stays unchanged in this checkpoint
+- FFI owns ABI-handle wrapper storage
+- render owner surfaces stop carrying non-render metadata and FFI-only owner boxes
 
 ### Checkpoint 5
 

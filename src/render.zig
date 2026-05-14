@@ -45,24 +45,6 @@ pub const Render = struct {
     pub const FrameSnapshotDirty = frame_snapshot.Dirty;
     pub const FrameSnapshotDamage = frame_snapshot.Damage;
     pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
-    pub const SnapshotOwner = struct {
-        snapshot: FrameSnapshot,
-
-        pub fn create(rows: u16, cols: u16) ?*SnapshotOwner {
-            if (rows == 0 or cols == 0) return null;
-            const owner = std.heap.c_allocator.create(SnapshotOwner) catch return null;
-            owner.snapshot = FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
-                std.heap.c_allocator.destroy(owner);
-                return null;
-            };
-            return owner;
-        }
-
-        pub fn destroy(self: *SnapshotOwner) void {
-            self.snapshot.deinit(std.heap.c_allocator);
-            std.heap.c_allocator.destroy(self);
-        }
-    };
     pub const PrepareMetrics = frame_metrics.PrepareMetrics;
     pub const RenderMetrics = frame_metrics.RenderMetrics;
     pub const Metrics = frame_metrics.RuntimeMetrics;
@@ -229,21 +211,6 @@ pub const Render = struct {
         }
     };
     pub const RenderRuntime = struct {
-        pub const Owner = struct {
-            runtime: RenderRuntime,
-
-            pub fn create() ?*Owner {
-                const owner = std.heap.c_allocator.create(Owner) catch return null;
-                owner.runtime = RenderRuntime.init(std.heap.c_allocator);
-                return owner;
-            }
-
-            pub fn destroy(self: *Owner) void {
-                self.runtime.deinit();
-                std.heap.c_allocator.destroy(self);
-            }
-        };
-
         pub const Metrics = Render.Metrics;
         allocator: std.mem.Allocator,
         surface_owner: FrameQueue.TerminalSurface = .{},
@@ -313,10 +280,6 @@ pub const Render = struct {
             return self.surface_owner.takePrepare();
         }
 
-        pub fn hasPendingPublication(self: *const RenderRuntime) bool {
-            return self.publication_state.hasPending();
-        }
-
         pub fn publishPrepared(self: *RenderRuntime, prepared: frame_pipeline.PreparedFrame) u64 {
             std.debug.assert(prepared.token.geometry_epoch == self.geometry_epoch);
             return self.surface_owner.publishPrepared(prepared);
@@ -378,8 +341,6 @@ pub const Render = struct {
         focused: bool = true,
         hover_link_id: u32 = 0,
         hover_underline_style: surface.UnderlineStyle = .straight,
-        title: []const u8 = &.{},
-        output_seen: bool = false,
         snapshot_seq: u64 = 0,
         vt_epoch: u64 = 0,
         last_alt_screen: bool = false,
@@ -590,36 +551,20 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expectEqual(frame_pipeline.DamageKind.none, duplicate_receipt.damage_kind);
     try std.testing.expect(runtime.prepare() == null);
 
-    var title_source = clean_source;
-    title_source.snapshot_seq = 2;
-    title_source.title = "terminal title changed";
-    const title_receipt = runtime.acceptSource(title_source);
-    try std.testing.expect(!title_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.none, title_receipt.damage_kind);
-    try std.testing.expect(runtime.prepare() == null);
-
-    var output_source = clean_source;
-    output_source.snapshot_seq = 3;
-    output_source.output_seen = true;
-    const output_receipt = runtime.acceptSource(output_source);
-    try std.testing.expect(!output_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.none, output_receipt.damage_kind);
-    try std.testing.expect(runtime.prepare() == null);
-
     var republished_source = clean_source;
-    republished_source.snapshot_seq = 4;
+    republished_source.snapshot_seq = 2;
     republished_source.vt_epoch = 2;
     const republished_receipt = runtime.acceptSource(republished_source);
     try std.testing.expect(republished_receipt.published);
     try std.testing.expect(republished_receipt.queued);
     try std.testing.expectEqual(frame_pipeline.DamageKind.full, republished_receipt.damage_kind);
     const republished_request = runtime.prepare() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(u64, 4), republished_request.token.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 2), republished_request.token.snapshot_seq);
     try std.testing.expectEqual(@as(u21, 'a'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[5].codepoint);
 
     var scroll_source = clean_source;
-    scroll_source.snapshot_seq = 5;
+    scroll_source.snapshot_seq = 3;
     scroll_source.vt_epoch = 2;
     scroll_source.scrollback_count = 2;
     scroll_source.scrollback_offset = 1;
@@ -639,7 +584,7 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expect(scroll_receipt.published);
     try std.testing.expectEqual(frame_pipeline.DamageKind.scroll, scroll_receipt.damage_kind);
     const scroll_request = runtime.prepare() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(u64, 5), scroll_request.token.snapshot_seq);
+    try std.testing.expectEqual(@as(u64, 3), scroll_request.token.snapshot_seq);
     try std.testing.expectEqual(frame_pipeline.DamageKind.scroll, scroll_request.token.damage_kind);
     try std.testing.expectEqual(@as(u21, 'd'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'e'), runtime.publication_state.publication.?.snapshot.cells.items[1].codepoint);

@@ -183,30 +183,6 @@ pub const Renderer = struct {
         }
     };
 
-    pub const Owner = struct {
-        renderer: Renderer,
-        prepared: ?FrameRecord = null,
-        font_path: ?[:0]u8 = null,
-        fallback_font_paths: std.ArrayList([:0]u8) = .empty,
-
-        pub fn create(config: render.BackendConfig) ?*Owner {
-            const owner = std.heap.c_allocator.create(Owner) catch return null;
-            owner.* = .{ .renderer = Renderer.init(config) };
-            return owner;
-        }
-
-        pub fn destroy(self: *Owner) void {
-            if (self.prepared) |*prepared| prepared.deinit();
-            self.prepared = null;
-            if (self.font_path) |path| std.heap.c_allocator.free(path);
-            self.font_path = null;
-            for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
-            self.fallback_font_paths.deinit(std.heap.c_allocator);
-            self.renderer.deinit();
-            std.heap.c_allocator.destroy(self);
-        }
-    };
-
     pub fn init(config: render.BackendConfig) Renderer {
         return .{ .backend = backend_mod.Backend.init(config) };
     }
@@ -285,21 +261,4 @@ pub const Renderer = struct {
         };
     }
 
-    pub fn surfaceHandle(self: *Renderer) render.SurfaceHandle {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        return self.backend.surfaceHandle();
-    }
-
-    pub fn resolveCounters(self: *Renderer) render.ResolveCounters {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        return self.backend.resolveCounters();
-    }
-
-    pub fn lastResolveStage(self: *Renderer) render.ResolveStage {
-        lockMutex(&self.mutex);
-        defer self.mutex.unlock();
-        return self.backend.lastResolveStage();
-    }
 };
