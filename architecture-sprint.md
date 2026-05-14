@@ -501,10 +501,112 @@ Must do:
 - name the frame records that will own observability after backend getters are removed
 - define the reduced backend calls the renderer will make
 
+Renderer-owned sequencing contract for implementation:
+
+- `Renderer.prepareFrame(...)` must own this exact step order:
+  1. call `RenderRuntime.prepare()` to take one runtime prepare request for this turn
+  2. if `RenderRuntime.prepare()` returns `null`, stop the turn with no renderer work
+  3. lock renderer/backend mutation for one bounded prepare turn
+  4. apply renderer-owned resize/target invalidation consequences before text work if surface or cell geometry changed
+  5. build `Render.Text.FontSession` inputs through backend leaf `fontSession(...)`
+  6. build provider callbacks through backend leaf `textProvider(...)`
+  7. run renderer-owned text analysis and raster planning in `Render.Text.Engine`
+  8. record renderer-owned pre-submit observability on the prepared-frame record:
+      - render request token fields
+      - geometry epoch
+      - damage classification
+      - resolve counters after analysis
+      - resolve stage after analysis
+      - prepared timings
+  9. call one backend leaf upload primitive for committed raster outputs
+  10. construct the renderer-owned prepared-frame record from the runtime prepare request and analysis result
+  11. publish `Render.FramePipeline.PreparedFrame` metadata to `RenderRuntime.publishPrepared(...)`
+  12. unlock and return the renderer-owned prepared result
+
+- `Renderer.submitFrame(...)` must own this exact step order:
+  1. call `RenderRuntime.submit()` to take one runtime submit transition for this turn
+  2. if `RenderRuntime.submit()` returns `.idle`, stop the turn with no renderer work
+  3. if `RenderRuntime.submit()` returns `.stale` or `.needs_full_prepare`, stop the turn and let runtime own the retry consequence
+  4. if `RenderRuntime.submit()` returns `.submit`, consume the matching renderer-owned prepared-frame record for that prepared token
+  5. lock renderer/backend mutation for one bounded submit turn
+  6. call one backend leaf draw primitive for the prepared scene
+  7. call one backend leaf present/submit primitive only if the backend truly needs a distinct target-finalization step
+  8. capture renderer-owned post-submit observability on the submitted-frame record:
+      - final surface handle
+      - render report counts
+      - render time
+      - final resolve counters
+      - final resolve stage
+  9. construct `Render.FramePipeline.SubmittedFrame` from the renderer-owned submitted-frame record
+  10. hand the submitted-frame result to `RenderRuntime.acceptSubmitted(...)`
+  11. release prepared-frame ownership from the renderer after submit succeeds or is consumed
+  12. unlock and return the renderer-owned submitted result
+
+- `RenderRuntime.markPresented()` is not part of `Renderer.submitFrame(...)`.
+  - it is a later present consequence owned by the host-facing presentation path after a submitted frame is actually presented
+  - renderer sequencing ends at `RenderRuntime.acceptSubmitted(...)`
+
+State ownership lock:
+
+- `RenderRuntime` keeps only:
+  - retained publication state in `publication_state`
+  - geometry state and `geometry_epoch`
+  - queue transition state in `surface_owner`
+  - runtime metrics in `surface_owner` / `frame_metrics`
+  - `Render.FramePipeline.PreparedFrame` and `Render.FramePipeline.SubmittedFrame` queue consequences only
+  - present acknowledgement through `markPresented()` after host presentation
+- renderer-owned frame records keep:
+  - request token identity copied from runtime prepare request
+  - prepared text analysis payload
+  - prepared scene and raster outputs
+  - damage classification derived from prepared scene
+  - renderer-visible observability before and after draw
+  - final surface/result observability needed to build `SubmittedFrame`
+- backend roots keep only:
+  - backend-local GPU/storage mutation state
+  - backend-local target texture/FBO/program state
+  - provider wiring and backend-local capability facts
+
+Code-level shape lock for Checkpoint 3B:
+
+- the current `Renderer.FrameRecord` becomes the prepared-frame state owner
+- the current `Renderer.Submitted` becomes the submitted-frame state owner
+- the current `Renderer.Prepared` remains the narrow prepare return wrapper until implementation can flatten it honestly
+- if implementation needs new names, the required split is still exact:
+  - one renderer-owned prepared-frame record
+  - one renderer-owned submitted-frame record
+  - no backend-owned record may carry renderer-visible state across prepare/submit boundaries
+
+Observability landing lock:
+
+- backend `resolveCounters()` lands in renderer-owned prepared/submitted frame records
+- backend `surfaceHandle()` lands in the renderer-owned submitted-frame record
+- backend `lastResolveStage()` lands in the renderer-owned prepared/submitted observability record
+- none of those getters remain renderer dependencies after Checkpoint 3C
+
+Reduced backend leaf calls after Checkpoint 3B:
+
+- surviving current leaf calls:
+  - `fontSession(...)`
+  - `textProvider(...)`
+  - `bindTargetTexture(...)`
+  - `targetTexture(...)`
+  - `deriveFrameLayout(...)`
+  - `capabilities(...)`
+  - font configuration calls `setFontPath(...)`, `setFallbackFontPaths(...)`, `setFontSizePx(...)`
+- required reduced leaf calls for the reclaimed path:
+  - one upload primitive for committed raster outputs
+  - one draw primitive for prepared scene draws
+  - one present/submit primitive only if backend target finalization is a real distinct step
+- Checkpoint 3B may keep temporary old names only if their bodies already match these reduced leaf semantics exactly; otherwise rename in Checkpoint 4A
+
 Checkpoint 3A closes only when:
 
 - the reduced sequencing is explicit enough that implementation can proceed without guessing
 - the destination owner for each moved responsibility is named in code-facing terms
+- prepared-frame and submitted-frame ownership is explicit
+- observability landing is explicit
+- surviving backend leaf calls are explicit
 
 ### Checkpoint 3B
 

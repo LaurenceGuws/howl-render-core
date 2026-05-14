@@ -184,6 +184,53 @@ sequenceDiagram
 - `Renderer` must own staged prepare/submit orchestration and consume a smaller backend leaf contract instead of the reverse.
 - backend-root upload/draw submission entrypoints may survive only as renamed or reduced leaf primitives; they are not preservation targets in their current staged shape.
 
+## Renderer Sequencing
+- `Renderer.prepareFrame(...)` is the owner of staged prepare sequencing.
+- `Renderer.submitFrame(...)` is the owner of staged submit sequencing.
+- the renderer/runtime handshake is exact:
+  - prepare path:
+    1. `Renderer` calls `RenderRuntime.prepare()`
+    2. `Renderer` stops if the runtime returns no prepare request
+    3. `Renderer` performs text analysis and raster planning
+    4. `Renderer` records prepared-frame observability
+    5. `Renderer` calls the backend upload leaf primitive
+    6. `Renderer` publishes prepared-frame metadata through `RenderRuntime.publishPrepared(...)`
+  - submit path:
+    1. `Renderer` calls `RenderRuntime.submit()`
+    2. `Renderer` stops on `.idle`
+    3. `Renderer` stops on `.stale` or `.needs_full_prepare` and lets runtime own the retry consequence
+    4. `Renderer` consumes the matching prepared-frame record on `.submit`
+    5. `Renderer` calls backend draw leaf work
+    6. `Renderer` calls backend present/submit leaf work only if a distinct backend-finalization step is real
+    7. `Renderer` records submitted-frame observability
+    8. `Renderer` hands the final result to `RenderRuntime.acceptSubmitted(...)`
+- `RenderRuntime.markPresented()` is a later host-owned presentation consequence, not part of submit-time renderer sequencing.
+- `RenderRuntime` owns retained publication mutation, queue transitions, and runtime metrics only; it does not own prepared scene payloads or renderer-visible post-draw observability.
+- renderer-owned prepared-frame records must hold:
+  - runtime request token identity
+  - geometry epoch
+  - prepared text analysis payload
+  - prepared scene/raster outputs
+  - damage classification
+  - resolve counters and resolve stage needed by renderer-visible observability
+  - prepared timings and render metrics inputs
+- renderer-owned submitted-frame records must hold:
+  - final surface handle
+  - draw/upload report counts
+  - render timing outcome
+  - final resolve counters and final resolve stage
+- surviving backend calls under renderer sequencing are leaf operations only:
+  - `fontSession(...)`
+  - `textProvider(...)`
+  - `bindTargetTexture(...)`
+  - `targetTexture(...)`
+  - `deriveFrameLayout(...)`
+  - `capabilities(...)`
+  - font configuration calls
+  - one upload primitive for committed raster outputs
+  - one draw primitive for prepared scene draws
+  - one present/submit primitive only if backend target finalization is a real distinct step
+
 ## Proof Surface
 - `zig build test --summary all` is the proof umbrella.
 - `zig build test:render` proves the pure render contract surface.
