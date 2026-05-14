@@ -362,34 +362,20 @@ pub const Backend = struct {
 
     pub fn drawPreparedScene(self: *Backend, scene: render.TextScene) !TextSceneRenderReport {
         if (self.closed) return error.BackendClosed;
-        if (hasCurrentContext()) {
-            if (self.target_texture == null and self.config.target_texture != 0) {
-                self.target_texture = self.config.target_texture;
-                self.surface_epoch +%= 1;
-                self.target_content_valid = false;
+        if (!hasCurrentContext()) {
+            if (builtin.is_test) {
+                self.pass_count += 1;
+                return textSceneRenderReport(self, scene);
             }
-            try self.ensureOwnedTargetTexture();
-            if (self.target_texture == null) return error.TargetTextureUnset;
-            try self.beginTargetPass();
-            defer self.endTargetPass();
-            drawTextScene(self, self.config.surface_px, scene);
-            self.target_content_valid = true;
-        } else if (!builtin.is_test) {
             return error.NoContext;
         }
+        try self.prepareSceneTarget();
+        try self.beginTargetPass();
+        defer self.endTargetPass();
+        drawTextScene(self, self.config.surface_px, scene);
+        self.target_content_valid = true;
         self.pass_count += 1;
-        return .{
-            .pass_index = self.pass_count,
-            .texture_id = self.target_texture orelse 0,
-            .raster_uploads_committed = 0,
-            .full_redraw = scene.full_redraw,
-            .scroll_up_px = scene.scroll_up_px,
-            .clear_draws = scene.clear_draws.len,
-            .background_draws = scene.background_draws.len,
-            .sprite_draws = scene.sprite_draws.len,
-            .decoration_draws = scene.decoration_draws.len,
-            .cursor_draws = scene.cursor_draws.len,
-        };
+        return textSceneRenderReport(self, scene);
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {
@@ -633,6 +619,16 @@ pub const Backend = struct {
         if (c.glCheckFramebufferStatusEXT(c.GL_FRAMEBUFFER_EXT) != c.GL_FRAMEBUFFER_COMPLETE_EXT) {
             return error.FramebufferIncomplete;
         }
+    }
+
+    fn prepareSceneTarget(self: *Backend) BackendError!void {
+        if (self.target_texture == null and self.config.target_texture != 0) {
+            self.target_texture = self.config.target_texture;
+            self.surface_epoch +%= 1;
+            self.target_content_valid = false;
+        }
+        try self.ensureOwnedTargetTexture();
+        if (self.target_texture == null) return error.TargetTextureUnset;
     }
 
     fn ensureOwnedTargetTexture(self: *Backend) BackendError!void {
@@ -1136,55 +1132,47 @@ fn drawTextScene(backend: *Backend, surface: render.PixelSize, scene: render.Tex
 }
 
 fn drawSceneBackgrounds(backend: *Backend, surface: render.PixelSize, backgrounds: []const render.TextBackgroundDraw) void {
-    if (backgrounds.len == 0) return;
-    var vertices = ensureVertexCapacity(&backend.fill_vertices, backgrounds.len * 4) orelse {
-        for (backgrounds) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
-    };
-    var count: usize = 0;
-    for (backgrounds) |draw| {
-        _ = appendRectVertices(surface, vertices, &count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    drawSolidVertices(vertices[0..count]);
+    drawSceneRectBatch(render.TextBackgroundDraw, backend, surface, backgrounds);
 }
 
 fn drawSceneClears(backend: *Backend, surface: render.PixelSize, clears: []const render.TextClearDraw) void {
-    if (clears.len == 0) return;
-    var vertices = ensureVertexCapacity(&backend.fill_vertices, clears.len * 4) orelse {
-        for (clears) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
-    };
-    var count: usize = 0;
-    for (clears) |draw| {
-        _ = appendRectVertices(surface, vertices, &count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    drawSolidVertices(vertices[0..count]);
+    drawSceneRectBatch(render.TextClearDraw, backend, surface, clears);
 }
 
 fn drawSceneDecorations(backend: *Backend, surface: render.PixelSize, decorations: []const render.TextDecorationDraw) void {
-    if (decorations.len == 0) return;
-    var vertices = ensureVertexCapacity(&backend.fill_vertices, decorations.len * 4) orelse {
-        for (decorations) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
+    drawSceneRectBatch(render.TextDecorationDraw, backend, surface, decorations);
+}
+
+fn drawSceneCursors(backend: *Backend, surface: render.PixelSize, cursors: []const render.TextCursorDraw) void {
+    drawSceneRectBatch(render.TextCursorDraw, backend, surface, cursors);
+}
+
+fn drawSceneRectBatch(comptime Draw: type, backend: *Backend, surface: render.PixelSize, draws: []const Draw) void {
+    if (draws.len == 0) return;
+    var vertices = ensureVertexCapacity(&backend.fill_vertices, draws.len * 4) orelse {
+        for (draws) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
         return;
     };
     var count: usize = 0;
-    for (decorations) |draw| {
+    for (draws) |draw| {
         _ = appendRectVertices(surface, vertices, &count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
     drawSolidVertices(vertices[0..count]);
 }
 
-fn drawSceneCursors(backend: *Backend, surface: render.PixelSize, cursors: []const render.TextCursorDraw) void {
-    if (cursors.len == 0) return;
-    var vertices = ensureVertexCapacity(&backend.fill_vertices, cursors.len * 4) orelse {
-        for (cursors) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
+fn textSceneRenderReport(self: *const Backend, scene: render.TextScene) TextSceneRenderReport {
+    return .{
+        .pass_index = self.pass_count,
+        .texture_id = self.target_texture orelse 0,
+        .raster_uploads_committed = 0,
+        .full_redraw = scene.full_redraw,
+        .scroll_up_px = scene.scroll_up_px,
+        .clear_draws = scene.clear_draws.len,
+        .background_draws = scene.background_draws.len,
+        .sprite_draws = scene.sprite_draws.len,
+        .decoration_draws = scene.decoration_draws.len,
+        .cursor_draws = scene.cursor_draws.len,
     };
-    var count: usize = 0;
-    for (cursors) |draw| {
-        _ = appendRectVertices(surface, vertices, &count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    drawSolidVertices(vertices[0..count]);
 }
 
 fn drawSceneSprites(backend: *Backend, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
