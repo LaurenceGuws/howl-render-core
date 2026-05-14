@@ -260,7 +260,6 @@ pub const SpriteRasterRequest = struct {
 };
 
 pub const TextScene = struct {
-    cells: []const RenderableCell,
     full_redraw: bool = true,
     scroll_up_px: u16 = 0,
     clear_draws: []const TextClearDraw = &.{},

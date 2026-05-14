@@ -9,8 +9,8 @@ const sprite_key = @import("sprite_key.zig");
 pub const TextScene = contract.TextScene;
 pub const TextSpriteDraw = contract.TextSpriteDraw;
 
-pub fn empty(cells: []const contract.RenderableCell) TextScene {
-    return .{ .cells = cells, .clear_draws = &.{}, .background_draws = &.{}, .sprite_draws = &.{}, .decoration_draws = &.{}, .cursor_draws = &.{}, .missing = &.{} };
+pub fn empty() TextScene {
+    return .{ .clear_draws = &.{}, .background_draws = &.{}, .sprite_draws = &.{}, .decoration_draws = &.{}, .cursor_draws = &.{}, .missing = &.{} };
 }
 
 pub const CursorShape = enum {
@@ -105,7 +105,6 @@ pub fn buildSceneWithAtlasCacheOptions(
     try appendDecorationDraws(&assembly, cache, cells, cell_metrics, grid_metrics, damage);
 
     return .{ .allocator = allocator, .scene = .{
-        .cells = cells,
         .full_redraw = damage.full,
         .scroll_up_px = damage.scroll_up_px,
         .clear_draws = try assembly.clear_draws.toOwnedSlice(allocator),

@@ -251,7 +251,6 @@ test "backend text scene cache treats transparent raster output as cached" {
         .cell_span = 1,
     };
     const scene = render.TextScene{
-        .cells = &.{},
         .sprite_draws = &.{draw},
         .missing = &.{},
     };
@@ -292,7 +291,7 @@ test "backend stores raster visual bounds separately from logical sprite span" {
         .first_cell = 0,
         .cell_span = 2,
     };
-    const scene = render.TextScene{ .cells = &.{}, .sprite_draws = &.{draw}, .missing = &.{} };
+    const scene = render.TextScene{ .sprite_draws = &.{draw}, .missing = &.{} };
 
     _ = try backend.uploadTextSceneRaster(scene, &outputs);
     try std.testing.expectEqual(@as(u16, 16), backend.atlas_slot_width[0]);
@@ -332,7 +331,6 @@ test "backend text scene report includes cursor draws" {
     defer backend.deinit();
     const cursor = render.TextCursorDraw{ .x_px = 8, .y_px = 16, .width_px = 2, .height_px = 16, .color = .{ .r = 255, .g = 255, .b = 255, .a = 255 } };
     const scene = render.TextScene{
-        .cells = &.{},
         .background_draws = &.{},
         .sprite_draws = &.{},
         .decoration_draws = &.{},

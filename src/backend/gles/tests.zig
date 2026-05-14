@@ -116,7 +116,7 @@ test "gles backend stores raster visual bounds separately from logical sprite sp
         .first_cell = 0,
         .cell_span = 2,
     };
-    const scene = render.TextScene{ .cells = &.{}, .sprite_draws = &.{draw}, .missing = &.{} };
+    const scene = render.TextScene{ .sprite_draws = &.{draw}, .missing = &.{} };
 
     _ = try backend.uploadTextSceneRaster(scene, &outputs);
     try std.testing.expectEqual(@as(u16, 16), backend.atlas_slot_width[0]);
@@ -145,7 +145,6 @@ test "gles backend draw leaf reports prepared scene counters" {
         .cell_span = 1,
     };
     const scene = render.TextScene{
-        .cells = &.{},
         .background_draws = &.{},
         .sprite_draws = &.{sprite},
         .decoration_draws = &.{},

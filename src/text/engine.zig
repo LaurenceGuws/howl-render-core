@@ -238,6 +238,7 @@ pub const Engine = struct {
     ) !OwnedPreparedTextFrame {
         var final_lane_report = lane_report;
         var final_text_cache = owned_text_cache;
+        var final_renderable = owned_renderable;
         var final_clusters = clusters;
         var final_runs = runs;
         var final_shaped_runs = shaped_runs;
@@ -254,7 +255,7 @@ pub const Engine = struct {
         errdefer raster_plan.deinit();
         const complex_sprite_cache_hits = scene.scene.sprite_draws.len - scene.scene.raster_requests.len;
 
-        const merged = try self.mergePreparedScene(owned_renderable.cells, direct, &scene, &raster_plan);
+        const merged = try self.mergePreparedScene(direct, &scene, &raster_plan);
 
         final_lane_report.assertValid();
         var counters = pipeline.TextEngineCounters{
@@ -271,6 +272,7 @@ pub const Engine = struct {
         for (final_shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
         applyCounters(&self.counters, counters);
 
+        final_renderable.deinit();
         final_text_cache.deinit();
         final_clusters.deinit();
         final_grouped.deinit();
@@ -278,7 +280,6 @@ pub const Engine = struct {
         final_runs.deinit();
 
         return .{
-            .renderable = owned_renderable,
             .scene = merged.scene,
             .raster_plan = merged.raster_plan,
             .timings = timings.*,
@@ -287,7 +288,6 @@ pub const Engine = struct {
 
     fn mergePreparedScene(
         self: *Engine,
-        cells: []const contract.RenderableCell,
         direct: DirectNormalAnalysis,
         scene: *scene_mod.OwnedTextScene,
         raster_plan: *rasterizer.OwnedRasterPlan,
@@ -307,7 +307,7 @@ pub const Engine = struct {
         var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, raster_plan);
         errdefer merged_raster_plan.deinit();
 
-        installMergedScene(scene, cells, direct.damage, .{
+        installMergedScene(scene, direct.damage, .{
             .clear_draws = merged_clear_draws,
             .cursor_draws = merged_cursor_draws,
             .background_draws = merged_background_draws,
@@ -325,13 +325,7 @@ pub const Engine = struct {
         direct: DirectNormalBuild,
         timings: PrepareTimings,
     ) OwnedPreparedTextFrame {
-        return self.finishNormalOnlyAnalysis(
-            .{ .allocator = self.allocator, .cells = self.normal_renderable.items, .owned = false },
-            damage,
-            direct,
-            lane_report,
-            timings,
-        );
+        return self.finishNormalOnlyAnalysis(damage, direct, lane_report, timings);
     }
 
     fn finishPreparedDirectNormalAnalysis(
@@ -341,12 +335,13 @@ pub const Engine = struct {
         lane_report: text_lane.LaneReport,
         timings: PrepareTimings,
     ) OwnedPreparedTextFrame {
-        return self.finishNormalOnlyAnalysis(owned_renderable, direct.damage, direct, lane_report, timings);
+        var final_renderable = owned_renderable;
+        final_renderable.deinit();
+        return self.finishNormalOnlyAnalysis(direct.damage, direct, lane_report, timings);
     }
 
     fn finishNormalOnlyAnalysis(
         self: *Engine,
-        renderable: cluster.OwnedRenderableCells,
         damage: DirectDamage,
         direct: DirectNormalBuild,
         lane_report: text_lane.LaneReport,
@@ -357,8 +352,7 @@ pub const Engine = struct {
         const counters = directNormalCounters(self, final_lane_report, direct);
         applyCounters(&self.counters, counters);
         return .{
-            .renderable = renderable,
-            .scene = directScene(self.allocator, renderable.cells, damage, self),
+            .scene = directScene(self.allocator, damage, self),
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .timings = timings,
         };
@@ -560,7 +554,6 @@ fn groupComplexRuns(
 }
 
 pub const OwnedPreparedTextFrame = struct {
-    renderable: cluster.OwnedRenderableCells,
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
     timings: PrepareTimings = .{},
@@ -568,7 +561,6 @@ pub const OwnedPreparedTextFrame = struct {
     pub fn deinit(self: *OwnedPreparedTextFrame) void {
         self.raster_plan.deinit();
         self.scene.deinit();
-        self.renderable.deinit();
         self.* = undefined;
     }
 };
@@ -647,9 +639,8 @@ fn directNormalCounters(self: *Engine, lane_report: text_lane.LaneReport, direct
     };
 }
 
-fn directScene(allocator: std.mem.Allocator, cells: []const contract.RenderableCell, damage: DirectDamage, engine: *const Engine) scene_mod.OwnedTextScene {
+fn directScene(allocator: std.mem.Allocator, damage: DirectDamage, engine: *const Engine) scene_mod.OwnedTextScene {
     return .{ .allocator = allocator, .scene = .{
-        .cells = cells,
         .full_redraw = damage.full,
         .scroll_up_px = damage.scroll_up_px,
         .clear_draws = engine.normal_clear_draws.items,
@@ -662,17 +653,15 @@ fn directScene(allocator: std.mem.Allocator, cells: []const contract.RenderableC
     }, .owned = false };
 }
 
-fn installMergedScene(scene: *scene_mod.OwnedTextScene, cells: []const contract.RenderableCell, damage: DirectDamage, merged: MergedSceneBuffers) void {
+fn installMergedScene(scene: *scene_mod.OwnedTextScene, damage: DirectDamage, merged: MergedSceneBuffers) void {
     std.debug.assert(scene.owned);
     std.debug.assert(scene.scene.raster_requests.len <= scene.scene.sprite_draws.len);
-    std.debug.assert(scene.scene.cells.len == 0 or scene.scene.cells.len <= cells.len);
     scene.allocator.free(scene.scene.clear_draws);
     scene.allocator.free(scene.scene.cursor_draws);
     scene.allocator.free(scene.scene.background_draws);
     scene.allocator.free(scene.scene.sprite_draws);
     scene.allocator.free(scene.scene.decoration_draws);
     scene.allocator.free(scene.scene.missing);
-    scene.scene.cells = cells;
     scene.scene.full_redraw = damage.full;
     scene.scene.scroll_up_px = damage.scroll_up_px;
     scene.scene.clear_draws = merged.clear_draws;
@@ -1195,7 +1184,6 @@ test "text engine analyzes cell inputs into clusters and runs" {
     var analysis = try engine.analyzeCellsWithSessionOptions(&cells, .{ .cols = 2, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), analysis.renderable.cells.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.scene.scene.sprite_draws.len);
     try std.testing.expectEqual(@as(usize, 2), analysis.raster_plan.outputs.len);
     try std.testing.expectEqual(@as(u64, 2), engine.counters.cell_texts);
