@@ -1,6 +1,3 @@
-//! Responsibility: define reusable retained-frame pipeline contracts.
-//! Ownership: snapshot identity, retained-target validation, and latest-wins mailboxes.
-//! Reason: keep terminal/runtime owners from duplicating render scheduling semantics.
 
 const std = @import("std");
 

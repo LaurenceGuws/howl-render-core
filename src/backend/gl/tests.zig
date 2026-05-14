@@ -1,6 +1,3 @@
-//! Responsibility: cover OpenGL backend behavior.
-//! Ownership: render OpenGL tests own backend-specific regression checks.
-//! Reason: keeps GL coverage close to the backend it validates.
 
 const std = @import("std");
 const backend_mod = @import("backend.zig");

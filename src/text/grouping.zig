@@ -1,6 +1,3 @@
-//! Responsibility: map shaped glyphs back to terminal cell groups.
-//! Ownership: render text engine.
-//! Reason: ligatures, combining marks, and wide glyphs are terminal text semantics.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

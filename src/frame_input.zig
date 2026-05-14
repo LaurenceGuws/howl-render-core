@@ -1,6 +1,3 @@
-//! Responsibility: convert terminal-like frame snapshots into render batches.
-//! Ownership: shared frame pipeline used by renderer implementations.
-//! Reason: remove duplicated frame-mapping logic across render backends.
 
 const std = @import("std");
 const surface = @import("surface.zig");

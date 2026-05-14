@@ -1,6 +1,3 @@
-//! Responsibility: run deterministic render text-scene measurements.
-//! Ownership: render benchmark surface for synthetic frame workloads.
-//! Reason: isolate active text analysis cost before host and backend noise.
 
 const std = @import("std");
 const render = @import("../render.zig");

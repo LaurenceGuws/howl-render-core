@@ -1,6 +1,7 @@
-//! Responsibility: implement the OpenGL ES backend owner surface.
-//! Ownership: unified renderer GLES backend owner module.
-//! Reason: keep the package root boring while concrete rendering stays here.
+
+// This backend is a contract pressure-test, not a host-shaped exception.
+// Keep GLES limited to C-lib glue, GPU objects, upload, draw, and backend-local mutation only.
+// Do not let current host constraints push render policy or orchestration back down into this file.
 
 const builtin = @import("builtin");
 const std = @import("std");

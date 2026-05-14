@@ -1,6 +1,3 @@
-//! Responsibility: own font-group/session vocabulary.
-//! Ownership: render text engine.
-//! Reason: model primary, style, symbol, and fallback faces separately from backends.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

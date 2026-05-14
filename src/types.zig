@@ -1,6 +1,3 @@
-//! Responsibility: shared render geometry and cell payload types.
-//! Ownership: renderer-neutral type vocabulary.
-//! Reason: keep active text-rendering code free of batch-planner machinery.
 
 const rgba = @import("rgba.zig");
 

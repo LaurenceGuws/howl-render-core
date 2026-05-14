@@ -1,6 +1,3 @@
-//! Responsibility: rasterize backend-independent special sprites.
-//! Ownership: OpenGL backend special-glyph drawing and fallback glyph fill.
-//! Reason: keep provider/font ownership separate from sprite drawing primitives.
 
 const std = @import("std");
 const render = @import("../../../render.zig").Render;

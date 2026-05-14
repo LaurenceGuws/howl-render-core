@@ -1,6 +1,3 @@
-//! Responsibility: classify configured and built-in symbol routes.
-//! Ownership: render text engine.
-//! Reason: nerd-font and icon rendering must be explicit, not fallback luck.
 
 const contract = @import("../text_contract.zig");
 const special_glyphs = @import("special_glyphs.zig");

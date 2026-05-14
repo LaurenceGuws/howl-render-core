@@ -1,6 +1,3 @@
-//! Responsibility: define font resolution inputs and outputs.
-//! Ownership: render text engine.
-//! Reason: keep fallback and symbol-route semantics backend independent.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: own the selected render backend runtime surface.
-//! Ownership: backend locking, staged prepare/submit lifetime, and renderer counters.
-//! Reason: keep terminal packages from wrapping backend internals directly.
 
 const builtin = @import("builtin");
 const std = @import("std");

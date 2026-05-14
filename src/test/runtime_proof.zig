@@ -1,6 +1,3 @@
-//! Responsibility: prove the render runtime owner chain.
-//! Ownership: retained publication, queue, geometry, and metrics behavior.
-//! Reason: keep runtime proof focused on owner behavior only.
 
 const std = @import("std");
 const Render = @import("../render.zig").Render;

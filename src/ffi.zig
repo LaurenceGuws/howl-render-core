@@ -1,6 +1,3 @@
-//! Responsibility: translate the howl-render native ABI surface.
-//! Ownership: ABI contracts and marshalling only.
-//! Reason: keep C consumers on the same owner-true render contract as Zig consumers.
 
 const std = @import("std");
 const Render = @import("render.zig").Render;

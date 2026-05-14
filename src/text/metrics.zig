@@ -1,6 +1,3 @@
-//! Responsibility: define shared font and cell metric policy.
-//! Ownership: render text engine.
-//! Reason: baseline and decoration geometry must not diverge by backend.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

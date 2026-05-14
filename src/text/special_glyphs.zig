@@ -1,6 +1,3 @@
-//! Responsibility: special-glyph classification shared across backends.
-//! Ownership: render text pipeline.
-//! Reason: avoid per-backend drift for symbol/powerline decisions.
 
 pub fn isPowerlineCodepoint(codepoint: u21) bool {
     return (codepoint >= 0xE0B0 and codepoint <= 0xE0D7) or

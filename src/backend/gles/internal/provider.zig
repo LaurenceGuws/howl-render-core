@@ -1,6 +1,3 @@
-//! Responsibility: implement OpenGL ES backend text provider callbacks.
-//! Ownership: OpenGL ES backend internals own FreeType/HarfBuzz cache wiring.
-//! Reason: keeps backend font access behind the render text provider boundary.
 
 const builtin = @import("builtin");
 const std = @import("std");

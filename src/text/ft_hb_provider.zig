@@ -1,6 +1,3 @@
-//! Responsibility: wrap backend FreeType/HarfBuzz callbacks as TextProvider.
-//! Ownership: render text engine boundary.
-//! Reason: keep FT/HB integration behind one provider shape while preserving pure render tests.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

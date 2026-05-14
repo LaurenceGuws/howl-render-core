@@ -1,6 +1,3 @@
-//! Responsibility: own reusable render-frame snapshot storage.
-//! Ownership: frame cells, cursor, dirty metadata, and frame-data projection.
-//! Reason: keep terminal owners from duplicating renderer-facing storage policy.
 
 const std = @import("std");
 const surface = @import("surface.zig");

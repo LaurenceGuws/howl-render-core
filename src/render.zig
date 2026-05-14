@@ -1,6 +1,3 @@
-//! Responsibility: provide a single render owner surface.
-//! Ownership: render orchestration API.
-//! Reason: keep hosts/backends on one coherent entrypoint.
 
 const std = @import("std");
 const types = @import("types.zig");

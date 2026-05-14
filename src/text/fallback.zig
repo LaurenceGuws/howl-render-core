@@ -1,6 +1,3 @@
-//! Responsibility: own shared fallback raster policy for backend owners.
-//! Ownership: render text pipeline.
-//! Reason: keep fallback raster policy consistent across GL/GLES implementations.
 
 /// Rasterize the fallback placeholder used for unresolved glyphs.
 pub fn rasterAsciiOrPlaceholder(dst: []u8, cell_w: u16, codepoint: u21, gw: u16, gh: u16) void {

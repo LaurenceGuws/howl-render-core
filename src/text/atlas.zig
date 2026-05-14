@@ -1,6 +1,3 @@
-//! Responsibility: own shared atlas math for the render text pipeline.
-//! Ownership: render text pipeline.
-//! Reason: keep atlas index math and bounds logic out of backend roots.
 
 /// Text-atlas layout contract shared by backend owners.
 pub const AtlasLayout = struct {

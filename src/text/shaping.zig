@@ -1,6 +1,3 @@
-//! Responsibility: own shared text shaping policy for backend owners.
-//! Ownership: render text pipeline.
-//! Reason: centralize classification logic used during glyph selection/rasterization.
 
 /// Report whether a codepoint should be treated as a symbol glyph.
 pub fn isSymbolGlyph(codepoint: u21) bool {

@@ -1,6 +1,3 @@
-//! Responsibility: build renderer-neutral text scenes.
-//! Ownership: render text engine.
-//! Reason: separate text decisions from backend draw submission.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

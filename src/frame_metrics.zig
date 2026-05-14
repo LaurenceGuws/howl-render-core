@@ -1,6 +1,3 @@
-//! Responsibility: own render-frame metric contracts.
-//! Ownership: runtime and backend timing/count readouts.
-//! Reason: keep render diagnostics shaped by render, not queue storage details.
 
 pub const RuntimeMetrics = struct {
     snapshot_publishes: u64 = 0,

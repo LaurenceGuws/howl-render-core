@@ -1,6 +1,3 @@
-//! Responsibility: collect repo-local render proof imports.
-//! Ownership: repo-local tests only.
-//! Reason: keep the shipped boundary off the Zig root.
 
 const std = @import("std");
 

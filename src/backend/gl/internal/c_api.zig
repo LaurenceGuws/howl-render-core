@@ -1,6 +1,3 @@
-//! Responsibility: expose C types used by the OpenGL backend.
-//! Ownership: OpenGL backend internals own native header selection.
-//! Reason: keeps platform C imports out of render public contracts.
 
 const builtin = @import("builtin");
 

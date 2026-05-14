@@ -1,6 +1,3 @@
-//! Responsibility: own reusable frame scheduling boundary.
-//! Ownership: render-prep requests, prepared-frame handoff, and submitted-frame state.
-//! Reason: keep terminal/runtime owners from owning render queue mechanics.
 
 const std = @import("std");
 const frame_metrics = @import("frame_metrics.zig");

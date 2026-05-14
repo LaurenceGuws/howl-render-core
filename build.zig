@@ -1,3 +1,7 @@
+// This repo ships a C ABI first until further notice.
+// Keep build entrypoints aligned around the shipped header and exported symbols, not privileged Zig imports.
+// The render backends exist to pressure-test one embedding contract early, not to let current host constraints reshape render ownership.
+
 const std = @import("std");
 
 const RenderBackend = enum {

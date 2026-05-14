@@ -1,6 +1,3 @@
-//! Responsibility: deterministic resolver/shaper pipeline contract types.
-//! Ownership: render text pipeline API boundary.
-//! Reason: force one explicit resolver order across render variants.
 
 const std = @import("std");
 const contract = @import("text_contract.zig");

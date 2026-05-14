@@ -1,6 +1,3 @@
-//! Responsibility: extract terminal cell text clusters.
-//! Ownership: render text engine.
-//! Reason: preserve grapheme/cell-span semantics before shaping.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

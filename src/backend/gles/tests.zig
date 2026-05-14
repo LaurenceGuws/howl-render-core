@@ -1,6 +1,3 @@
-//! Responsibility: cover OpenGL ES backend behavior.
-//! Ownership: render GLES tests own backend-specific regression checks.
-//! Reason: keeps GLES coverage close to the backend it validates.
 
 const std = @import("std");
 const backend_mod = @import("backend.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: define backend-shared text cache payloads.
-//! Ownership: render backend shared layer owns common text cache data.
-//! Reason: avoids duplicating cache keys and entries across GL backend variants.
 
 const std = @import("std");
 const render = @import("../../render.zig").Render;

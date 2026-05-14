@@ -1,6 +1,3 @@
-//! Responsibility: define backend-neutral atlas residency vocabulary.
-//! Ownership: render text engine.
-//! Reason: keep atlas identity policy separate from concrete GL texture ownership.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

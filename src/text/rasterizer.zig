@@ -1,6 +1,3 @@
-//! Responsibility: define glyph-group rasterization contracts.
-//! Ownership: render text engine.
-//! Reason: rasterize shaped groups as sprites, not only individual codepoints.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");

@@ -1,6 +1,3 @@
-//! Responsibility: define the locked normal-vs-complex renderer lane split.
-//! Ownership: render lane contract for the default text path.
-//! Reason: keep ordinary monospace cells out of vague auto-routing.
 
 const std = @import("std");
 const contract = @import("../text_contract.zig");
