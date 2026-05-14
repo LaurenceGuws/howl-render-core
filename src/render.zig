@@ -297,6 +297,10 @@ pub const Render = struct {
             };
         }
 
+        pub fn requestFullPrepare(self: *RenderRuntime, token: frame_pipeline.SnapshotToken) void {
+            self.surface_owner.requestFullPrepare(token);
+        }
+
         pub fn acceptSubmitted(self: *RenderRuntime, frame: frame_pipeline.SubmittedFrame) void {
             if (frame.token.geometry_epoch != self.geometry_epoch) {
                 self.surface_owner.requestFullPrepare(frame.token);

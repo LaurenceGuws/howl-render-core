@@ -316,10 +316,12 @@ Unless stated otherwise, every row below applies to both:
 | `Backend.uploadTextSceneRaster(...)` | backend root | backend convenience surface that must move out | backend leaf upload primitive consumed by `Renderer` | replace |
 | `Backend.renderTextScene(...)` | backend root | text/render policy that must move out | backend leaf draw primitive consumed by `Renderer` | replace |
 | `Backend.capabilities(...)` | backend root | true backend leaf contract | backend root | keep |
+| `Backend.applyFrameGeometry(...)` | backend root | true backend leaf contract | backend root | keep |
 | `Backend.resize(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` owns resize sequencing; backend keeps private apply-resize mutation only | move then delete from backend root public surface |
 | `Backend.renderFrameState(...)` | backend root | deletion-only convenience surface | no surviving owner | delete |
 | `Backend.prepareFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with `RenderRuntime` and `Render.Text` support | move then delete from backend root public surface |
 | `Backend.submitFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with backend leaf submit primitive only | move then replace |
+| `Backend.drawPreparedScene(...)` | backend root | true backend leaf contract | backend root | keep |
 
 Notes:
 
@@ -346,11 +348,12 @@ checkpoints may survive by implication.
 | `self.backend.setFallbackFontPaths(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
 | `self.backend.setFontSizePx(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
 | `self.backend.deriveFrameLayout(...)` | renderer -> backend leaf layout fact | true backend leaf contract | backend root | keep |
+| `self.backend.applyFrameGeometry(...)` | renderer -> backend-local geometry mutation | true backend leaf contract | backend root | keep |
 | `self.backend.resolveCounters()` in `Renderer.prepareFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
-| `self.backend.prepareFrame(...)` | renderer delegating staged prepare ownership | renderer-owned orchestration that must move up | `Renderer` with `Render.Text` and `RenderRuntime` support | move then delete backend call |
-| `self.backend.submitFrame(...)` | renderer delegating staged submit ownership | renderer-owned orchestration that must move up | `Renderer` with reduced backend leaf submit primitive | move then replace backend call |
+| `self.backend.uploadTextSceneRaster(...)` | renderer -> backend upload leaf | true backend leaf contract | backend root | keep |
+| `self.backend.drawPreparedScene(...)` | renderer -> backend draw leaf | true backend leaf contract | backend root | keep |
 | `self.backend.resolveCounters()` in `Renderer.submitFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
-| `self.backend.surfaceHandle()` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.Submitted` / renderer-owned frame result record | move then delete backend getter dependency |
+| `self.backend.targetTexture()` in `Renderer.submitFrame(...)` | renderer -> backend target fact | true backend leaf contract | backend root | keep |
 
 ## Explicit Landing Owners
 
@@ -362,6 +365,7 @@ When a surface moves, the landing owner is not negotiable:
 - retained publication transitions and queue consequences stay in `RenderRuntime`
 - geometry derivation lives in `Render`
 - backend capability facts stay in the backend root
+- backend-local applied frame geometry mutation stays in the backend root, but only as one leaf call owned by renderer sequencing
 - GPU uploads, atlas mutation tied to the backend's actual texture objects, and draw submission stay
   in the backend root or its backend-local internal files
 - renderer-visible metrics and surface/result observability land in renderer-owned frame records or

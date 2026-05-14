@@ -35,6 +35,16 @@ test "renderer serializes font resize against prepare" {
         .font_size_px = 16,
     });
     defer renderer.deinit();
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
+    defer runtime.deinit();
+    _ = runtime.syncGeometry(.{
+        .render_px = .{ .width = 64, .height = 32 },
+        .grid_px = .{ .width = 64, .height = 32 },
+        .cell_px = .{ .width = 8, .height = 16 },
+    });
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 4);
+    defer snapshot.deinit(std.testing.allocator);
+    snapshot.clearDirty();
 
     var cells = [_]Render.SurfaceCell{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
     var dirty_rows = [_]bool{ true, true };
@@ -51,10 +61,23 @@ test "renderer serializes font resize against prepare" {
             .dirty_cols_end = dirty_cols_end[0..],
         },
     };
+    const source = Render.SourceView{
+        .snapshot = &snapshot,
+        .cols = 4,
+        .rows = 2,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .hover_link_id = 0,
+        .hover_underline_style = .straight,
+        .snapshot_seq = 1,
+        .vt_epoch = 1,
+        .last_alt_screen = false,
+    };
 
     var failed = std.atomic.Value(bool).init(false);
     const resize_thread = try std.Thread.spawn(.{}, RendererStress.resize, .{ &renderer, &failed });
-    const prepare_thread = try std.Thread.spawn(.{}, RendererStress.prepare, .{ &renderer, frame, &failed });
+    const prepare_thread = try std.Thread.spawn(.{}, RendererStress.prepare, .{ &renderer, &runtime, frame, source, &failed });
     resize_thread.join();
     prepare_thread.join();
     try std.testing.expect(!failed.load(.acquire));
@@ -144,19 +167,25 @@ const RendererStress = struct {
         while (size < 64) : (size += 1) renderer.setFontSizePx(size);
     }
 
-    fn prepare(renderer: *Renderer, frame: Render.SurfaceFrameData, failed: *std.atomic.Value(bool)) void {
+    fn prepare(renderer: *Renderer, runtime: *Render.RenderRuntime, frame: Render.SurfaceFrameData, source_template: Render.SourceView, failed: *std.atomic.Value(bool)) void {
         var idx: usize = 0;
         while (idx < 64) : (idx += 1) {
-            var prepared = renderer.prepareFrame(
-                std.heap.c_allocator,
-                frame,
-                .{ .width = 64, .height = 32 },
-                .{ .width = 8, .height = 16 },
-            ) catch {
+            var source = source_template;
+            source.snapshot_seq = @intCast(idx + 1);
+            source.vt_epoch = @intCast(idx + 1);
+            _ = runtime.acceptSource(source);
+            const prepared = renderer.prepareFrame(std.heap.c_allocator, runtime, frame) catch {
                 failed.store(true, .release);
                 return;
             };
-            prepared.frame.deinit();
+            if (prepared != .prepared) {
+                failed.store(true, .release);
+                return;
+            }
+            _ = renderer.submitFrame(runtime) catch {
+                failed.store(true, .release);
+                return;
+            };
         }
     }
 };

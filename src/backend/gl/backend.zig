@@ -446,6 +446,41 @@ pub const Backend = struct {
         };
     }
 
+    pub fn applyFrameGeometry(self: *Backend, surface_px: render.PixelSize, cell_px: render.CellSize) BackendError!void {
+        try self.resize(surface_px, cell_px);
+    }
+
+    pub fn drawPreparedScene(self: *Backend, scene: render.TextScene) !TextSceneRenderReport {
+        if (self.closed) return error.BackendClosed;
+        if (hasCurrentContext()) {
+            if (self.target_texture == null and self.config.target_texture != 0) {
+                self.target_texture = self.config.target_texture;
+                self.surface_epoch +%= 1;
+                self.target_content_valid = false;
+            }
+            try self.ensureOwnedTargetTexture();
+            if (self.target_texture == null) return error.TargetTextureUnset;
+            try self.beginTargetPass();
+            defer self.endTargetPass();
+            drawTextScene(self, self.config.surface_px, scene);
+            self.target_content_valid = true;
+        } else if (!builtin.is_test) {
+            return error.NoContext;
+        }
+        self.pass_count += 1;
+        return .{
+            .pass_index = self.pass_count,
+            .raster_uploads_committed = 0,
+            .full_redraw = scene.full_redraw,
+            .scroll_up_px = scene.scroll_up_px,
+            .clear_draws = scene.clear_draws.len,
+            .background_draws = scene.background_draws.len,
+            .sprite_draws = scene.sprite_draws.len,
+            .decoration_draws = scene.decoration_draws.len,
+            .cursor_draws = scene.cursor_draws.len,
+        };
+    }
+
     /// Update surface and cell dimensions after window resize.
     pub fn resize(self: *Backend, surface_px: render.PixelSize, cell_px: render.CellSize) BackendError!void {
         if (self.closed) return error.BackendClosed;
@@ -508,7 +543,10 @@ pub const Backend = struct {
     }
 
     pub fn submitFrame(self: *Backend, prepared: *PreparedTextScene) !TextSceneRenderReport {
-        return self.renderTextScene(prepared.scene.scene, prepared.raster_plan.outputs);
+        const committed = try self.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
+        var report = try self.drawPreparedScene(prepared.scene.scene);
+        report.raster_uploads_committed = committed;
+        return report;
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {

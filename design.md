@@ -226,9 +226,10 @@ sequenceDiagram
   - `targetTexture(...)`
   - `deriveFrameLayout(...)`
   - `capabilities(...)`
+  - `applyFrameGeometry(...)`
   - font configuration calls
-  - one upload primitive for committed raster outputs
-  - one draw primitive for prepared scene draws
+  - `uploadTextSceneRaster(...)`
+  - `drawPreparedScene(...)`
   - one present/submit primitive only if backend target finalization is a real distinct step
 
 ## Proof Surface

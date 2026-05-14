@@ -50,7 +50,6 @@ const RuntimeOwner = struct {
 
 const RendererOwner = struct {
     renderer: Renderer,
-    prepared: ?Renderer.FrameRecord = null,
     font_path: ?[:0]u8 = null,
     fallback_font_paths: std.ArrayList([:0]u8) = .empty,
 
@@ -61,8 +60,6 @@ const RendererOwner = struct {
     }
 
     fn destroy(self: *RendererOwner) void {
-        if (self.prepared) |*prepared| prepared.deinit();
-        self.prepared = null;
         if (self.font_path) |path| std.heap.c_allocator.free(path);
         self.font_path = null;
         for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
@@ -703,46 +700,25 @@ pub fn rendererPrepare(renderer_handle: RendererHandle, runtime_handle: RuntimeH
     const owner = rendererOwnerFromHandle(renderer_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
     const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
     const snapshot = snapshotOwnerFromHandle(snapshot_handle) orelse return @intFromEnum(HowlRenderPrepareStatus.failed);
-    const request = runtime.runtime.prepare() orelse return @intFromEnum(HowlRenderPrepareStatus.idle);
-    if (owner.prepared) |*prepared| prepared.deinit();
-    const query = runtime.runtime.surfaceQuery();
-    const prepared = owner.renderer.prepareFrame(std.heap.c_allocator, snapshot.snapshot.frameData(), query.render_px, query.cell_px) catch {
-        owner.prepared = null;
-        return @intFromEnum(HowlRenderPrepareStatus.failed);
+    return switch (owner.renderer.prepareFrame(std.heap.c_allocator, &runtime.runtime, snapshot.snapshot.frameData()) catch return @intFromEnum(HowlRenderPrepareStatus.failed)) {
+        .idle => @intFromEnum(HowlRenderPrepareStatus.idle),
+        .prepared => @intFromEnum(HowlRenderPrepareStatus.ready),
     };
-    owner.prepared = .{
-        .render_seq = request.token.snapshot_seq,
-        .render_dirty_epoch = request.token.dirty_epoch,
-        .geometry_epoch = request.token.geometry_epoch,
-        .sync_us = 0,
-        .copy_us = 0,
-        .prepare_metrics = .{},
-        .resolve_before = prepared.resolve_before,
-        .prepared = prepared.frame,
-    };
-    _ = runtime.runtime.publishPrepared(owner.prepared.?.pipelineFrame(request));
-    return @intFromEnum(HowlRenderPrepareStatus.ready);
 }
 
 pub fn rendererSubmit(renderer_handle: RendererHandle, runtime_handle: RuntimeHandle, surface_out: ?*FfiSurfaceHandle, metrics_out: ?*FfiBackendMetrics) callconv(.c) HowlRenderSubmitStatus {
     const owner = rendererOwnerFromHandle(renderer_handle) orelse return .failed;
     const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return .failed;
-    switch (runtime.runtime.submit()) {
-        .idle => return .idle,
-        .stale => return .stale,
-        .needs_full_prepare => return .needs_prepare,
-        .submit => {
-            const prepared = &(owner.prepared orelse return .failed);
-            const submitted = owner.renderer.submitFrame(&prepared.prepared) catch return .failed;
-            const metrics = prepared.renderMetrics(submitted, 0);
-            runtime.runtime.acceptSubmitted(prepared.submittedFrame(submitted));
+    return switch (owner.renderer.submitFrame(&runtime.runtime) catch return .failed) {
+        .idle => .idle,
+        .stale => .stale,
+        .needs_full_prepare => .needs_prepare,
+        .rendered => |submitted| blk: {
             if (surface_out) |out| out.* = surfaceOut(submitted.surface);
-            if (metrics_out) |out| out.* = backendMetricsOut(metrics);
-            prepared.deinit();
-            owner.prepared = null;
-            return .rendered;
+            if (metrics_out) |out| out.* = backendMetricsOut(submitted.metrics);
+            break :blk .rendered;
         },
-    }
+    };
 }
 
 test "ffi snapshot owner rejects missing handle" {
