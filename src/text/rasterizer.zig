@@ -92,16 +92,16 @@ pub const Rasterizer = struct {
 };
 
 pub fn requestForGroup(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics) contract.SpriteRasterRequest {
-    const width_cells = @max(group.cell_span, 1);
+    const width_px = spriteWidthPx(group.cell_span, cell_metrics.cell_w_px);
     return .{
         .key = group.sprite_key,
         .group = group,
         .placement = group.placement,
-        .width_px = @intCast(@as(u32, width_cells) * @as(u32, cell_metrics.cell_w_px)),
+        .width_px = width_px,
         .height_px = cell_metrics.cell_h_px,
         .baseline_px = cell_metrics.baseline_px,
         .box_drawing = metrics.boxDrawingRasterMetrics(cell_metrics),
-        .color_mode = if (group.kind == .emoji) .color else .alpha,
+        .color_mode = requestColorMode(group.kind),
     };
 }
 
@@ -112,10 +112,7 @@ pub fn appendPendingRequest(
     req: contract.SpriteRasterRequest,
 ) !void {
     if (!pending) return;
-    for (requests.items) |existing| {
-        if (existing.key.value == req.key.value) return;
-    }
-    try requests.append(allocator, req);
+    try appendUniqueRequest(allocator, requests, req);
 }
 
 test "raster output reports non-empty alpha bounds" {
@@ -133,6 +130,8 @@ test "raster output reports non-empty alpha bounds" {
 
 /// Builds a raster request for a generated undercurl alpha sprite.
 pub fn requestForUndercurl(key: contract.SpriteKey, width_px: u16, height_px: u16, decoration: contract.DecorationSpriteRaster) contract.SpriteRasterRequest {
+    std.debug.assert(width_px > 0);
+    std.debug.assert(height_px > 0);
     return .{
         .kind = .undercurl,
         .key = key,
@@ -177,15 +176,53 @@ pub fn rasterizeUndercurlAlpha(pixels: []u8, width_px: u16, height_px: u16, deco
 
 /// Rasterizes backend-independent special sprites that should not depend on font fallback.
 pub fn rasterizeGeneratedSpecialAlpha(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32) bool {
-    const baseline: i16 = @intCast(@min(height_px, @as(u16, @intCast(std.math.maxInt(i16)))));
-    return rasterizeGeneratedSpecialAlphaWithMetrics(pixels, width_px, height_px, codepoint, metrics.boxDrawingRasterMetrics(.{ .cell_w_px = width_px, .cell_h_px = height_px, .baseline_px = baseline }));
+    return rasterizeGeneratedSpecialAlphaWithMetrics(pixels, width_px, height_px, codepoint, generatedSpecialMetrics(width_px, height_px));
 }
 
 /// Rasterizes backend-independent special sprites with explicit stroke metrics.
 pub fn rasterizeGeneratedSpecialAlphaWithMetrics(pixels: []u8, width_px: u16, height_px: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
+    std.debug.assert(pixels.len >= pixelCount(width_px, height_px));
+    if (!special_glyphs.isGeneratedSpecialSupported(codepoint)) return false;
     @memset(pixels, 0);
     const width = @max(width_px, 1);
     const height = @max(height_px, 1);
+    rasterizeSupportedGeneratedSpecialAlpha(pixels, width, height, codepoint, box_drawing);
+    return true;
+}
+
+fn spriteWidthPx(cell_span: u8, cell_w_px: u16) u16 {
+    std.debug.assert(cell_w_px > 0);
+    return @intCast(@as(u32, @max(cell_span, 1)) * @as(u32, cell_w_px));
+}
+
+fn requestColorMode(kind: contract.GlyphGroupKind) contract.SpriteColorMode {
+    return if (kind == .emoji) .color else .alpha;
+}
+
+fn appendUniqueRequest(
+    allocator: std.mem.Allocator,
+    requests: *std.ArrayList(contract.SpriteRasterRequest),
+    req: contract.SpriteRasterRequest,
+) !void {
+    std.debug.assert(req.width_px > 0);
+    std.debug.assert(req.height_px > 0);
+    if (hasRequestKey(requests.items, req.key)) return;
+    try requests.append(allocator, req);
+}
+
+fn hasRequestKey(requests: []const contract.SpriteRasterRequest, key: contract.SpriteKey) bool {
+    for (requests) |existing| {
+        if (existing.key.value == key.value) return true;
+    }
+    return false;
+}
+
+fn generatedSpecialMetrics(width_px: u16, height_px: u16) contract.BoxDrawingRasterMetrics {
+    const baseline: i16 = @intCast(@min(height_px, @as(u16, @intCast(std.math.maxInt(i16)))));
+    return metrics.boxDrawingRasterMetrics(.{ .cell_w_px = width_px, .cell_h_px = height_px, .baseline_px = baseline });
+}
+
+fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {
     switch (codepoint) {
         0x2504 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 2),
         0x2505 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 2),
@@ -199,7 +236,7 @@ pub fn rasterizeGeneratedSpecialAlphaWithMetrics(pixels: []u8, width_px: u16, he
         0x254d => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 1),
         0x254e => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.light_stroke_px, 1),
         0x254f => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.heavy_stroke_px, 1),
-        0x2500...0x2503, 0x250c...0x254b, 0x2550...0x256c, 0x2574...0x257f => if (lineSpec(codepoint)) |lines| rasterizeBoxLines(pixels, width, height, lines, box_drawing) else return false,
+        0x2500...0x2503, 0x250c...0x254b, 0x2550...0x256c, 0x2574...0x257f => if (lineSpec(codepoint)) |lines| rasterizeBoxLines(pixels, width, height, lines, box_drawing) else unreachable,
         0xe0b0 => rasterizePowerlineTriangle(pixels, width, height, true, false),
         0xe0b2 => rasterizePowerlineTriangle(pixels, width, height, false, false),
         0xe0b1 => rasterizePowerlineHalfDiagonal(pixels, width, height, true, box_drawing),
@@ -232,9 +269,8 @@ pub fn rasterizeGeneratedSpecialAlphaWithMetrics(pixels: []u8, width_px: u16, he
         0x1cd00...0x1cde5 => rasterizeOctantAlpha(pixels, width, height, @intCast(codepoint - 0x1cd00)),
         0x1fbe6 => rasterizeOctantAlpha(pixels, width, height, 0xe6),
         0x1fbe7 => rasterizeOctantAlpha(pixels, width, height, 0xe7),
-        else => return false,
+        else => unreachable,
     }
-    return true;
 }
 
 const RoundedCorner = enum { top_left, top_right, bottom_left, bottom_right };
