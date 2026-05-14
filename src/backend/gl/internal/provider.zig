@@ -88,10 +88,12 @@ pub fn providerHasCellText(comptime Backend: type, ctx: *anyopaque, face_id: ren
     const entry = backend.face_text_cache.map.getOrPut(key) catch return uncachedProviderHasCellText(Backend, ctx, face_id, text);
     if (entry.found_existing) {
         backend.resolve_counters.face_cache_hits += 1;
+        if (backend.active_resolve) |obs| obs.counters.face_cache_hits += 1;
         return entry.value_ptr.*;
     }
 
     backend.resolve_counters.face_checks += 1;
+    if (backend.active_resolve) |obs| obs.counters.face_checks += 1;
     const result = uncachedProviderHasCellText(Backend, ctx, face_id, text);
     entry.value_ptr.* = result;
     return result;
@@ -121,6 +123,7 @@ pub fn providerShapeRun(
     }
 
     backend.resolve_counters.shape_requests += 1;
+    if (backend.active_resolve) |obs| obs.counters.shape_requests += 1;
     const shape_key = shared_text_cache.ShapeRunKey{
         .face_id = run.run.font.face_id.value,
         .run_hash = shared_text_cache.hashRunText(text_cache_view, window.slice(clusters)),
@@ -130,6 +133,7 @@ pub fn providerShapeRun(
     };
     if (try backend.shape_run_cache.getOwnedRun(allocator, shape_key, run)) |cached| {
         backend.resolve_counters.shape_cache_hits += 1;
+        if (backend.active_resolve) |obs| obs.counters.shape_cache_hits += 1;
         return cached;
     }
 
@@ -339,6 +343,7 @@ pub fn ensurePrimaryFont(self: anytype) bool {
 pub fn ensureFont(self: anytype) bool {
     if (ensurePrimaryFont(self)) {
         self.resolve_stage = .loaded_exact_match;
+        if (self.active_resolve) |obs| obs.stage = .loaded_exact_match;
         return true;
     }
 
@@ -346,12 +351,17 @@ pub fn ensureFont(self: anytype) bool {
         if (self.fallback_font_paths[i] == null) continue;
         if (ensureFallbackFace(self, @intCast(i))) |_| {
             self.resolve_stage = .discovery_fallback;
+            if (self.active_resolve) |obs| obs.stage = .discovery_fallback;
             return true;
         }
     }
 
     self.resolve_stage = .missing_glyph;
     self.resolve_counters.missing_glyphs += 1;
+    if (self.active_resolve) |obs| {
+        obs.stage = .missing_glyph;
+        obs.counters.missing_glyphs += 1;
+    }
     return false;
 }
 

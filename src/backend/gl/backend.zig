@@ -120,6 +120,7 @@ pub const RenderReport = struct {
 
 pub const TextSceneRenderReport = struct {
     pass_index: u64,
+    texture_id: u32,
     raster_uploads_committed: usize,
     full_redraw: bool,
     scroll_up_px: u16,
@@ -216,6 +217,7 @@ pub const Backend = struct {
     surface_epoch: u64 = 1,
     resolve_counters: render.ResolveCounters = .{},
     resolve_stage: render.ResolveStage = .style_policy,
+    active_resolve: ?*render.ResolveObservability = null,
     fill_vertices: []QuadVertex = &.{},
     glyph_vertices: []QuadVertex = &.{},
     text_vertices: []TexturedVertex = &.{},
@@ -356,7 +358,8 @@ pub const Backend = struct {
         };
     }
 
-    pub fn fontSession(self: *Backend, faces: []render.Text.FontSession.FontFaceRecord) render.Text.FontSession.FontSession {
+    pub fn fontSession(self: *Backend, faces: []render.Text.FontSession.FontFaceRecord, active_resolve: ?*render.ResolveObservability) render.Text.FontSession.FontSession {
+        self.active_resolve = active_resolve;
         var len: usize = 0;
         if (faces.len > len) {
             faces[len] = .{ .id = .{ .value = primary_face_id }, .role = .primary, .coverage = .all };
@@ -387,7 +390,7 @@ pub const Backend = struct {
         self.lockFontAnalysis();
         defer self.unlockFontAnalysis();
         const engine = try self.ensureTextEngine(allocator);
-        return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces), options);
+        return engine.analyzeCellsWithSessionOptions(cells, grid, self.fontSession(faces, null), options);
     }
 
     pub fn uploadTextSceneRaster(
@@ -426,6 +429,7 @@ pub const Backend = struct {
         self.pass_count += 1;
         return .{
             .pass_index = self.pass_count,
+            .texture_id = self.target_texture orelse 0,
             .raster_uploads_committed = committed_uploads,
             .full_redraw = scene.full_redraw,
             .scroll_up_px = scene.scroll_up_px,
@@ -470,6 +474,7 @@ pub const Backend = struct {
         self.pass_count += 1;
         return .{
             .pass_index = self.pass_count,
+            .texture_id = self.target_texture orelse 0,
             .raster_uploads_committed = 0,
             .full_redraw = scene.full_redraw,
             .scroll_up_px = scene.scroll_up_px,
@@ -613,6 +618,7 @@ pub const Backend = struct {
             return key;
         }
         self.resolve_stage = .missing_glyph;
+        if (self.active_resolve) |obs| obs.stage = .missing_glyph;
         rasterizeFallbackGlyph(dst, self.atlas_cell_w, self.atlas_cell_h, codepoint, gw, gh);
         self.markSlotAlpha(slot, dst, gw, gh);
         return missingGlyphKey(codepoint);
@@ -686,6 +692,7 @@ pub const Backend = struct {
         if (self.ft_face) |face| {
             if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, primary_face_id, gw, gh)) |key| {
                 self.resolve_stage = .loaded_exact_match;
+                if (self.active_resolve) |obs| obs.stage = .loaded_exact_match;
                 return key;
             }
         }
@@ -704,12 +711,21 @@ pub const Backend = struct {
             const face_id = fallbackFaceId(i);
             if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, face_id, gw, gh)) |key| {
                 self.resolve_stage = .discovery_fallback;
+                if (self.active_resolve) |obs| {
+                    obs.stage = .discovery_fallback;
+                    obs.counters.fallback_hits += 1;
+                }
                 self.resolve_counters.fallback_hits += 1;
                 return key;
             }
         }
 
         self.resolve_stage = .missing_glyph;
+        if (self.active_resolve) |obs| {
+            obs.stage = .missing_glyph;
+            obs.counters.fallback_misses += 1;
+            obs.counters.missing_glyphs += 1;
+        }
         self.resolve_counters.fallback_misses += 1;
         self.resolve_counters.missing_glyphs += 1;
         return null;
@@ -756,6 +772,7 @@ pub const Backend = struct {
             }
         }
         self.resolve_counters.shaped_clusters += 1;
+        if (self.active_resolve) |obs| obs.counters.shaped_clusters += 1;
         return .{ .codepoint = codepoint, .face_id = face_id, .glyph_id = glyph_id };
     }
 

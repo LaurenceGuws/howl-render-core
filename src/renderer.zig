@@ -37,6 +37,7 @@ pub const Renderer = struct {
     mutex: ThreadMutex = .{},
     text_engine: ?render.Text.Engine.Engine = null,
     prepared: ?FrameRecord = null,
+    resolve: render.ResolveObservability = .{},
     target_valid: bool = false,
     target_epoch: u64 = 0,
 
@@ -64,6 +65,7 @@ pub const Renderer = struct {
     };
 
     pub const SubmittedReport = struct {
+        texture_id: u32,
         raster_uploads_committed: usize,
         full_redraw: bool,
         scroll_up_px: u16,
@@ -109,9 +111,7 @@ pub const Renderer = struct {
         render_dirty_epoch: u64,
         geometry_epoch: u64,
         prepare_metrics: render.PrepareMetrics,
-        resolve_before: render.ResolveCounters,
-        resolve_after_prepare: render.ResolveCounters,
-        resolve_stage_after_prepare: render.ResolveStage,
+        resolve: render.ResolveObservability,
         raster_uploads_committed: u32,
         prepared: PreparedFrame,
 
@@ -143,7 +143,7 @@ pub const Renderer = struct {
 
         pub fn renderMetrics(self: *const FrameRecord, submitted: Submitted, render_us: u64) render.RenderMetrics {
             const report = submitted.report;
-            const resolve_after = submitted.resolve_after;
+            const counters = submitted.resolve.counters;
             return .{
                 .sync_us = self.prepare_metrics.sync_us,
                 .copy_us = self.prepare_metrics.copy_us,
@@ -155,13 +155,13 @@ pub const Renderer = struct {
                 .decoration_fills = report.decoration_draws,
                 .cursor_fills = report.cursor_draws,
                 .uploads = self.raster_uploads_committed,
-                .face_checks = resolve_after.face_checks -| self.resolve_before.face_checks,
-                .face_cache_hits = resolve_after.face_cache_hits -| self.resolve_before.face_cache_hits,
-                .shape_requests = resolve_after.shape_requests -| self.resolve_before.shape_requests,
-                .shape_cache_hits = resolve_after.shape_cache_hits -| self.resolve_before.shape_cache_hits,
-                .fallback_hits = resolve_after.fallback_hits -| self.resolve_before.fallback_hits,
-                .fallback_misses = resolve_after.fallback_misses -| self.resolve_before.fallback_misses,
-                .missing_glyphs = resolve_after.missing_glyphs -| self.resolve_before.missing_glyphs,
+                .face_checks = counters.face_checks,
+                .face_cache_hits = counters.face_cache_hits,
+                .shape_requests = counters.shape_requests,
+                .shape_cache_hits = counters.shape_cache_hits,
+                .fallback_hits = counters.fallback_hits,
+                .fallback_misses = counters.fallback_misses,
+                .missing_glyphs = counters.missing_glyphs,
             };
         }
 
@@ -183,8 +183,7 @@ pub const Renderer = struct {
 
     pub const Submitted = struct {
         report: SubmittedReport,
-        resolve_after: render.ResolveCounters,
-        resolve_stage_after: render.ResolveStage,
+        resolve: render.ResolveObservability,
         surface: render.SurfaceHandle,
         metrics: render.RenderMetrics,
         render_us: u64,
@@ -281,26 +280,22 @@ pub const Renderer = struct {
             input.options.scene.damage.full = true;
             input.options.scene.damage.scroll_up_rows = 0;
         }
-        const resolve_before = self.backend.resolveCounters();
+        self.resolve = .{};
         const engine = try self.ensureTextEngine(allocator);
         var prepared = try engine.analyzeCellsWithSessionOptions(
             input.cells,
             input.grid,
-            self.backend.fontSession(&faces),
+            self.backend.fontSession(&faces, &self.resolve),
             input.options,
         );
         errdefer prepared.deinit();
-        const resolve_after_prepare = self.backend.resolveCounters();
-        const resolve_stage_after_prepare = self.backend.lastResolveStage();
         const raster_uploads_committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);
         self.prepared = .{
             .render_seq = request.token.snapshot_seq,
             .render_dirty_epoch = request.token.dirty_epoch,
             .geometry_epoch = request.token.geometry_epoch,
             .prepare_metrics = prepareMetrics(prepared.timings),
-            .resolve_before = resolve_before,
-            .resolve_after_prepare = resolve_after_prepare,
-            .resolve_stage_after_prepare = resolve_stage_after_prepare,
+            .resolve = self.resolve,
             .raster_uploads_committed = @intCast(raster_uploads_committed),
             .prepared = .{ .prepared = prepared },
         };
@@ -330,9 +325,9 @@ pub const Renderer = struct {
                 }
                 const render_start_ns = monotonicNs();
                 const report = try self.backend.drawPreparedScene(prepared.prepared.prepared.scene.scene);
-                const resolve_after = self.backend.resolveCounters();
                 const submitted = Submitted{
                     .report = .{
+                        .texture_id = report.texture_id,
                         .raster_uploads_committed = prepared.raster_uploads_committed,
                         .full_redraw = report.full_redraw,
                         .scroll_up_px = report.scroll_up_px,
@@ -342,10 +337,9 @@ pub const Renderer = struct {
                         .decoration_draws = report.decoration_draws,
                         .cursor_draws = report.cursor_draws,
                     },
-                    .resolve_after = resolve_after,
-                    .resolve_stage_after = self.backend.lastResolveStage(),
+                    .resolve = prepared.resolve,
                     .surface = .{
-                        .texture_id = self.backend.targetTexture(),
+                        .texture_id = report.texture_id,
                         .width = @max(query.render_px.width, 1),
                         .height = @max(query.render_px.height, 1),
                         .epoch = query.epoch,

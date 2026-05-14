@@ -349,11 +349,11 @@ checkpoints may survive by implication.
 | `self.backend.setFontSizePx(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
 | `self.backend.deriveFrameLayout(...)` | renderer -> backend leaf layout fact | true backend leaf contract | backend root | keep |
 | `self.backend.applyFrameGeometry(...)` | renderer -> backend-local geometry mutation | true backend leaf contract | backend root | keep |
-| `self.backend.resolveCounters()` in `Renderer.prepareFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
+| renderer-owned resolve observability captured during `fontSession(...)`-driven prepare | renderer-owned active-path observability | true renderer record state | `Renderer.FrameRecord` | keep |
 | `self.backend.uploadTextSceneRaster(...)` | renderer -> backend upload leaf | true backend leaf contract | backend root | keep |
 | `self.backend.drawPreparedScene(...)` | renderer -> backend draw leaf | true backend leaf contract | backend root | keep |
-| `self.backend.resolveCounters()` in `Renderer.submitFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
-| `self.backend.targetTexture()` in `Renderer.submitFrame(...)` | renderer -> backend target fact | true backend leaf contract | backend root | keep |
+| submitted-frame resolve observability copied from the prepared-frame owner record | renderer-owned active-path observability | true renderer record state | `Renderer.Submitted` | keep |
+| target texture identity returned by `self.backend.drawPreparedScene(...)` | backend draw leaf result | true backend leaf contract | `Renderer.Submitted.surface` | keep |
 
 ## Explicit Landing Owners
 
@@ -586,6 +586,8 @@ Observability landing lock:
 - backend `resolveCounters()` lands in renderer-owned prepared/submitted frame records
 - backend `surfaceHandle()` lands in the renderer-owned submitted-frame record
 - backend `lastResolveStage()` lands in the renderer-owned prepared/submitted observability record
+- active renderer sequencing no longer reads those getters directly; draw leaf results and renderer-owned
+  records now carry the surviving truth
 - none of those getters remain renderer dependencies after Checkpoint 3C
 
 Reduced backend leaf calls after Checkpoint 3B:
@@ -594,7 +596,6 @@ Reduced backend leaf calls after Checkpoint 3B:
   - `fontSession(...)`
   - `textProvider(...)`
   - `bindTargetTexture(...)`
-  - `targetTexture(...)`
   - `deriveFrameLayout(...)`
   - `capabilities(...)`
   - font configuration calls `setFontPath(...)`, `setFallbackFontPaths(...)`, `setFontSizePx(...)`

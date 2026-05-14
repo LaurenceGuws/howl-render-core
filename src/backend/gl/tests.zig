@@ -27,7 +27,7 @@ test "backend exposes text provider and font session" {
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
     var ft_hb = backend.textProvider();
     const provider = ft_hb.textProvider();
-    const session = backend.fontSession(&faces);
+    const session = backend.fontSession(&faces, null);
     try std.testing.expect(provider.face_provider != null);
     try std.testing.expectEqual(@as(u32, backend_mod.test_primary_face_id), session.primary_face.value);
     try std.testing.expectEqual(@as(usize, 1), session.faces.len);
@@ -42,7 +42,7 @@ test "backend text session metrics respect configured cell size" {
     });
     defer backend.deinit();
     var faces: [4]render.Text.FontSession.FontFaceRecord = undefined;
-    const session = backend.fontSession(&faces);
+    const session = backend.fontSession(&faces, null);
     try std.testing.expectEqual(@as(u16, 9), session.metrics.cell_w_px);
     try std.testing.expectEqual(@as(u16, 17), session.metrics.cell_h_px);
     try std.testing.expect(session.metrics.baseline_px > 0);

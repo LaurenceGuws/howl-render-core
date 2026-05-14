@@ -420,6 +420,10 @@ pub const Render = struct {
     pub const ResolveMiss = text_pipeline.ResolveMiss;
     pub const ResolveResult = text_pipeline.ResolveResult;
     pub const ResolveCounters = text_pipeline.ResolveCounters;
+    pub const ResolveObservability = struct {
+        counters: ResolveCounters = .{},
+        stage: ResolveStage = .style_policy,
+    };
     pub const TextEngineCounters = text_pipeline.TextEngineCounters;
     pub const BuildRunsRequest = text_pipeline.BuildRunsRequest;
     pub const BuildRunsOutput = text_pipeline.BuildRunsOutput;

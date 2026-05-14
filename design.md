@@ -212,18 +212,17 @@ sequenceDiagram
   - prepared text analysis payload
   - prepared scene/raster outputs
   - damage classification
-  - resolve counters and resolve stage needed by renderer-visible observability
+  - renderer-owned resolve counters and resolve stage captured during prepare
   - prepared timings and render metrics inputs
 - renderer-owned submitted-frame records must hold:
-  - final surface handle
+  - final surface handle built from runtime geometry plus draw-leaf target identity
   - draw/upload report counts
   - render timing outcome
-  - final resolve counters and final resolve stage
+  - final resolve observability copied from the prepared-frame owner record
 - surviving backend calls under renderer sequencing are leaf operations only:
   - `fontSession(...)`
   - `textProvider(...)`
   - `bindTargetTexture(...)`
-  - `targetTexture(...)`
   - `deriveFrameLayout(...)`
   - `capabilities(...)`
   - `applyFrameGeometry(...)`
