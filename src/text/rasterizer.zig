@@ -223,6 +223,15 @@ fn generatedSpecialMetrics(width_px: u16, height_px: u16) contract.BoxDrawingRas
 }
 
 fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {
+    const handled = rasterizeGeneratedBoxAlpha(pixels, width, height, codepoint, box_drawing) or
+        rasterizeGeneratedPowerlineAlpha(pixels, width, height, codepoint, box_drawing) or
+        rasterizeGeneratedBlockAlpha(pixels, width, height, codepoint) or
+        rasterizeGeneratedSextantAlpha(pixels, width, height, codepoint) or
+        rasterizeGeneratedOctantAlpha(pixels, width, height, codepoint);
+    std.debug.assert(handled);
+}
+
+fn rasterizeGeneratedBoxAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
     switch (codepoint) {
         0x2504 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.light_stroke_px, 2),
         0x2505 => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 2),
@@ -236,7 +245,24 @@ fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16
         0x254d => rasterizeDashedBoxLine(pixels, width, height, .horizontal, box_drawing.heavy_stroke_px, 1),
         0x254e => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.light_stroke_px, 1),
         0x254f => rasterizeDashedBoxLine(pixels, width, height, .vertical, box_drawing.heavy_stroke_px, 1),
-        0x2500...0x2503, 0x250c...0x254b, 0x2550...0x256c, 0x2574...0x257f => if (lineSpec(codepoint)) |lines| rasterizeBoxLines(pixels, width, height, lines, box_drawing) else unreachable,
+        0x2500...0x2503, 0x250c...0x254b, 0x2550...0x256c, 0x2574...0x257f => rasterizeBoxLines(pixels, width, height, lineSpec(codepoint) orelse unreachable, box_drawing),
+        0x2571 => rasterizeCrossLine(pixels, width, height, false, box_drawing),
+        0x2572 => rasterizeCrossLine(pixels, width, height, true, box_drawing),
+        0x2573 => {
+            rasterizeCrossLine(pixels, width, height, false, box_drawing);
+            rasterizeCrossLine(pixels, width, height, true, box_drawing);
+        },
+        0x256d => rasterizeRoundedCorner(pixels, width, height, .top_left, box_drawing),
+        0x256e => rasterizeRoundedCorner(pixels, width, height, .top_right, box_drawing),
+        0x256f => rasterizeRoundedCorner(pixels, width, height, .bottom_right, box_drawing),
+        0x2570 => rasterizeRoundedCorner(pixels, width, height, .bottom_left, box_drawing),
+        else => return false,
+    }
+    return true;
+}
+
+fn rasterizeGeneratedPowerlineAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) bool {
+    switch (codepoint) {
         0xe0b0 => rasterizePowerlineTriangle(pixels, width, height, true, false),
         0xe0b2 => rasterizePowerlineTriangle(pixels, width, height, false, false),
         0xe0b1 => rasterizePowerlineHalfDiagonal(pixels, width, height, true, box_drawing),
@@ -251,26 +277,48 @@ fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16
         0xe0bb, 0xe0bd => rasterizeCrossLine(pixels, width, height, false, box_drawing),
         0xe0bc => rasterizePowerlineCornerTriangle(pixels, width, height, .top_left),
         0xe0be => rasterizePowerlineCornerTriangle(pixels, width, height, .top_right),
-        0x2571 => rasterizeCrossLine(pixels, width, height, false, box_drawing),
-        0x2572 => rasterizeCrossLine(pixels, width, height, true, box_drawing),
-        0x2573 => {
-            rasterizeCrossLine(pixels, width, height, false, box_drawing);
-            rasterizeCrossLine(pixels, width, height, true, box_drawing);
-        },
-        0x256d => rasterizeRoundedCorner(pixels, width, height, .top_left, box_drawing),
-        0x256e => rasterizeRoundedCorner(pixels, width, height, .top_right, box_drawing),
-        0x2570 => rasterizeRoundedCorner(pixels, width, height, .bottom_left, box_drawing),
-        0x256f => rasterizeRoundedCorner(pixels, width, height, .bottom_right, box_drawing),
+        else => return false,
+    }
+    return true;
+}
+
+fn rasterizeGeneratedBlockAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
+    switch (codepoint) {
         0x2580...0x259f => rasterizeBlockElementAlpha(pixels, width, height, codepoint),
         0x2800...0x28ff => rasterizeBrailleAlpha(pixels, width, height, @intCast(codepoint - 0x2800)),
-        0x1fb00...0x1fb13 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 1)),
-        0x1fb14...0x1fb27 => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 2)),
-        0x1fb28...0x1fb3b => rasterizeSextantAlpha(pixels, width, height, @intCast(codepoint - 0x1fb00 + 3)),
-        0x1cd00...0x1cde5 => rasterizeOctantAlpha(pixels, width, height, @intCast(codepoint - 0x1cd00)),
-        0x1fbe6 => rasterizeOctantAlpha(pixels, width, height, 0xe6),
-        0x1fbe7 => rasterizeOctantAlpha(pixels, width, height, 0xe7),
-        else => unreachable,
+        else => return false,
     }
+    return true;
+}
+
+fn rasterizeGeneratedSextantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
+    const sextant = generatedSextantPattern(codepoint) orelse return false;
+    rasterizeSextantAlpha(pixels, width, height, sextant);
+    return true;
+}
+
+fn generatedSextantPattern(codepoint: u32) ?u8 {
+    return switch (codepoint) {
+        0x1fb00...0x1fb13 => @intCast(codepoint - 0x1fb00 + 1),
+        0x1fb14...0x1fb27 => @intCast(codepoint - 0x1fb00 + 2),
+        0x1fb28...0x1fb3b => @intCast(codepoint - 0x1fb00 + 3),
+        else => null,
+    };
+}
+
+fn rasterizeGeneratedOctantAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32) bool {
+    const octant = generatedOctantPattern(codepoint) orelse return false;
+    rasterizeOctantAlpha(pixels, width, height, octant);
+    return true;
+}
+
+fn generatedOctantPattern(codepoint: u32) ?u8 {
+    return switch (codepoint) {
+        0x1cd00...0x1cde5 => @intCast(codepoint - 0x1cd00),
+        0x1fbe6 => 0xe6,
+        0x1fbe7 => 0xe7,
+        else => null,
+    };
 }
 
 const RoundedCorner = enum { top_left, top_right, bottom_left, bottom_right };
