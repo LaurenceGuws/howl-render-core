@@ -161,38 +161,85 @@ pub const Engine = struct {
             return self.finishPreparedDirectNormalAnalysis(owned_text_cache, owned_renderable, clusters, direct.build, final_lane_report, timings);
         }
 
+        return self.analyzePreparedComplex(
+            owned_text_cache,
+            owned_renderable,
+            clusters,
+            direct,
+            final_lane_report,
+            grid_metrics,
+            session,
+            options,
+            &timings,
+        );
+    }
+
+    fn analyzePreparedComplex(
+        self: *Engine,
+        owned_text_cache: cluster.OwnedLineTextCache,
+        owned_renderable: cluster.OwnedRenderableCells,
+        clusters: cluster.OwnedClusters,
+        direct: DirectNormalAnalysis,
+        lane_report: text_lane.LaneReport,
+        grid_metrics: contract.GridMetrics,
+        session: font_session.FontSession,
+        options: AnalysisOptions,
+        timings: *PrepareTimings,
+    ) !OwnedTextAnalysis {
+        var final_lane_report = lane_report;
         var complex = try cluster.selectComplexWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), clusters.clusters, grid_metrics, options.scene.damage);
         defer complex.deinit();
         std.debug.assert(complex.cells.len == final_lane_report.complex_cells);
         std.debug.assert(complex.clusters.len == final_lane_report.complex_clusters);
 
-        const resolve_start_ns = monotonicNs();
-        var runs = try font_resolver.resolveClusters(self.allocator, session, complex.clusters, owned_text_cache.view(), grid_metrics);
-        timings.resolve_us = elapsedUs(resolve_start_ns);
+        var runs = try resolveComplexRuns(self, owned_text_cache.view(), complex.clusters, grid_metrics, session, timings, &final_lane_report, complex.cells);
         errdefer runs.deinit();
-        for (runs.runs) |run| final_lane_report.recordLegacyResolvedRunWithCells(owned_text_cache.view(), complex.cells, complex.clusters, run);
 
-        const shape_start_ns = monotonicNs();
-        var shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs.runs, owned_text_cache.view(), complex.clusters, session.metrics);
-        timings.shape_us = elapsedUs(shape_start_ns);
+        var shaped_runs = try shapeComplexRuns(self, runs.runs, owned_text_cache.view(), complex.clusters, session.metrics, timings, &final_lane_report, complex.cells);
         errdefer shaped_runs.deinit();
-        for (shaped_runs.runs) |run| final_lane_report.recordLegacyShapedRunWithCells(owned_text_cache.view(), complex.cells, complex.clusters, run.run);
 
-        const group_start_ns = monotonicNs();
-        var font_groups = try grouping.groupShapedRunsWithPolicy(self.allocator, shaped_runs.runs, complex.clusters, session.metrics, .{});
-        errdefer font_groups.deinit();
-        var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, runs.sprite_routes, complex.clusters, session.metrics);
-        errdefer sprite_groups.deinit();
-        var groups = try grouping.concatGroups(self.allocator, font_groups.groups, sprite_groups.groups);
-        timings.group_us = elapsedUs(group_start_ns);
-        errdefer groups.deinit();
-        for (groups.groups) |group| final_lane_report.recordLegacyGroup(owned_text_cache.view(), complex.cells, group);
+        var grouped = try groupComplexRuns(self, shaped_runs.runs, runs.sprite_routes, complex.clusters, session.metrics, timings, &final_lane_report, owned_text_cache.view(), complex.cells);
+        errdefer grouped.deinit();
 
+        return self.finishPreparedComplexAnalysis(
+            owned_text_cache,
+            owned_renderable,
+            clusters,
+            direct,
+            final_lane_report,
+            grid_metrics,
+            session,
+            options,
+            timings,
+            complex.cells,
+            runs,
+            shaped_runs,
+            grouped,
+        );
+    }
+
+    fn finishPreparedComplexAnalysis(
+        self: *Engine,
+        owned_text_cache: cluster.OwnedLineTextCache,
+        owned_renderable: cluster.OwnedRenderableCells,
+        clusters: cluster.OwnedClusters,
+        direct: DirectNormalAnalysis,
+        lane_report: text_lane.LaneReport,
+        grid_metrics: contract.GridMetrics,
+        session: font_session.FontSession,
+        options: AnalysisOptions,
+        timings: *PrepareTimings,
+        complex_cells: []const contract.RenderableCell,
+        runs: font_resolver.OwnedResolvedRuns,
+        shaped_runs: shape_run.OwnedShapedRuns,
+        grouped: PreparedGroups,
+    ) !OwnedTextAnalysis {
+        var final_lane_report = lane_report;
         const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex.cells, groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex_cells, grouped.groups.groups, runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
         timings.scene_us = elapsedUs(scene_start_ns);
         errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), complex.cells, draw);
+        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(owned_text_cache.view(), complex_cells, draw);
 
         const raster_start_ns = monotonicNs();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
@@ -200,6 +247,47 @@ pub const Engine = struct {
         errdefer raster_plan.deinit();
         const complex_sprite_cache_hits = scene.scene.sprite_draws.len - scene.scene.raster_requests.len;
 
+        const merged = try self.mergePreparedScene(owned_renderable.cells, direct, &scene, &raster_plan);
+
+        final_lane_report.assertValid();
+        var counters = pipeline.TextEngineCounters{
+            .cell_texts = final_lane_report.visible_cells,
+            .clusters = final_lane_report.normal_clusters + final_lane_report.complex_clusters,
+            .resolved_runs = runs.runs.len,
+            .shaped_runs = shaped_runs.runs.len,
+            .glyph_groups = grouped.groups.groups.len,
+            .sprite_cache_hits = @intCast((self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len) + complex_sprite_cache_hits),
+            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len + scene.scene.raster_requests.len),
+            .rasterized_sprites = @intCast(merged.raster_plan.outputs.len),
+            .missing_glyphs = merged.scene.scene.missing.len,
+        };
+        for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
+        applyCounters(&self.counters, counters);
+
+        return .{
+            .text_cache = owned_text_cache,
+            .renderable = owned_renderable,
+            .clusters = clusters,
+            .runs = runs,
+            .shaped_runs = shaped_runs,
+            .font_groups = grouped.font_groups,
+            .sprite_groups = grouped.sprite_groups,
+            .groups = grouped.groups,
+            .scene = merged.scene,
+            .raster_plan = merged.raster_plan,
+            .counters = counters,
+            .lane_report = final_lane_report,
+            .timings = timings.*,
+        };
+    }
+
+    fn mergePreparedScene(
+        self: *Engine,
+        cells: []const contract.RenderableCell,
+        direct: DirectNormalAnalysis,
+        scene: *scene_mod.OwnedTextScene,
+        raster_plan: *rasterizer.OwnedRasterPlan,
+    ) !PreparedSceneMerge {
         const merged_clear_draws = try cloneSlice(contract.TextClearDraw, self.allocator, self.normal_clear_draws.items);
         errdefer self.allocator.free(merged_clear_draws);
         const merged_cursor_draws = try cloneSlice(contract.TextCursorDraw, self.allocator, self.normal_cursor_draws.items);
@@ -212,10 +300,10 @@ pub const Engine = struct {
         errdefer self.allocator.free(merged_decoration_draws);
         const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.normal_missing.items, scene.scene.missing);
         errdefer self.allocator.free(merged_missing);
-        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, &raster_plan);
+        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, raster_plan);
         errdefer merged_raster_plan.deinit();
 
-        installMergedScene(&scene, owned_renderable.cells, direct.damage, .{
+        installMergedScene(scene, cells, direct.damage, .{
             .clear_draws = merged_clear_draws,
             .cursor_draws = merged_cursor_draws,
             .background_draws = merged_background_draws,
@@ -223,37 +311,7 @@ pub const Engine = struct {
             .decoration_draws = merged_decoration_draws,
             .missing = merged_missing,
         });
-
-        final_lane_report.assertValid();
-        var counters = pipeline.TextEngineCounters{
-            .cell_texts = final_lane_report.visible_cells,
-            .clusters = final_lane_report.normal_clusters + final_lane_report.complex_clusters,
-            .resolved_runs = runs.runs.len,
-            .shaped_runs = shaped_runs.runs.len,
-            .glyph_groups = groups.groups.len,
-            .sprite_cache_hits = @intCast((self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len) + complex_sprite_cache_hits),
-            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len + scene.scene.raster_requests.len),
-            .rasterized_sprites = @intCast(merged_raster_plan.outputs.len),
-            .missing_glyphs = scene.scene.missing.len,
-        };
-        for (shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
-        applyCounters(&self.counters, counters);
-
-        return .{
-            .text_cache = owned_text_cache,
-            .renderable = owned_renderable,
-            .clusters = clusters,
-            .runs = runs,
-            .shaped_runs = shaped_runs,
-            .font_groups = font_groups,
-            .sprite_groups = sprite_groups,
-            .groups = groups,
-            .scene = scene,
-            .raster_plan = merged_raster_plan,
-            .counters = counters,
-            .lane_report = final_lane_report,
-            .timings = timings,
-        };
+        return .{ .scene = scene.*, .raster_plan = merged_raster_plan };
     }
 
     fn finishDirectNormalAnalysis(
@@ -330,37 +388,9 @@ pub const Engine = struct {
         var direct_lane_report = text_lane.LaneReport{};
         const lane_report = lane_report_ptr orelse &direct_lane_report;
         const source_len = directNormalSourceLen(source);
-        var visible_count: u32 = 0;
-        var idx: u32 = 0;
-        while (idx < source_len) : (idx += 1) {
-            var item = directNormalSourceItem(source, idx) orelse continue;
-            const text = item.text();
-            if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) continue;
-            const choice = text_lane.classifyRenderableCell(item.renderable, text);
-            switch (policy) {
-                .require_all_normal => {
-                    if (choice.lane != .normal) return null;
-                    visible_count += 1;
-                    recordDirectNormalLane(lane_report, text);
-                },
-                .skip_complex => {
-                    if (choice.lane != .normal) continue;
-                    visible_count += 1;
-                },
-            }
-        }
-
-        try initDirectNormalBuffers(self, visible_count, @intCast(source_len), grid_metrics.rows);
-        idx = 0;
-        while (idx < source_len) : (idx += 1) {
-            var item = directNormalSourceItem(source, idx) orelse continue;
-            const text = item.text();
-            if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) continue;
-            const lane = text_lane.classifyRenderableCell(item.renderable, text).lane;
-            if (policy == .require_all_normal) std.debug.assert(lane == .normal);
-            if (lane != .normal) continue;
-            try appendDirectNormalRenderable(self, item.renderable, text, grid_metrics, session, lane_report);
-        }
+        const visible_count = countDirectNormalVisible(source, damage, grid_metrics, policy, lane_report) orelse return null;
+        try initDirectNormalBuffers(self, visible_count, source_len, grid_metrics.rows);
+        try appendDirectNormalVisible(self, source, damage, grid_metrics, session, policy, lane_report);
 
         appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
         appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
@@ -379,6 +409,166 @@ const MergedSceneBuffers = struct {
     decoration_draws: []contract.TextDecorationDraw,
     missing: []contract.MissingGlyph,
 };
+
+const PreparedSceneMerge = struct {
+    scene: scene_mod.OwnedTextScene,
+    raster_plan: rasterizer.OwnedRasterPlan,
+};
+
+const PreparedGroups = struct {
+    font_groups: grouping.OwnedGlyphGroups,
+    sprite_groups: grouping.OwnedGlyphGroups,
+    groups: grouping.OwnedGlyphGroups,
+
+    fn deinit(self: *PreparedGroups) void {
+        self.groups.deinit();
+        self.sprite_groups.deinit();
+        self.font_groups.deinit();
+        self.* = undefined;
+    }
+};
+
+const DirectNormalDecision = enum {
+    include,
+    skip,
+    reject,
+};
+
+const DirectNormalCandidate = struct {
+    item: DirectNormalItem,
+    text: contract.CellText,
+    choice: text_lane.LaneClass,
+};
+
+fn countDirectNormalVisible(
+    source: DirectNormalSource,
+    damage: DirectDamage,
+    grid_metrics: contract.GridMetrics,
+    policy: DirectNormalPolicy,
+    lane_report: *text_lane.LaneReport,
+) ?u32 {
+    var visible_count: u32 = 0;
+    var idx: u32 = 0;
+    while (idx < directNormalSourceLen(source)) : (idx += 1) {
+        const candidate = directNormalCandidate(source, idx, damage, grid_metrics) orelse continue;
+        switch (directNormalDecision(policy, lane_report, candidate)) {
+            .include => visible_count += 1,
+            .skip => {},
+            .reject => return null,
+        }
+    }
+    return visible_count;
+}
+
+fn appendDirectNormalVisible(
+    self: *Engine,
+    source: DirectNormalSource,
+    damage: DirectDamage,
+    grid_metrics: contract.GridMetrics,
+    session: font_session.FontSession,
+    policy: DirectNormalPolicy,
+    lane_report: *text_lane.LaneReport,
+) !void {
+    var idx: u32 = 0;
+    while (idx < directNormalSourceLen(source)) : (idx += 1) {
+        const candidate = directNormalCandidate(source, idx, damage, grid_metrics) orelse continue;
+        switch (candidate.choice.lane) {
+            .normal => try appendDirectNormalRenderable(self, candidate.item.renderable, candidate.text, grid_metrics, session, lane_report),
+            .complex => switch (policy) {
+                .require_all_normal => unreachable,
+                .skip_complex => continue,
+            },
+        }
+    }
+}
+
+fn directNormalDecision(
+    policy: DirectNormalPolicy,
+    lane_report: *text_lane.LaneReport,
+    candidate: DirectNormalCandidate,
+) DirectNormalDecision {
+    return switch (policy) {
+        .require_all_normal => switch (candidate.choice.lane) {
+            .normal => blk: {
+                recordDirectNormalLane(lane_report, candidate.text);
+                break :blk .include;
+            },
+            .complex => .reject,
+        },
+        .skip_complex => switch (candidate.choice.lane) {
+            .normal => .include,
+            .complex => .skip,
+        },
+    };
+}
+
+fn directNormalCandidate(
+    source: DirectNormalSource,
+    idx: u32,
+    damage: DirectDamage,
+    grid_metrics: contract.GridMetrics,
+) ?DirectNormalCandidate {
+    const item = directNormalSourceItem(source, idx) orelse return null;
+    if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) return null;
+    const text = item.text();
+    return .{ .item = item, .text = text, .choice = text_lane.classifyRenderableCell(item.renderable, text) };
+}
+
+fn resolveComplexRuns(
+    self: *Engine,
+    text_cache: contract.LineTextCache,
+    clusters: []const contract.CellCluster,
+    grid_metrics: contract.GridMetrics,
+    session: font_session.FontSession,
+    timings: *PrepareTimings,
+    lane_report: *text_lane.LaneReport,
+    cells: []const contract.RenderableCell,
+) !font_resolver.OwnedResolvedRuns {
+    const resolve_start_ns = monotonicNs();
+    const runs = try font_resolver.resolveClusters(self.allocator, session, clusters, text_cache, grid_metrics);
+    timings.resolve_us = elapsedUs(resolve_start_ns);
+    for (runs.runs) |run| lane_report.recordLegacyResolvedRunWithCells(text_cache, cells, clusters, run);
+    return runs;
+}
+
+fn shapeComplexRuns(
+    self: *Engine,
+    runs: []const contract.ResolvedRun,
+    text_cache: contract.LineTextCache,
+    clusters: []const contract.CellCluster,
+    cell_metrics: contract.CellMetrics,
+    timings: *PrepareTimings,
+    lane_report: *text_lane.LaneReport,
+    cells: []const contract.RenderableCell,
+) !shape_run.OwnedShapedRuns {
+    const shape_start_ns = monotonicNs();
+    const shaped_runs = try shape_run.shapeResolvedRunsWithShaper(self.allocator, self.shaper, runs, text_cache, clusters, cell_metrics);
+    timings.shape_us = elapsedUs(shape_start_ns);
+    for (shaped_runs.runs) |run| lane_report.recordLegacyShapedRunWithCells(text_cache, cells, clusters, run.run);
+    return shaped_runs;
+}
+
+fn groupComplexRuns(
+    self: *Engine,
+    shaped_runs: []const shape_run.OwnedShapedRun,
+    sprite_routes: []const font_resolver.SpriteRouteHit,
+    clusters: []const contract.CellCluster,
+    cell_metrics: contract.CellMetrics,
+    timings: *PrepareTimings,
+    lane_report: *text_lane.LaneReport,
+    text_cache: contract.LineTextCache,
+    cells: []const contract.RenderableCell,
+) !PreparedGroups {
+    const group_start_ns = monotonicNs();
+    var font_groups = try grouping.groupShapedRunsWithPolicy(self.allocator, shaped_runs, clusters, cell_metrics, .{});
+    errdefer font_groups.deinit();
+    var sprite_groups = try grouping.groupSpriteRoutes(self.allocator, sprite_routes, clusters, cell_metrics);
+    errdefer sprite_groups.deinit();
+    const groups = try grouping.concatGroups(self.allocator, font_groups.groups, sprite_groups.groups);
+    timings.group_us = elapsedUs(group_start_ns);
+    for (groups.groups) |group| lane_report.recordLegacyGroup(text_cache, cells, group);
+    return .{ .font_groups = font_groups, .sprite_groups = sprite_groups, .groups = groups };
+}
 
 pub const OwnedTextAnalysis = struct {
     text_cache: cluster.OwnedLineTextCache,
