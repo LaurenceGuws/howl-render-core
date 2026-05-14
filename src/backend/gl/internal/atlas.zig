@@ -26,6 +26,119 @@ pub fn uploadTextSceneRaster(
     return committed;
 }
 
+pub fn prepareSceneTarget(self: anytype) !void {
+    if (self.target_texture == null and self.config.target_texture != 0) {
+        self.target_texture = self.config.target_texture;
+        self.surface_epoch +%= 1;
+        self.target_content_valid = false;
+    }
+    try ensureOwnedTargetTexture(self);
+    if (self.target_texture == null) return error.TargetTextureUnset;
+}
+
+pub fn beginTargetPass(self: anytype) !void {
+    if (self.target_texture == null) return error.TargetTextureUnset;
+    if (self.target_fbo == 0) {
+        c.glGenFramebuffersEXT(1, @ptrCast(&self.target_fbo));
+    }
+    c.glBindFramebufferEXT(c.GL_FRAMEBUFFER_EXT, self.target_fbo);
+    c.glFramebufferTexture2DEXT(
+        c.GL_FRAMEBUFFER_EXT,
+        c.GL_COLOR_ATTACHMENT0_EXT,
+        c.GL_TEXTURE_2D,
+        @intCast(self.target_texture.?),
+        0,
+    );
+    if (c.glCheckFramebufferStatusEXT(c.GL_FRAMEBUFFER_EXT) != c.GL_FRAMEBUFFER_COMPLETE_EXT) {
+        return error.FramebufferIncomplete;
+    }
+}
+
+pub fn endTargetPass(_: anytype) void {
+    c.glBindFramebufferEXT(c.GL_FRAMEBUFFER_EXT, 0);
+}
+
+pub fn resizeOwnedTargetTexture(self: anytype) void {
+    const texture = self.target_texture orelse return;
+    c.glBindTexture(c.GL_TEXTURE_2D, texture);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    c.glTexImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        c.GL_RGBA,
+        @as(c_int, @intCast(@max(self.config.surface_px.width, 1))),
+        @as(c_int, @intCast(@max(self.config.surface_px.height, 1))),
+        0,
+        c.GL_RGBA,
+        c.GL_UNSIGNED_BYTE,
+        null,
+    );
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
+    self.target_content_valid = false;
+}
+
+pub fn applyScrollReusePx(self: anytype, surface_px: render.PixelSize, scroll_px_u16: u16) void {
+    const scroll_px = @as(u32, scroll_px_u16);
+    const width = @as(u32, surface_px.width);
+    const height = @as(u32, surface_px.height);
+    if (scroll_px == 0 or scroll_px >= height) return;
+    ensureScrollScratchTexture(self, surface_px) catch return;
+    if (self.scroll_scratch_texture == 0) return;
+
+    c.glBindTexture(c.GL_TEXTURE_2D, self.scroll_scratch_texture);
+    c.glCopyTexSubImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        0,
+        0,
+        0,
+        0,
+        @as(c_int, @intCast(width)),
+        @as(c_int, @intCast(height)),
+    );
+
+    c.glDisable(c.GL_BLEND);
+    c.glEnable(c.GL_TEXTURE_2D);
+    c.glBindTexture(c.GL_TEXTURE_2D, self.scroll_scratch_texture);
+    c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_REPLACE);
+    c.glColor4ub(255, 255, 255, 255);
+    c.glBegin(c.GL_QUADS);
+    const top_v: f32 = 1.0 - @as(f32, @floatFromInt(scroll_px)) / @as(f32, @floatFromInt(height));
+    c.glTexCoord2f(0.0, top_v);
+    c.glVertex2f(0.0, 0.0);
+    c.glTexCoord2f(1.0, top_v);
+    c.glVertex2f(@floatFromInt(width), 0.0);
+    c.glTexCoord2f(1.0, 0.0);
+    c.glVertex2f(@floatFromInt(width), @floatFromInt(height - scroll_px));
+    c.glTexCoord2f(0.0, 0.0);
+    c.glVertex2f(0.0, @floatFromInt(height - scroll_px));
+    c.glEnd();
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
+    c.glDisable(c.GL_TEXTURE_2D);
+}
+
+pub fn deinitTargetObjects(self: anytype) void {
+    if (self.atlas_texture != 0 and hasCurrentContext()) {
+        c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+        self.atlas_texture = 0;
+    }
+    if (self.scroll_scratch_texture != 0 and hasCurrentContext()) {
+        c.glDeleteTextures(1, @ptrCast(&self.scroll_scratch_texture));
+        self.scroll_scratch_texture = 0;
+    }
+    if (self.target_fbo != 0 and hasCurrentContext()) {
+        c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
+        self.target_fbo = 0;
+    }
+    if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
+        var texture = self.target_texture.?;
+        c.glDeleteTextures(1, @ptrCast(&texture));
+    }
+}
+
 pub fn clearAtlasCache(self: anytype) void {
     if (self.atlas_pixels.len > 0) @memset(self.atlas_pixels, 0);
     if (self.atlas_slot_codepoint.len > 0) @memset(self.atlas_slot_codepoint, 0);
@@ -203,6 +316,46 @@ fn uploadSceneResidentSlots(self: anytype, scene: render.TextScene) void {
         if (!slotMatchesSprite(self, slot, draw.sprite.key)) continue;
         _ = uploadAtlasSlot(self, slot);
     }
+}
+
+fn ensureOwnedTargetTexture(self: anytype) !void {
+    if (self.target_texture != null) return;
+    if (!hasCurrentContext() and !builtin.is_test) return error.NoContext;
+    var texture: u32 = 0;
+    c.glGenTextures(1, @ptrCast(&texture));
+    if (texture == 0) return error.TargetTextureUnset;
+    self.target_texture = texture;
+    self.owns_target_texture = true;
+    self.target_content_valid = false;
+    self.surface_epoch +%= 1;
+    resizeOwnedTargetTexture(self);
+}
+
+fn ensureScrollScratchTexture(self: anytype, surface_px: render.PixelSize) !void {
+    if (self.scroll_scratch_texture == 0) {
+        c.glGenTextures(1, @ptrCast(&self.scroll_scratch_texture));
+        if (self.scroll_scratch_texture == 0) return error.TargetTextureUnset;
+    }
+    if (self.scroll_scratch_width == surface_px.width and self.scroll_scratch_height == surface_px.height) return;
+    self.scroll_scratch_width = surface_px.width;
+    self.scroll_scratch_height = surface_px.height;
+    c.glBindTexture(c.GL_TEXTURE_2D, self.scroll_scratch_texture);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
+    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
+    c.glTexImage2D(
+        c.GL_TEXTURE_2D,
+        0,
+        c.GL_RGBA,
+        @as(c_int, @intCast(@max(surface_px.width, 1))),
+        @as(c_int, @intCast(@max(surface_px.height, 1))),
+        0,
+        c.GL_RGBA,
+        c.GL_UNSIGNED_BYTE,
+        null,
+    );
+    c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }
 
 fn slotMatchesSprite(self: anytype, slot: u32, key: render.SpriteKey) bool {

@@ -232,7 +232,7 @@ pub const Backend = struct {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
         }
-        self.deinitTargetObjects();
+        atlas_mod.deinitTargetObjects(self);
         self.target_texture = null;
         self.owns_target_texture = false;
         self.target_content_valid = false;
@@ -356,7 +356,7 @@ pub const Backend = struct {
         if (surface_changed) self.surface_epoch +%= 1;
         if (surface_changed) self.target_content_valid = false;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            self.resizeOwnedTargetTexture();
+            atlas_mod.resizeOwnedTargetTexture(self);
         }
     }
 
@@ -369,9 +369,9 @@ pub const Backend = struct {
             }
             return error.NoContext;
         }
-        try self.prepareSceneTarget();
-        try self.beginTargetPass();
-        defer self.endTargetPass();
+        try atlas_mod.prepareSceneTarget(self);
+        try atlas_mod.beginTargetPass(self);
+        defer atlas_mod.endTargetPass(self);
         drawTextScene(self, self.config.surface_px, scene);
         self.target_content_valid = true;
         self.pass_count += 1;
@@ -516,73 +516,6 @@ pub const Backend = struct {
         return provider_mod.deriveCellSize(self);
     }
 
-    fn beginTargetPass(self: *Backend) BackendError!void {
-        if (self.target_texture == null) return error.TargetTextureUnset;
-        if (self.target_fbo == 0) {
-            c.glGenFramebuffersEXT(1, @ptrCast(&self.target_fbo));
-        }
-        c.glBindFramebufferEXT(c.GL_FRAMEBUFFER_EXT, self.target_fbo);
-        c.glFramebufferTexture2DEXT(
-            c.GL_FRAMEBUFFER_EXT,
-            c.GL_COLOR_ATTACHMENT0_EXT,
-            c.GL_TEXTURE_2D,
-            @intCast(self.target_texture.?),
-            0,
-        );
-        if (c.glCheckFramebufferStatusEXT(c.GL_FRAMEBUFFER_EXT) != c.GL_FRAMEBUFFER_COMPLETE_EXT) {
-            return error.FramebufferIncomplete;
-        }
-    }
-
-    fn prepareSceneTarget(self: *Backend) BackendError!void {
-        if (self.target_texture == null and self.config.target_texture != 0) {
-            self.target_texture = self.config.target_texture;
-            self.surface_epoch +%= 1;
-            self.target_content_valid = false;
-        }
-        try self.ensureOwnedTargetTexture();
-        if (self.target_texture == null) return error.TargetTextureUnset;
-    }
-
-    fn ensureOwnedTargetTexture(self: *Backend) BackendError!void {
-        if (self.target_texture != null) return;
-        if (!hasCurrentContext() and !builtin.is_test) return error.NoContext;
-        var texture: u32 = 0;
-        c.glGenTextures(1, @ptrCast(&texture));
-        if (texture == 0) return error.TargetTextureUnset;
-        self.target_texture = texture;
-        self.owns_target_texture = true;
-        self.target_content_valid = false;
-        self.surface_epoch +%= 1;
-        self.resizeOwnedTargetTexture();
-    }
-
-    fn resizeOwnedTargetTexture(self: *Backend) void {
-        const texture = self.target_texture orelse return;
-        c.glBindTexture(c.GL_TEXTURE_2D, texture);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-        c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-        c.glTexImage2D(
-            c.GL_TEXTURE_2D,
-            0,
-            c.GL_RGBA,
-            @as(c_int, @intCast(@max(self.config.surface_px.width, 1))),
-            @as(c_int, @intCast(@max(self.config.surface_px.height, 1))),
-            0,
-            c.GL_RGBA,
-            c.GL_UNSIGNED_BYTE,
-            null,
-        );
-        c.glBindTexture(c.GL_TEXTURE_2D, 0);
-        self.target_content_valid = false;
-    }
-
-    fn endTargetPass(_: *Backend) void {
-        c.glBindFramebufferEXT(c.GL_FRAMEBUFFER_EXT, 0);
-    }
-
     fn deinitAtlasStorage(self: *Backend) void {
         freeOwnedSlice(u8, &self.atlas_pixels);
         freeOwnedSlice(u21, &self.atlas_slot_codepoint);
@@ -613,24 +546,6 @@ pub const Backend = struct {
         }
     }
 
-    fn deinitTargetObjects(self: *Backend) void {
-        if (self.atlas_texture != 0 and hasCurrentContext()) {
-            c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
-            self.atlas_texture = 0;
-        }
-        if (self.scroll_scratch_texture != 0 and hasCurrentContext()) {
-            c.glDeleteTextures(1, @ptrCast(&self.scroll_scratch_texture));
-            self.scroll_scratch_texture = 0;
-        }
-        if (self.target_fbo != 0 and hasCurrentContext()) {
-            c.glDeleteFramebuffersEXT(1, @ptrCast(&self.target_fbo));
-            self.target_fbo = 0;
-        }
-        if (self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            var texture = self.target_texture.?;
-            c.glDeleteTextures(1, @ptrCast(&texture));
-        }
-    }
 };
 
 fn freeOwnedSlice(comptime T: type, buffer: *[]T) void {
@@ -924,7 +839,7 @@ fn drawTextScene(backend: *Backend, surface: render.PixelSize, scene: render.Tex
         c.glClearColor(0.0, 0.0, 0.0, 1.0);
         c.glClear(c.GL_COLOR_BUFFER_BIT);
     } else if (scene.scroll_up_px > 0) {
-        applyScrollReusePx(backend, surface, scene.scroll_up_px);
+        atlas_mod.applyScrollReusePx(backend, surface, scene.scroll_up_px);
     }
 
     drawSceneClears(backend, surface, scene.clear_draws);
@@ -1035,73 +950,6 @@ fn drawSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: ren
     c.glBegin(c.GL_QUADS);
     emitTexturedGlyph(textured);
     c.glEnd();
-}
-
-fn applyScrollReusePx(backend: *Backend, surface_px: render.PixelSize, scroll_px_u16: u16) void {
-    const scroll_px = @as(u32, scroll_px_u16);
-    const width = @as(u32, surface_px.width);
-    const height = @as(u32, surface_px.height);
-    if (scroll_px == 0 or scroll_px >= height) return;
-    ensureScrollScratchTexture(backend, surface_px) catch return;
-    if (backend.scroll_scratch_texture == 0) return;
-
-    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
-    c.glCopyTexSubImage2D(
-        c.GL_TEXTURE_2D,
-        0,
-        0,
-        0,
-        0,
-        0,
-        @as(c_int, @intCast(width)),
-        @as(c_int, @intCast(height)),
-    );
-
-    c.glDisable(c.GL_BLEND);
-    c.glEnable(c.GL_TEXTURE_2D);
-    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
-    c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_REPLACE);
-    c.glColor4ub(255, 255, 255, 255);
-    c.glBegin(c.GL_QUADS);
-    const top_v: f32 = 1.0 - @as(f32, @floatFromInt(scroll_px)) / @as(f32, @floatFromInt(height));
-    c.glTexCoord2f(0.0, top_v);
-    c.glVertex2f(0.0, 0.0);
-    c.glTexCoord2f(1.0, top_v);
-    c.glVertex2f(@floatFromInt(width), 0.0);
-    c.glTexCoord2f(1.0, 0.0);
-    c.glVertex2f(@floatFromInt(width), @floatFromInt(height - scroll_px));
-    c.glTexCoord2f(0.0, 0.0);
-    c.glVertex2f(0.0, @floatFromInt(height - scroll_px));
-    c.glEnd();
-    c.glBindTexture(c.GL_TEXTURE_2D, 0);
-    c.glDisable(c.GL_TEXTURE_2D);
-}
-
-fn ensureScrollScratchTexture(backend: *Backend, surface_px: render.PixelSize) BackendError!void {
-    if (backend.scroll_scratch_texture == 0) {
-        c.glGenTextures(1, @ptrCast(&backend.scroll_scratch_texture));
-        if (backend.scroll_scratch_texture == 0) return error.TargetTextureUnset;
-    }
-    if (backend.scroll_scratch_width == surface_px.width and backend.scroll_scratch_height == surface_px.height) return;
-    backend.scroll_scratch_width = surface_px.width;
-    backend.scroll_scratch_height = surface_px.height;
-    c.glBindTexture(c.GL_TEXTURE_2D, backend.scroll_scratch_texture);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_S, c.GL_CLAMP_TO_EDGE);
-    c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_WRAP_T, c.GL_CLAMP_TO_EDGE);
-    c.glTexImage2D(
-        c.GL_TEXTURE_2D,
-        0,
-        c.GL_RGBA,
-        @as(c_int, @intCast(@max(surface_px.width, 1))),
-        @as(c_int, @intCast(@max(surface_px.height, 1))),
-        0,
-        c.GL_RGBA,
-        c.GL_UNSIGNED_BYTE,
-        null,
-    );
-    c.glBindTexture(c.GL_TEXTURE_2D, 0);
 }
 
 fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: usize) ?[]QuadVertex {
