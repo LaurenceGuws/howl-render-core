@@ -1,30 +1,13 @@
 //! Responsibility: prove the render runtime owner chain.
 //! Ownership: retained publication, queue, geometry, and metrics behavior.
-//! Reason: keep runtime proof separate from package-surface compile checks.
+//! Reason: keep runtime proof focused on owner behavior only.
 
 const std = @import("std");
-const root = @import("howl_render");
-
-test "renderer package surface remains available" {
-    _ = root.Render;
-    _ = root.Render.Text;
-    _ = root.Render.BackendConfig;
-    _ = root.Render.FramePixels;
-    _ = root.Render.SurfaceFrameData;
-    _ = root.Render.FrameSnapshot;
-    _ = root.Render.FramePipeline;
-    _ = root.Render.FrameQueue;
-    _ = root.Render.PrepareMetrics;
-    _ = root.Render.RenderMetrics;
-    _ = root.Render.Metrics;
-    _ = root.Render.RenderRuntime.Metrics;
-    _ = root.Render.ResolveResult;
-    _ = root.Ffi;
-    _ = root.Renderer;
-}
+const Render = @import("../render.zig").Render;
+const Renderer = @import("../renderer.zig").Renderer;
 
 test "render frame pixel geometry clamps to drawable size" {
-    const frame = root.Render.FramePixels{ .render_width = 0, .render_height = -2, .grid_width = 80, .grid_height = 24 };
+    const frame = Render.FramePixels{ .render_width = 0, .render_height = -2, .grid_width = 80, .grid_height = 24 };
     try std.testing.expectEqual(@as(u16, 1), frame.renderWidth());
     try std.testing.expectEqual(@as(u16, 1), frame.renderHeight());
     try std.testing.expectEqual(@as(u16, 80), frame.gridWidth());
@@ -32,11 +15,11 @@ test "render frame pixel geometry clamps to drawable size" {
 }
 
 test "renderer root helpers forward deterministically" {
-    const grid = root.Render.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
+    const grid = Render.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
     try std.testing.expectEqual(@as(u16, 10), grid.cols);
     try std.testing.expectEqual(@as(u16, 3), grid.rows);
 
-    const frame_grid = try root.Render.deriveGridForFrame(
+    const frame_grid = try Render.deriveGridForFrame(
         .{ .width = 800, .height = 600 },
         .{ .width = 640, .height = 320 },
         .{ .width = 8, .height = 16 },
@@ -46,18 +29,18 @@ test "renderer root helpers forward deterministically" {
 }
 
 test "renderer serializes font resize against prepare" {
-    var renderer = root.Renderer.init(.{
+    var renderer = Renderer.init(.{
         .surface_px = .{ .width = 64, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .font_size_px = 16,
     });
     defer renderer.deinit();
 
-    var cells = [_]root.Render.SurfaceCell{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
+    var cells = [_]Render.SurfaceCell{ .{}, .{}, .{}, .{}, .{}, .{}, .{}, .{} };
     var dirty_rows = [_]bool{ true, true };
     var dirty_cols_start = [_]u16{ 0, 0 };
     var dirty_cols_end = [_]u16{ 3, 3 };
-    const frame = root.Render.SurfaceFrameData{
+    const frame = Render.SurfaceFrameData{
         .viewport = .{ .cols = 4, .rows = 2 },
         .grid = .{ .cells = cells[0..], .cols = 4, .rows = 2 },
         .cursor = .{},
@@ -78,9 +61,9 @@ test "renderer serializes font resize against prepare" {
 }
 
 test "render runtime owner behavior remains reachable" {
-    var runtime = root.Render.RenderRuntime.init(std.testing.allocator);
+    var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
-    var snapshot = try root.Render.FrameSnapshot.init(std.testing.allocator, 2, 3);
+    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 3);
     defer snapshot.deinit(std.testing.allocator);
     snapshot.clearDirty();
     for (snapshot.cells.items, 0..) |*cell, idx| cell.codepoint = @intCast('a' + idx);
@@ -93,7 +76,7 @@ test "render runtime owner behavior remains reachable" {
     try std.testing.expect(geometry.changed);
     try std.testing.expectEqual(@as(u64, 1), geometry.geometry_epoch);
 
-    const source = root.Render.SourceView{
+    const source = Render.SourceView{
         .snapshot = &snapshot,
         .cols = 3,
         .rows = 2,
@@ -134,34 +117,34 @@ test "render runtime owner behavior remains reachable" {
 }
 
 test "render runtime stale retained-base validation stays explicit" {
-    const submitted = root.Render.FramePipeline.SubmittedFrame{
+    const submitted = Render.FramePipeline.SubmittedFrame{
         .token = .{ .snapshot_seq = 10, .dirty_epoch = 10, .geometry_epoch = 3, .damage_base_seq = 0, .damage_kind = .full },
         .target_epoch = 7,
         .content_valid = true,
     };
-    const stale_base = root.Render.FramePipeline.PreparedFrame{
+    const stale_base = Render.FramePipeline.PreparedFrame{
         .token = .{ .snapshot_seq = 12, .dirty_epoch = 12, .geometry_epoch = 3, .damage_base_seq = 11, .damage_kind = .partial },
         .required_base_seq = 11,
         .required_target_epoch = 7,
     };
-    const stale_target = root.Render.FramePipeline.PreparedFrame{
+    const stale_target = Render.FramePipeline.PreparedFrame{
         .token = .{ .snapshot_seq = 11, .dirty_epoch = 11, .geometry_epoch = 3, .damage_base_seq = 10, .damage_kind = .partial },
         .required_base_seq = 10,
         .required_target_epoch = 8,
     };
 
-    try std.testing.expectEqual(root.Render.FramePipeline.SubmitValidation.stale_retained_base, root.Render.FramePipeline.validatePreparedFrame(stale_base, submitted));
-    try std.testing.expectEqual(root.Render.FramePipeline.SubmitValidation.stale_target, root.Render.FramePipeline.validatePreparedFrame(stale_target, submitted));
+    try std.testing.expectEqual(Render.FramePipeline.SubmitValidation.stale_retained_base, Render.FramePipeline.validatePreparedFrame(stale_base, submitted));
+    try std.testing.expectEqual(Render.FramePipeline.SubmitValidation.stale_target, Render.FramePipeline.validatePreparedFrame(stale_target, submitted));
 }
 
 const RendererStress = struct {
-    fn resize(renderer: *root.Renderer, failed: *std.atomic.Value(bool)) void {
+    fn resize(renderer: *Renderer, failed: *std.atomic.Value(bool)) void {
         _ = failed;
         var size: u16 = 8;
         while (size < 64) : (size += 1) renderer.setFontSizePx(size);
     }
 
-    fn prepare(renderer: *root.Renderer, frame: root.Render.SurfaceFrameData, failed: *std.atomic.Value(bool)) void {
+    fn prepare(renderer: *Renderer, frame: Render.SurfaceFrameData, failed: *std.atomic.Value(bool)) void {
         var idx: usize = 0;
         while (idx < 64) : (idx += 1) {
             var prepared = renderer.prepareFrame(

@@ -3,7 +3,7 @@
 //! Reason: isolate active text analysis cost before host and backend noise.
 
 const std = @import("std");
-const render = @import("howl_render");
+const render = @import("../render.zig");
 
 const OutputFormat = enum { ndjson, text };
 const LaneReport = render.Render.Text.Lane.LaneReport;

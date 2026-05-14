@@ -43,21 +43,20 @@ pub fn build(b: *std.Build) void {
     ffi_options.addOption(RenderBackend, "render_backend", selected_backend);
     ffi_options.addOption(bool, "c_abi", true);
 
-    const mod = b.addModule("howl_render", .{
+    const internal_mod = b.createModule(.{
         .root_source_file = b.path("src/howl_render.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mod.addImport("howl_render", mod);
-    mod.addImport("render_options", module_options.createModule());
-    mod.linkLibrary(freetype_lib);
-    mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
-    mod.linkLibrary(harfbuzz_lib);
-    mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
+    internal_mod.addImport("render_options", module_options.createModule());
+    internal_mod.linkLibrary(freetype_lib);
+    internal_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
+    internal_mod.linkLibrary(harfbuzz_lib);
+    internal_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
     if (selected_backend == .gl) {
-        mod.linkSystemLibrary("GL", .{});
+        internal_mod.linkSystemLibrary("GL", .{});
     } else if (target.result.abi != .android) {
-        mod.linkSystemLibrary("GLESv2", .{});
+        internal_mod.linkSystemLibrary("GLESv2", .{});
     }
 
     const perf_freetype_dep = b.dependency("freetype", .{
@@ -74,26 +73,9 @@ pub fn build(b: *std.Build) void {
         perf_freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{android_ndk_sysroot}) });
         perf_freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/aarch64-linux-android", .{android_ndk_sysroot}) });
     }
-    const perf_mod = b.addModule("howl_render_perf", .{
-        .root_source_file = b.path("src/howl_render.zig"),
-        .target = target,
-        .optimize = perf_optimize,
-    });
-    perf_mod.addImport("howl_render", perf_mod);
-    perf_mod.addImport("render_options", perf_options.createModule());
-    perf_mod.linkLibrary(perf_freetype_lib);
-    perf_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
-    perf_mod.linkLibrary(perf_harfbuzz_lib);
-    perf_mod.addIncludePath(perf_harfbuzz_lib.getEmittedIncludeTree());
-    if (selected_backend == .gl) {
-        perf_mod.linkSystemLibrary("GL", .{});
-    } else if (target.result.abi != .android) {
-        perf_mod.linkSystemLibrary("GLESv2", .{});
-    }
-
     const mod_tests = b.addTest(.{
         .name = "test-unit",
-        .root_module = mod,
+        .root_module = internal_mod,
         .filters = b.args orelse &.{},
     });
     mod_tests.use_llvm = true;
@@ -102,14 +84,14 @@ pub fn build(b: *std.Build) void {
         run_mod_tests.has_side_effects = true;
     }
 
-    const render_mod = b.addModule("howl_render_pure", .{
+    const render_owner = b.createModule(.{
         .root_source_file = b.path("src/render.zig"),
         .target = target,
         .optimize = optimize,
     });
     const render_tests = b.addTest(.{
         .name = "test-render",
-        .root_module = render_mod,
+        .root_module = render_owner,
         .filters = b.args orelse &.{},
     });
     render_tests.use_llvm = true;
@@ -119,11 +101,20 @@ pub fn build(b: *std.Build) void {
     }
 
     const runtime_proof_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/runtime_proof.zig"),
+        .root_source_file = b.path("src/runtime_proof_root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    runtime_proof_mod.addImport("howl_render", mod);
+    runtime_proof_mod.addImport("render_options", module_options.createModule());
+    runtime_proof_mod.linkLibrary(freetype_lib);
+    runtime_proof_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
+    runtime_proof_mod.linkLibrary(harfbuzz_lib);
+    runtime_proof_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
+    if (selected_backend == .gl) {
+        runtime_proof_mod.linkSystemLibrary("GL", .{});
+    } else if (target.result.abi != .android) {
+        runtime_proof_mod.linkSystemLibrary("GLESv2", .{});
+    }
     const runtime_proof_tests = b.addTest(.{
         .name = "test-runtime-proof",
         .root_module = runtime_proof_mod,
@@ -153,11 +144,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(test_unit_step);
 
     const ffi_mod = b.createModule(.{
-        .root_source_file = b.path("src/howl_render.zig"),
+        .root_source_file = b.path("src/libhowl_render.zig"),
         .target = target,
         .optimize = optimize,
     });
-    ffi_mod.addImport("howl_render", ffi_mod);
     ffi_mod.addImport("render_options", ffi_options.createModule());
     ffi_mod.linkLibrary(freetype_lib);
     ffi_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
@@ -179,11 +169,10 @@ pub fn build(b: *std.Build) void {
     b.installFile("include/howl_render.h", "include/howl_render.h");
 
     const benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("src/test/render_benchmark.zig"),
+        .root_source_file = b.path("src/render_benchmark_root.zig"),
         .target = target,
         .optimize = perf_optimize,
     });
-    benchmark_mod.addImport("howl_render", perf_mod);
     benchmark_mod.addImport("render_options", perf_options.createModule());
     benchmark_mod.linkLibrary(perf_freetype_lib);
     benchmark_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
