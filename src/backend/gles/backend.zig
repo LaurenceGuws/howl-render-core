@@ -314,34 +314,20 @@ pub const Backend = struct {
 
     pub fn drawPreparedScene(self: *Backend, scene: render.TextScene) !TextSceneRenderReport {
         if (self.closed) return error.BackendClosed;
-        if (hasCurrentContext()) {
-            if (self.target_texture == null and self.config.target_texture != 0) {
-                self.target_texture = self.config.target_texture;
-                self.surface_epoch +%= 1;
-                self.target_content_valid = false;
+        if (!hasCurrentContext()) {
+            if (builtin.is_test) {
+                self.pass_count += 1;
+                return textSceneRenderReport(self, scene);
             }
-            try self.ensureOwnedTargetTexture();
-            if (self.target_texture == null) return error.TargetTextureUnset;
-            try self.beginTargetPass();
-            defer self.endTargetPass();
-            drawTextScene(self, self.config.surface_px, scene);
-            self.target_content_valid = true;
-        } else if (!builtin.is_test) {
             return error.NoContext;
         }
+        try self.prepareSceneTarget();
+        try self.beginTargetPass();
+        defer self.endTargetPass();
+        drawTextScene(self, self.config.surface_px, scene);
+        self.target_content_valid = true;
         self.pass_count += 1;
-        return .{
-            .pass_index = self.pass_count,
-            .texture_id = self.target_texture orelse 0,
-            .raster_uploads_committed = 0,
-            .full_redraw = scene.full_redraw,
-            .scroll_up_px = scene.scroll_up_px,
-            .clear_draws = scene.clear_draws.len,
-            .background_draws = scene.background_draws.len,
-            .sprite_draws = scene.sprite_draws.len,
-            .decoration_draws = scene.decoration_draws.len,
-            .cursor_draws = scene.cursor_draws.len,
-        };
+        return textSceneRenderReport(self, scene);
     }
 
     fn beginTargetPass(self: *Backend) BackendError!void {
@@ -360,6 +346,16 @@ pub const Backend = struct {
         if (c.glCheckFramebufferStatus(c.GL_FRAMEBUFFER) != c.GL_FRAMEBUFFER_COMPLETE) {
             return error.FramebufferIncomplete;
         }
+    }
+
+    fn prepareSceneTarget(self: *Backend) BackendError!void {
+        if (self.target_texture == null and self.config.target_texture != 0) {
+            self.target_texture = self.config.target_texture;
+            self.surface_epoch +%= 1;
+            self.target_content_valid = false;
+        }
+        try self.ensureOwnedTargetTexture();
+        if (self.target_texture == null) return error.TargetTextureUnset;
     }
 
     fn ensureOwnedTargetTexture(self: *Backend) BackendError!void {
@@ -687,19 +683,17 @@ fn drawTextScene(backend: *const Backend, surface: render.PixelSize, scene: rend
     c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
     defer c.glDisable(c.GL_BLEND);
 
-    for (scene.clear_draws) |draw| {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    for (scene.background_draws) |draw| {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    for (scene.decoration_draws) |draw| {
-        drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
+    drawSceneRectBatch(render.TextClearDraw, surface, scene.clear_draws);
+    drawSceneRectBatch(render.TextBackgroundDraw, surface, scene.background_draws);
+    drawSceneRectBatch(render.TextDecorationDraw, surface, scene.decoration_draws);
     for (scene.sprite_draws) |draw| {
         drawSceneSprite(backend, surface, draw);
     }
-    for (scene.cursor_draws) |draw| {
+    drawSceneRectBatch(render.TextCursorDraw, surface, scene.cursor_draws);
+}
+
+fn drawSceneRectBatch(comptime Draw: type, surface: render.PixelSize, draws: []const Draw) void {
+    for (draws) |draw| {
         drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
     }
 }
@@ -811,6 +805,21 @@ fn drawRect(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16, 
         @as(f32, @floatFromInt(color.a)) * inv_255,
     );
     c.glClear(c.GL_COLOR_BUFFER_BIT);
+}
+
+fn textSceneRenderReport(self: *const Backend, scene: render.TextScene) TextSceneRenderReport {
+    return .{
+        .pass_index = self.pass_count,
+        .texture_id = self.target_texture orelse 0,
+        .raster_uploads_committed = 0,
+        .full_redraw = scene.full_redraw,
+        .scroll_up_px = scene.scroll_up_px,
+        .clear_draws = scene.clear_draws.len,
+        .background_draws = scene.background_draws.len,
+        .sprite_draws = scene.sprite_draws.len,
+        .decoration_draws = scene.decoration_draws.len,
+        .cursor_draws = scene.cursor_draws.len,
+    };
 }
 
 test {
