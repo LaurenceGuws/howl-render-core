@@ -288,30 +288,38 @@ them.
 Every backend-root surface named here must end in one of four states: keep, move, delete, or
 replace.
 
+Unless stated otherwise, every row below applies to both:
+
+- `src/backend/gl/backend.zig`
+- `src/backend/gles/backend.zig`
+
 | Current surface | Current owner | Classification | Destination owner | Final status |
 | --- | --- | --- | --- | --- |
-| `analyzeTextCellsOptions(...)` | backend root | text analysis policy | `Render.Text.Engine` | move then delete from backend root |
-| `prepareFrame(...)` | backend root | staged renderer orchestration | `Renderer` with `RenderRuntime` and `Render.Text` support | move then delete from backend root |
-| `submitFrame(...)` | backend root | staged renderer orchestration | `Renderer` with backend leaf submit primitive only | move then replace |
-| `uploadTextSceneRaster(...)` | backend root | upload convenience surface that currently bundles renderer policy timing | backend leaf upload primitive consumed by `Renderer` | replace |
-| `renderTextScene(...)` | backend root | one-shot render-policy surface | backend leaf draw primitive consumed by `Renderer` | replace |
-| `renderFrameState(...)` | backend root | convenience whole-pipeline owner violation | no surviving owner | delete |
-| backend-root `deriveGridSize(...)` | backend root | geometry convenience passthrough | `Render` | delete |
-| backend-root `deriveGridForFrame(...)` | backend root | geometry convenience passthrough | `Render` | delete |
-| `resolveCounters()` | backend root | observability ownership leak | `Renderer` or `RenderRuntime` metric record | move then delete from backend root |
-| `surfaceHandle()` | backend root | observability ownership leak | `Renderer` submitted/prepared frame record | move then delete from backend root |
-| `lastResolveStage()` | backend root | observability ownership leak | `Renderer` or `RenderRuntime` state transition record | move then delete from backend root |
-| `init(...)` | backend root | true leaf contract | backend root | keep |
-| `deinit(...)` | backend root | true leaf contract | backend root | keep |
-| `bindTargetTexture(...)` | backend root | true leaf contract | backend root | keep |
-| `setFontPath(...)` | backend root | true leaf contract | backend root | keep |
-| `setFallbackFontPaths(...)` | backend root | true leaf contract | backend root | keep |
-| `setFontSizePx(...)` | backend root | true leaf contract | backend root | keep |
-| `deriveFrameLayout(...)` | backend root | backend-local layout fact | backend root | keep |
-| `targetTexture(...)` | backend root | true leaf contract | backend root | keep |
-| `textProvider(...)` | backend root | provider access contract | backend root | keep |
-| `fontSession(...)` | backend root | provider access contract | backend root | keep |
-| `capabilities(...)` | backend root | true backend capability fact | backend root | keep |
+| top-level `testProviderGlyphId(...)` | backend root test surface | deletion-only convenience surface | backend-local tests at the provider seam | delete |
+| top-level `init(...)` wrapper | backend root top-level wrapper | deletion-only convenience surface | no surviving owner | delete |
+| top-level `deriveGridSize(...)` wrapper | backend root top-level wrapper | geometry convenience passthrough | `Render` | delete |
+| top-level `deriveGridForFrame(...)` wrapper | backend root top-level wrapper | geometry convenience passthrough | `Render` | delete |
+| `Backend.init(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.deinit(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.bindTargetTexture(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.targetTexture(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.surfaceHandle()` | backend root | backend convenience/observability leak that must move out | `Renderer` submitted/prepared frame record | move then delete from backend root public surface |
+| `Backend.setFontPath(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.setFallbackFontPaths(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.setFontSizePx(...)` | backend root | true leaf contract | backend root | keep |
+| `Backend.deriveFrameLayout(...)` | backend root | true backend leaf contract | backend root | keep |
+| `Backend.resolveCounters()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` metric record | move then delete from backend root public surface |
+| `Backend.lastResolveStage()` | backend root | backend convenience/observability leak that must move out | `Renderer` frame record or `RenderRuntime` state record | move then delete from backend root public surface |
+| `Backend.textProvider(...)` | backend root | true backend leaf contract | backend root | keep |
+| `Backend.fontSession(...)` | backend root | true backend leaf contract | backend root | keep |
+| `Backend.analyzeTextCellsOptions(...)` | backend root | text/render policy that must move out | `Render.Text.Engine` | move then delete from backend root public surface |
+| `Backend.uploadTextSceneRaster(...)` | backend root | backend convenience surface that must move out | backend leaf upload primitive consumed by `Renderer` | replace |
+| `Backend.renderTextScene(...)` | backend root | text/render policy that must move out | backend leaf draw primitive consumed by `Renderer` | replace |
+| `Backend.capabilities(...)` | backend root | true backend leaf contract | backend root | keep |
+| `Backend.resize(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` owns resize sequencing; backend keeps private apply-resize mutation only | move then delete from backend root public surface |
+| `Backend.renderFrameState(...)` | backend root | deletion-only convenience surface | no surviving owner | delete |
+| `Backend.prepareFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with `RenderRuntime` and `Render.Text` support | move then delete from backend root public surface |
+| `Backend.submitFrame(...)` | backend root | renderer-owned orchestration that must move up | `Renderer` with backend leaf submit primitive only | move then replace |
 
 Notes:
 
@@ -319,8 +327,30 @@ Notes:
   They are deletion/replacement targets.
 - if the reduced backend contract needs different names, choose names that describe leaf work, not
   pipeline ownership
-- any backend-root function not listed here must be classified during Checkpoint 2 before it can be
-  preserved
+- the only current GL/GLES classification difference is backend capability facts inside
+  `capabilities(...)`: GL currently reports `max_atlas_slots = 2048`, while GLES currently reports
+  `max_atlas_slots = 1024`. That is a true backend-local fact and not an ownership inversion.
+- `testProviderGlyphId(...)` exists today in both roots only as backend-local test exposure. It is
+  not an owner-true surviving contract.
+
+## Renderer Coupling Inventory
+
+These are the current renderer/backend coupling points in `src/renderer.zig`. Nothing in later
+checkpoints may survive by implication.
+
+| Current coupling point | Current owner | Classification | Destination owner | Final status |
+| --- | --- | --- | --- | --- |
+| `backend_mod.Backend.init(config)` | renderer -> backend leaf init | true backend leaf contract | backend root | keep |
+| `self.backend.deinit()` | renderer -> backend leaf lifecycle | true backend leaf contract | backend root | keep |
+| `self.backend.setFontPath(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
+| `self.backend.setFallbackFontPaths(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
+| `self.backend.setFontSizePx(...)` | renderer -> backend leaf font config | true backend leaf contract | backend root | keep |
+| `self.backend.deriveFrameLayout(...)` | renderer -> backend leaf layout fact | true backend leaf contract | backend root | keep |
+| `self.backend.resolveCounters()` in `Renderer.prepareFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
+| `self.backend.prepareFrame(...)` | renderer delegating staged prepare ownership | renderer-owned orchestration that must move up | `Renderer` with `Render.Text` and `RenderRuntime` support | move then delete backend call |
+| `self.backend.submitFrame(...)` | renderer delegating staged submit ownership | renderer-owned orchestration that must move up | `Renderer` with reduced backend leaf submit primitive | move then replace backend call |
+| `self.backend.resolveCounters()` in `Renderer.submitFrame(...)` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.FrameRecord` or renderer-owned metric state | move then delete backend getter dependency |
+| `self.backend.surfaceHandle()` | renderer reading backend observability | backend convenience/observability leak that must move out | `Renderer.Submitted` / renderer-owned frame result record | move then delete backend getter dependency |
 
 ## Explicit Landing Owners
 
