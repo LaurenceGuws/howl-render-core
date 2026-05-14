@@ -8,9 +8,13 @@
 extern "C" {
 #endif
 
-typedef uintptr_t HowlRenderSnapshotHandle;
-typedef uintptr_t HowlRenderRuntimeHandle;
-typedef uintptr_t HowlRenderRendererHandle;
+typedef struct HowlRenderSnapshot HowlRenderSnapshot;
+typedef struct HowlRenderRuntime HowlRenderRuntime;
+typedef struct HowlRenderRenderer HowlRenderRenderer;
+
+typedef HowlRenderSnapshot *HowlRenderSnapshotHandle;
+typedef HowlRenderRuntime *HowlRenderRuntimeHandle;
+typedef HowlRenderRenderer *HowlRenderRendererHandle;
 
 typedef enum {
   HOWL_RENDER_CALL_OK = 0,
@@ -25,13 +29,6 @@ typedef enum {
   HOWL_RENDER_DAMAGE_SCROLL = 2,
   HOWL_RENDER_DAMAGE_FULL = 3,
 } HowlRenderDamageKind;
-
-typedef enum {
-  HOWL_RENDER_ACTION_IDLE = 0,
-  HOWL_RENDER_ACTION_PREPARE = 1,
-  HOWL_RENDER_ACTION_SUBMIT = 2,
-  HOWL_RENDER_ACTION_PRESENT = 3,
-} HowlRenderAction;
 
 typedef enum {
   HOWL_RENDER_PREPARE_IDLE = 0,
@@ -138,7 +135,7 @@ typedef struct {
 } HowlRenderGeometryReceipt;
 
 typedef struct {
-  uintptr_t snapshot_handle;
+  HowlRenderSnapshotHandle snapshot_handle;
   uint16_t cols;
   uint16_t rows;
   uint64_t scrollback_count;
@@ -255,8 +252,6 @@ void howl_render_runtime_deinit(HowlRenderRuntimeHandle handle);
 int howl_render_runtime_set_font_size_px(HowlRenderRuntimeHandle handle, uint16_t font_size_px);
 HowlRenderGeometryReceipt howl_render_runtime_sync_geometry(HowlRenderRuntimeHandle handle, HowlRenderGeometry geometry);
 HowlRenderSourceReceipt howl_render_runtime_publish_snapshot(HowlRenderRuntimeHandle handle, HowlRenderSourceView source);
-uint8_t howl_render_runtime_has_pending_publication(HowlRenderRuntimeHandle handle);
-uint8_t howl_render_runtime_action(HowlRenderRuntimeHandle handle);
 void howl_render_runtime_mark_presented(HowlRenderRuntimeHandle handle);
 HowlRenderSurfaceQuery howl_render_runtime_surface_query(HowlRenderRuntimeHandle handle);
 HowlRenderRuntimeMetrics howl_render_runtime_take_metrics(HowlRenderRuntimeHandle handle);

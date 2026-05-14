@@ -205,15 +205,6 @@ pub const Renderer = struct {
             self.renderer.deinit();
             std.heap.c_allocator.destroy(self);
         }
-
-        pub fn fromHandle(raw: usize) ?*Owner {
-            if (raw == 0) return null;
-            return @ptrFromInt(raw);
-        }
-
-        pub fn handle(self: *Owner) usize {
-            return @intFromPtr(self);
-        }
     };
 
     pub fn init(config: render.BackendConfig) Renderer {

@@ -62,15 +62,6 @@ pub const Render = struct {
             self.snapshot.deinit(std.heap.c_allocator);
             std.heap.c_allocator.destroy(self);
         }
-
-        pub fn fromHandle(raw: usize) ?*SnapshotOwner {
-            if (raw == 0) return null;
-            return @ptrFromInt(raw);
-        }
-
-        pub fn handle(self: *SnapshotOwner) usize {
-            return @intFromPtr(self);
-        }
     };
     pub const PrepareMetrics = frame_metrics.PrepareMetrics;
     pub const RenderMetrics = frame_metrics.RenderMetrics;
@@ -250,15 +241,6 @@ pub const Render = struct {
             pub fn destroy(self: *Owner) void {
                 self.runtime.deinit();
                 std.heap.c_allocator.destroy(self);
-            }
-
-            pub fn fromHandle(raw: usize) ?*Owner {
-                if (raw == 0) return null;
-                return @ptrFromInt(raw);
-            }
-
-            pub fn handle(self: *Owner) usize {
-                return @intFromPtr(self);
             }
         };
 

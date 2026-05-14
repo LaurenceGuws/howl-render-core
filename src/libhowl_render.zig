@@ -21,8 +21,6 @@ comptime {
     @export(&ffi.runtimeSetFontSizePx, .{ .name = "howl_render_runtime_set_font_size_px" });
     @export(&ffi.runtimeSyncGeometry, .{ .name = "howl_render_runtime_sync_geometry" });
     @export(&ffi.runtimePublishSnapshot, .{ .name = "howl_render_runtime_publish_snapshot" });
-    @export(&ffi.runtimeHasPendingPublication, .{ .name = "howl_render_runtime_has_pending_publication" });
-    @export(&ffi.runtimeAction, .{ .name = "howl_render_runtime_action" });
     @export(&ffi.runtimeMarkPresented, .{ .name = "howl_render_runtime_mark_presented" });
     @export(&ffi.runtimeSurfaceQuery, .{ .name = "howl_render_runtime_surface_query" });
     @export(&ffi.runtimeTakeMetrics, .{ .name = "howl_render_runtime_take_metrics" });
