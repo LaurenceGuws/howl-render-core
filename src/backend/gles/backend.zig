@@ -10,6 +10,7 @@ const clip_rect = @import("../shared/clip_rect.zig");
 const text_cache = @import("../shared/text_cache.zig");
 const atlas_mod = @import("internal/atlas.zig");
 const c_api = @import("internal/c_api.zig");
+const glyph_raster_mod = @import("internal/glyph_raster.zig");
 const provider_mod = @import("internal/provider.zig");
 const c = c_api.c;
 const time_c = @cImport({
@@ -37,8 +38,6 @@ const ThreadMutex = struct {
 };
 
 const primary_face_id: u32 = provider_mod.primary_face_id;
-
-const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
 
 fn fallbackFaceId(index: u32) u32 {
     return index + 2;
@@ -447,96 +446,6 @@ pub const Backend = struct {
         atlas_mod.clearAtlasCache(self);
     }
 
-    fn rasterizeFromFont(self: *Backend, dst: []u8, codepoint: u21, gw: u16, gh: u16) ?ResolvedGlyphKey {
-        if (!self.ensureFont()) return null;
-        self.ft_mutex.lock();
-        defer self.ft_mutex.unlock();
-        if (self.ft_face) |face| {
-            if (self.rasterizeGlyphFromFace(dst, self.hb_font, face, codepoint, primary_face_id, gw, gh)) |key| {
-                self.resolve_stage = .loaded_exact_match;
-                if (self.active_resolve) |obs| obs.stage = .loaded_exact_match;
-                return key;
-            }
-        }
-
-        const lib = self.ft_lib orelse return null;
-        var i: u8 = 0;
-        while (i < self.fallback_font_paths_len) : (i += 1) {
-            const font_path = self.fallback_font_paths[i] orelse continue;
-            var face: FtFace = undefined;
-            if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
-            defer _ = c.FT_Done_Face(face);
-
-            const fallback_hb = c_api.createHbFont(face);
-            defer c_api.destroyHbFont(fallback_hb);
-
-            const face_id = fallbackFaceId(i);
-            if (self.rasterizeGlyphFromFace(dst, fallback_hb, face, codepoint, face_id, gw, gh)) |key| {
-                self.resolve_stage = .discovery_fallback;
-                if (self.active_resolve) |obs| {
-                    obs.stage = .discovery_fallback;
-                    obs.counters.fallback_hits += 1;
-                }
-                self.resolve_counters.fallback_hits += 1;
-                return key;
-            }
-        }
-
-        self.resolve_stage = .missing_glyph;
-        if (self.active_resolve) |obs| {
-            obs.stage = .missing_glyph;
-            obs.counters.fallback_misses += 1;
-            obs.counters.missing_glyphs += 1;
-        }
-        self.resolve_counters.fallback_misses += 1;
-        self.resolve_counters.missing_glyphs += 1;
-        return null;
-    }
-
-    fn rasterizeGlyphFromFace(self: *Backend, dst: []u8, hb_font: ?HbFont, face: FtFace, codepoint: u21, face_id: u32, gw: u16, gh: u16) ?ResolvedGlyphKey {
-        if (!setFacePixelHeight(self, face)) return null;
-        const glyph_id = shapeGlyphId(hb_font, face, codepoint);
-        if (glyph_id == 0) return null;
-        if (c.FT_Load_Glyph(face, glyph_id, c.FT_LOAD_RENDER) != 0) return null;
-        const glyph = face.*.glyph;
-        if (glyph == null) return null;
-        const bitmap = glyph.*.bitmap;
-        if (bitmap.buffer == null or bitmap.width <= 0 or bitmap.rows <= 0) return null;
-        const bw: usize = @intCast(bitmap.width);
-        const bh: usize = @intCast(bitmap.rows);
-        const pitch_abs: usize = @intCast(@abs(bitmap.pitch));
-        const pitch_is_negative = bitmap.pitch < 0;
-        const placement = render.Text.Metrics.bitmapPlacement(
-            .{ .cell_w_px = gw, .cell_h_px = gh, .baseline_px = @intCast(computeBaselineFromFace(face, gh)) },
-            faceMetricsInput(face, 1),
-            glyph.*.bitmap_left,
-            glyph.*.bitmap_top,
-            @intCast(bitmap.width),
-            @intCast(bitmap.rows),
-        );
-
-        var wrote_any = false;
-        for (0..bh) |yy| {
-            for (0..bw) |xx| {
-                const dx_i = placement.x_px + @as(i32, @intCast(xx));
-                const dy_i = placement.y_px + @as(i32, @intCast(yy));
-                if (dx_i < 0 or dy_i < 0) continue;
-                const dx: u16 = @intCast(dx_i);
-                const dy: u16 = @intCast(dy_i);
-                if (dx >= gw or dy >= gh) continue;
-                const src_y = if (pitch_is_negative) (bh - 1 - yy) else yy;
-                const src_idx = src_y * pitch_abs + xx;
-                const dst_idx = atlasPixelOffset(self.atlas_cell_w, dx, dy);
-                dst[dst_idx] = bitmap.buffer[src_idx];
-                wrote_any = true;
-            }
-        }
-        self.resolve_counters.shaped_clusters += 1;
-        if (self.active_resolve) |obs| obs.counters.shaped_clusters += 1;
-        if (!wrote_any) return null;
-        return .{ .codepoint = codepoint, .face_id = face_id, .glyph_id = glyph_id };
-    }
-
     fn deinitAtlasStorage(self: *Backend) void {
         freeOwnedSlice(u8, &self.atlas_pixels);
         freeOwnedSlice(u21, &self.atlas_slot_codepoint);
@@ -594,7 +503,7 @@ fn providerRasterizeSprite(
     allocator: std.mem.Allocator,
     req: render.SpriteRasterRequest,
 ) anyerror!render.Text.Rasterizer.RasterSpriteOutput {
-    return provider_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
+    return glyph_raster_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
 }
 
 fn providerLookupGlyph(ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
@@ -608,7 +517,7 @@ fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: re
     const alpha = try allocator.alloc(u8, atlasPixelCount(width, height));
     errdefer allocator.free(alpha);
     @memset(alpha, 0);
-    _ = provider_mod.rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
+    _ = glyph_raster_mod.rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
     return .{
         .allocator = allocator,
         .width_px = width,
