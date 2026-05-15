@@ -10,6 +10,7 @@ const shared_text_cache = @import("../shared/text_cache.zig");
 const atlas_mod = @import("internal/atlas.zig");
 const draw_pass_mod = @import("internal/draw_pass.zig");
 const c_api = @import("internal/c_api.zig");
+const glyph_raster_mod = @import("internal/glyph_raster.zig");
 const provider_mod = @import("internal/provider.zig");
 const c = c_api.c;
 const time_c = @cImport({
@@ -37,7 +38,7 @@ const ThreadMutex = struct {
 };
 
 const primary_face_id: u32 = provider_mod.primary_face_id;
-const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
+const ResolvedGlyphKey = glyph_raster_mod.ResolvedGlyphKey;
 
 fn fallbackFaceId(index: u32) u32 {
     return index + 2;
@@ -133,6 +134,9 @@ pub const Backend = struct {
     atlas_cell_w: u16 = 0,
     atlas_cell_h: u16 = 0,
     atlas_slot_stride: usize = 0,
+    atlas_texture: u32 = 0,
+    atlas_tex_width: u16 = 0,
+    atlas_tex_height: u16 = 0,
     atlas_slot_codepoint: []u21 = &.{},
     atlas_slot_face_id: []u32 = &.{},
     atlas_slot_glyph_id: []u32 = &.{},
@@ -180,6 +184,7 @@ pub const Backend = struct {
 
     /// Release backend resources and prevent further rendering.
     pub fn deinit(self: *Backend) void {
+        atlas_mod.deinitAtlasTexture(self);
         self.deinitAtlasStorage();
         draw_pass_mod.deinitDrawResources(self);
         self.resetLoadedFace();
@@ -191,6 +196,9 @@ pub const Backend = struct {
             self.ft_lib = null;
         }
         draw_pass_mod.deinitTargetObjects(self);
+        self.atlas_texture = 0;
+        self.atlas_tex_width = 0;
+        self.atlas_tex_height = 0;
         self.target_texture = null;
         self.owns_target_texture = false;
         self.target_content_valid = false;
@@ -395,7 +403,7 @@ pub const Backend = struct {
         @memset(dst, 0);
         const gw = @min(width, self.atlas_cell_w);
         const gh = @min(height, self.atlas_cell_h);
-        if (provider_mod.rasterizeFromFont(self, dst, codepoint, gw, gh)) |key| {
+        if (glyph_raster_mod.rasterizeFromFont(self, dst, codepoint, gw, gh)) |key| {
             self.markSlotAlpha(slot, dst, gw, gh);
             return key;
         }
@@ -546,7 +554,7 @@ fn providerRasterizeSprite(
     allocator: std.mem.Allocator,
     req: render.SpriteRasterRequest,
 ) anyerror!render.Text.Rasterizer.RasterSpriteOutput {
-    return provider_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
+    return glyph_raster_mod.providerRasterizeSprite(Backend, ctx, allocator, req);
 }
 
 fn providerLookupGlyph(ctx: *anyopaque, face_id: render.FontFaceId, codepoint: u32, cell_metrics: render.CellMetrics) render.Text.Provider.LookupGlyphResult {
@@ -560,7 +568,7 @@ fn providerRasterizeGlyph(ctx: *anyopaque, allocator: std.mem.Allocator, req: re
     const alpha = try allocator.alloc(u8, @as(usize, width) * @as(usize, height));
     errdefer allocator.free(alpha);
     @memset(alpha, 0);
-    _ = provider_mod.rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
+    _ = glyph_raster_mod.rasterizeProviderGlyph(self, alpha, width, height, req.cell_metrics.baseline_px, .{ .value = req.face_id }, req.glyph_id, 0, 0, 0);
     return .{
         .allocator = allocator,
         .width_px = width,

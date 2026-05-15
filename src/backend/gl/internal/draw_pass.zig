@@ -33,9 +33,6 @@ pub const QuadVertex = extern struct {
 };
 
 pub const DrawPass = struct {
-    atlas_texture: u32 = 0,
-    atlas_tex_width: u16 = 0,
-    atlas_tex_height: u16 = 0,
     scroll_scratch_texture: u32 = 0,
     scroll_scratch_width: u16 = 0,
     scroll_scratch_height: u16 = 0,
@@ -136,10 +133,6 @@ pub fn applyScrollReusePx(self: anytype, surface_px: render.PixelSize, scroll_px
 }
 
 pub fn deinitTargetObjects(self: anytype) void {
-    if (self.draw_pass.atlas_texture != 0 and hasCurrentContext()) {
-        c.glDeleteTextures(1, @ptrCast(&self.draw_pass.atlas_texture));
-        self.draw_pass.atlas_texture = 0;
-    }
     if (self.draw_pass.scroll_scratch_texture != 0 and hasCurrentContext()) {
         c.glDeleteTextures(1, @ptrCast(&self.draw_pass.scroll_scratch_texture));
         self.draw_pass.scroll_scratch_texture = 0;
@@ -199,13 +192,13 @@ pub fn drawTextScene(self: anytype, surface: render.PixelSize, scene: render.Tex
     drawSceneRectBatch(render.TextClearDraw, self, surface, scene.clear_draws);
     drawSceneRectBatch(render.TextBackgroundDraw, self, surface, scene.background_draws);
     drawSceneRectBatch(render.TextDecorationDraw, self, surface, scene.decoration_draws);
-    if (self.draw_pass.atlas_texture != 0) {
+    if (self.atlas_texture != 0) {
         c.glEnable(c.GL_TEXTURE_2D);
-        c.glBindTexture(c.GL_TEXTURE_2D, self.draw_pass.atlas_texture);
+        c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
         c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_MODULATE);
     }
     drawSceneSprites(self, surface, scene.sprite_draws);
-    if (self.draw_pass.atlas_texture != 0) {
+    if (self.atlas_texture != 0) {
         c.glBindTexture(c.GL_TEXTURE_2D, 0);
         c.glDisable(c.GL_TEXTURE_2D);
     }
@@ -263,11 +256,11 @@ fn drawSceneSprites(self: anytype, surface: render.PixelSize, draws: []const ren
 }
 
 fn drawSceneSpritesShader(self: anytype, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
-    if (self.draw_pass.text_shader_program == 0 or self.draw_pass.atlas_texture == 0) return;
+    if (self.draw_pass.text_shader_program == 0 or self.atlas_texture == 0) return;
     c.glUseProgram(self.draw_pass.text_shader_program);
     defer c.glUseProgram(0);
     c.glActiveTexture(c.GL_TEXTURE0);
-    c.glBindTexture(c.GL_TEXTURE_2D, self.draw_pass.atlas_texture);
+    c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
     if (self.draw_pass.text_shader_sampler_loc >= 0) c.glUniform1i(self.draw_pass.text_shader_sampler_loc, 0);
 
     for (draws) |draw| {
@@ -296,7 +289,7 @@ fn drawSceneSprite(self: anytype, surface: render.PixelSize, draw: render.TextSp
 
 fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: u32) ?[]QuadVertex {
     if (needed == 0) return buffer.*;
-    const needed_len = @intCast(needed);
+    const needed_len: @TypeOf(buffer.len) = @intCast(needed);
     if (buffer.len >= needed_len) return buffer.*;
     const new_buffer = std.heap.c_allocator.realloc(buffer.*, needed_len) catch return null;
     buffer.* = new_buffer;
@@ -305,18 +298,20 @@ fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: u32) ?[]QuadVertex {
 
 fn appendRectVertices(surface: render.PixelSize, vertices: []QuadVertex, count: *u32, x: i32, y: i32, width: u16, height: u16, color: render.Rgba8) bool {
     const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return false;
-    if (@intCast(count.* + 4) > vertices.len) return false;
+    const needed_len: @TypeOf(vertices.len) = @intCast(count.* + 4);
+    if (needed_len > vertices.len) return false;
     appendQuad(vertices, count, clipped, color, 0, 0, 0, 0);
     return true;
 }
 
 fn appendTexturedGlyphVertices(vertices: []QuadVertex, count: *u32, glyph: TexturedGlyph) void {
-    if (@intCast(count.* + 4) > vertices.len) return;
+    const needed_len: @TypeOf(vertices.len) = @intCast(count.* + 4);
+    if (needed_len > vertices.len) return;
     appendQuad(vertices, count, glyph.clipped, glyph.color, glyph.tex_u0, glyph.tex_v0, glyph.tex_u1, glyph.tex_v1);
 }
 
 fn appendQuad(vertices: []QuadVertex, count: *u32, clipped: clip_rect.ClipRect, color: render.Rgba8, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
-    const base = @intCast(count.*);
+    const base: @TypeOf(vertices.len) = @intCast(count.*);
     const x0: f32 = @floatFromInt(clipped.x);
     const y0: f32 = @floatFromInt(clipped.y);
     const x1: f32 = @floatFromInt(clipped.x + clipped.w);
@@ -394,9 +389,9 @@ fn drawRect(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16, 
 }
 
 fn prepareTexturedSceneSprite(self: anytype, surface: render.PixelSize, draw: render.TextSpriteDraw) ?TexturedGlyph {
-    if (self.draw_pass.atlas_texture == 0 or self.atlas_pixels.len == 0) return null;
+    if (self.atlas_texture == 0 or self.atlas_pixels.len == 0) return null;
     const slot = draw.sprite.slot;
-    const slot_idx = @intCast(slot);
+    const slot_idx: @TypeOf(self.atlas_slot_has_alpha.len) = @intCast(slot);
     if (slot_idx >= self.atlas_slot_has_alpha.len or !self.atlas_slot_has_alpha[slot_idx]) return null;
     const slot_index = slot_idx * self.atlas_slot_stride;
     if (slot_index + self.atlas_slot_stride > self.atlas_pixels.len) return null;
@@ -417,10 +412,10 @@ fn prepareTexturedSceneSprite(self: anytype, surface: render.PixelSize, draw: re
     return .{
         .clipped = clipped,
         .color = draw.color,
-        .tex_u0 = @as(f32, @floatFromInt(slot_x + draw_x + clip_dx)) / @as(f32, @floatFromInt(self.draw_pass.atlas_tex_width)),
-        .tex_v0 = @as(f32, @floatFromInt(slot_y + draw_y + clip_dy)) / @as(f32, @floatFromInt(self.draw_pass.atlas_tex_height)),
-        .tex_u1 = @as(f32, @floatFromInt(slot_x + draw_x + clip_dx + @as(u32, @intCast(clipped.w)))) / @as(f32, @floatFromInt(self.draw_pass.atlas_tex_width)),
-        .tex_v1 = @as(f32, @floatFromInt(slot_y + draw_y + clip_dy + @as(u32, @intCast(clipped.h)))) / @as(f32, @floatFromInt(self.draw_pass.atlas_tex_height)),
+        .tex_u0 = @as(f32, @floatFromInt(slot_x + draw_x + clip_dx)) / @as(f32, @floatFromInt(self.atlas_tex_width)),
+        .tex_v0 = @as(f32, @floatFromInt(slot_y + draw_y + clip_dy)) / @as(f32, @floatFromInt(self.atlas_tex_height)),
+        .tex_u1 = @as(f32, @floatFromInt(slot_x + draw_x + clip_dx + @as(u32, @intCast(clipped.w)))) / @as(f32, @floatFromInt(self.atlas_tex_width)),
+        .tex_v1 = @as(f32, @floatFromInt(slot_y + draw_y + clip_dy + @as(u32, @intCast(clipped.h)))) / @as(f32, @floatFromInt(self.atlas_tex_height)),
     };
 }
 

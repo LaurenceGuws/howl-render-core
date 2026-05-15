@@ -94,12 +94,21 @@ pub fn ensureAtlasStorageSized(self: anytype, need_w: u16, need_h: u16) !void {
 
     preserveAtlasCache(self, old);
     freeOldAtlasStorage(old);
-    if (self.draw_pass.atlas_texture != 0 and draw_pass_mod.hasCurrentContext()) {
-        c.glDeleteTextures(1, @ptrCast(&self.draw_pass.atlas_texture));
-        self.draw_pass.atlas_texture = 0;
+    if (self.atlas_texture != 0 and draw_pass_mod.hasCurrentContext()) {
+        c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+        self.atlas_texture = 0;
     }
-    self.draw_pass.atlas_tex_width = 0;
-    self.draw_pass.atlas_tex_height = 0;
+    self.atlas_tex_width = 0;
+    self.atlas_tex_height = 0;
+}
+
+pub fn deinitAtlasTexture(self: anytype) void {
+    if (self.atlas_texture != 0 and draw_pass_mod.hasCurrentContext()) {
+        c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+        self.atlas_texture = 0;
+    }
+    self.atlas_tex_width = 0;
+    self.atlas_tex_height = 0;
 }
 
 const AtlasStorageSnapshot = struct {
@@ -218,15 +227,15 @@ pub fn ensureAtlasTexture(self: anytype) !void {
     const rows: u32 = std.math.divCeil(u32, max_slots, cols) catch unreachable;
     const need_w: u16 = @intCast(@as(u32, self.atlas_cell_w) * cols);
     const need_h: u16 = @intCast(@as(u32, self.atlas_cell_h) * rows);
-    if (self.draw_pass.atlas_texture != 0 and self.draw_pass.atlas_tex_width == need_w and self.draw_pass.atlas_tex_height == need_h) return;
+    if (self.atlas_texture != 0 and self.atlas_tex_width == need_w and self.atlas_tex_height == need_h) return;
 
-    if (self.draw_pass.atlas_texture != 0) {
-        c.glDeleteTextures(1, @ptrCast(&self.draw_pass.atlas_texture));
-        self.draw_pass.atlas_texture = 0;
+    if (self.atlas_texture != 0) {
+        c.glDeleteTextures(1, @ptrCast(&self.atlas_texture));
+        self.atlas_texture = 0;
     }
 
-    c.glGenTextures(1, @ptrCast(&self.draw_pass.atlas_texture));
-    c.glBindTexture(c.GL_TEXTURE_2D, self.draw_pass.atlas_texture);
+    c.glGenTextures(1, @ptrCast(&self.atlas_texture));
+    c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
     resetAtlasUnpackState();
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MIN_FILTER, c.GL_NEAREST);
     c.glTexParameteri(c.GL_TEXTURE_2D, c.GL_TEXTURE_MAG_FILTER, c.GL_NEAREST);
@@ -244,8 +253,8 @@ pub fn ensureAtlasTexture(self: anytype) !void {
         null,
     );
     c.glBindTexture(c.GL_TEXTURE_2D, 0);
-    self.draw_pass.atlas_tex_width = need_w;
-    self.draw_pass.atlas_tex_height = need_h;
+    self.atlas_tex_width = need_w;
+    self.atlas_tex_height = need_h;
 }
 
 pub fn textSceneSlotCached(
@@ -305,7 +314,7 @@ fn clippedBounds(bounds: render.Text.Rasterizer.SpriteBounds, max_w: u16, max_h:
 }
 
 fn uploadAtlasSlot(self: anytype, slot: u32) bool {
-    if (self.draw_pass.atlas_texture == 0 or self.atlas_pixels.len == 0) return false;
+    if (self.atlas_texture == 0 or self.atlas_pixels.len == 0) return false;
     const slot_idx = slotIndex(slot);
     const slot_off = slot_idx * self.atlas_slot_stride;
     if (slot_off + self.atlas_slot_stride > self.atlas_pixels.len) return false;
@@ -326,7 +335,7 @@ fn uploadAtlasSlot(self: anytype, slot: u32) bool {
         rgba[dst + 2] = 255;
         rgba[dst + 3] = a;
     }
-    c.glBindTexture(c.GL_TEXTURE_2D, self.draw_pass.atlas_texture);
+    c.glBindTexture(c.GL_TEXTURE_2D, self.atlas_texture);
     resetAtlasUnpackState();
     c.glTexSubImage2D(
         c.GL_TEXTURE_2D,
