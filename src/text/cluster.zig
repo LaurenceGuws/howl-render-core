@@ -96,6 +96,119 @@ pub const SparseCells = struct {
     }
 };
 
+const ClusterExtractionAssembly = struct {
+    allocator: std.mem.Allocator,
+    clusters: std.ArrayList(contract.CellCluster) = .empty,
+
+    fn deinit(self: *ClusterExtractionAssembly) void {
+        self.clusters.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn append(self: *ClusterExtractionAssembly, cluster_value: contract.CellCluster) !void {
+        try self.clusters.append(self.allocator, cluster_value);
+    }
+
+    fn toOwnedClusters(self: *ClusterExtractionAssembly) !OwnedClusters {
+        return .{ .allocator = self.allocator, .clusters = try self.clusters.toOwnedSlice(self.allocator) };
+    }
+};
+
+const ComplexSelectionAssembly = struct {
+    allocator: std.mem.Allocator,
+    cells: std.ArrayList(contract.RenderableCell) = .empty,
+    clusters: std.ArrayList(contract.CellCluster) = .empty,
+
+    fn deinit(self: *ComplexSelectionAssembly) void {
+        self.cells.deinit(self.allocator);
+        self.clusters.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn appendCell(self: *ComplexSelectionAssembly, cell: contract.RenderableCell) !void {
+        try self.cells.append(self.allocator, cell);
+    }
+
+    fn appendCluster(self: *ComplexSelectionAssembly, cluster_value: contract.CellCluster) !void {
+        try self.clusters.append(self.allocator, cluster_value);
+    }
+
+    fn toOwnedSelection(self: *ComplexSelectionAssembly) !ComplexSelection {
+        return .{
+            .allocator = self.allocator,
+            .cells = try self.cells.toOwnedSlice(self.allocator),
+            .clusters = try self.clusters.toOwnedSlice(self.allocator),
+        };
+    }
+};
+
+const SparseCellAssembly = struct {
+    allocator: std.mem.Allocator,
+    renderable: []contract.RenderableCell,
+    texts: []contract.CellText,
+    codepoints: []u32,
+    unique_count: u32 = 0,
+    renderable_count: u32 = 0,
+
+    fn init(allocator: std.mem.Allocator, cell_count: usize) !SparseCellAssembly {
+        const renderable = try allocator.alloc(contract.RenderableCell, cell_count);
+        errdefer allocator.free(renderable);
+        const texts = try allocator.alloc(contract.CellText, cell_count);
+        errdefer allocator.free(texts);
+        const codepoints = try allocator.alloc(u32, cell_count);
+        errdefer allocator.free(codepoints);
+        return .{
+            .allocator = allocator,
+            .renderable = renderable,
+            .texts = texts,
+            .codepoints = codepoints,
+        };
+    }
+
+    fn deinit(self: *SparseCellAssembly) void {
+        self.allocator.free(self.renderable);
+        self.allocator.free(self.texts);
+        self.allocator.free(self.codepoints);
+        self.* = undefined;
+    }
+
+    fn appendUniqueText(self: *SparseCellAssembly, text_id: u32, cp: u32) void {
+        writeSingleCodepointText(self.texts, self.codepoints, @intCast(self.unique_count), text_id, cp);
+        self.unique_count += 1;
+    }
+
+    fn appendRenderable(self: *SparseCellAssembly, cell: contract.RenderableCell) void {
+        self.renderable[@intCast(self.renderable_count)] = cell;
+        self.renderable_count += 1;
+    }
+
+    fn toSparseCells(self: *SparseCellAssembly) !SparseCells {
+        const final_renderable = try self.allocator.realloc(self.renderable, @intCast(self.renderable_count));
+        self.renderable = &.{};
+        errdefer self.allocator.free(final_renderable);
+
+        const final_codepoints = try self.allocator.alloc(u32, @intCast(self.unique_count));
+        errdefer self.allocator.free(final_codepoints);
+        @memcpy(final_codepoints, self.codepoints[0..@intCast(self.unique_count)]);
+
+        const final_texts = try self.allocator.alloc(contract.CellText, @intCast(self.unique_count));
+        errdefer self.allocator.free(final_texts);
+        for (0..@as(u32, self.unique_count)) |idx| {
+            writeSingleCodepointText(final_texts, final_codepoints, idx, @intCast(idx), final_codepoints[idx]);
+        }
+
+        self.allocator.free(self.texts);
+        self.allocator.free(self.codepoints);
+        self.texts = &.{};
+        self.codepoints = &.{};
+
+        return .{
+            .text_cache = .{ .allocator = self.allocator, .texts = final_texts, .codepoints = final_codepoints },
+            .renderable = .{ .allocator = self.allocator, .cells = final_renderable },
+        };
+    }
+};
+
 pub fn singleCodepointText(id: u32, cp: u32) contract.CellText {
     return .{
         .id = .{ .value = id },
@@ -140,18 +253,12 @@ pub fn buildSparseCellsWithDamage(
     damage: scene_mod.DamageInput,
 ) !SparseCells {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
-    var renderable = try allocator.alloc(contract.RenderableCell, cells.len);
-    errdefer allocator.free(renderable);
-    const texts = try allocator.alloc(contract.CellText, cells.len);
-    errdefer allocator.free(texts);
-    var codepoints = try allocator.alloc(u32, cells.len);
-    errdefer allocator.free(codepoints);
+    var assembly = try SparseCellAssembly.init(allocator, cells.len);
+    errdefer assembly.deinit();
 
     var unique_codepoints = std.AutoHashMap(u32, u32).init(allocator);
     defer unique_codepoints.deinit();
-    var unique_count: usize = 0;
 
-    var out_idx: usize = 0;
     var cell_idx: usize = 0;
     while (cell_idx < cells.len) {
         if (damage_filter.cleanRowSkip(cell_idx, cells.len)) |next_idx| {
@@ -170,36 +277,15 @@ pub fn buildSparseCellsWithDamage(
         const text_id: u32 = if (entry.found_existing)
             entry.value_ptr.*
         else blk: {
-            const next_id: u32 = @intCast(unique_count);
+            const next_id: u32 = @intCast(assembly.unique_count);
             entry.value_ptr.* = next_id;
-            writeSingleCodepointText(texts, codepoints, unique_count, next_id, cell.codepoint);
-            unique_count += 1;
+            assembly.appendUniqueText(next_id, cell.codepoint);
             break :blk next_id;
         };
-        renderable[out_idx] = renderableFromCellInput(.{ .value = text_id }, first_cell, span, cell, false);
-        out_idx += 1;
+        assembly.appendRenderable(renderableFromCellInput(.{ .value = text_id }, first_cell, span, cell, false));
     }
 
-    const final_renderable = try allocator.realloc(renderable, out_idx);
-    errdefer allocator.free(final_renderable);
-
-    const final_codepoints = try allocator.alloc(u32, unique_count);
-    errdefer allocator.free(final_codepoints);
-    @memcpy(final_codepoints, codepoints[0..unique_count]);
-
-    const final_texts = try allocator.alloc(contract.CellText, unique_count);
-    errdefer allocator.free(final_texts);
-    for (0..unique_count) |idx| {
-        writeSingleCodepointText(final_texts, final_codepoints, idx, @intCast(idx), final_codepoints[idx]);
-    }
-
-    allocator.free(texts);
-    allocator.free(codepoints);
-
-    return .{
-        .text_cache = .{ .allocator = allocator, .texts = final_texts, .codepoints = final_codepoints },
-        .renderable = .{ .allocator = allocator, .cells = final_renderable },
-    };
+    return assembly.toSparseCells();
 }
 
 pub fn buildLineTextCacheFromInputs(allocator: std.mem.Allocator, inputs: []const CellTextInput) !OwnedLineTextCache {
@@ -304,28 +390,17 @@ pub fn extractClustersWithDamage(
     damage: scene_mod.DamageInput,
 ) !OwnedClusters {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
-    var count: usize = 0;
-    for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
-        const text = textForCell(cell, cache);
-        if (isBlankText(text)) continue;
-        count += 1;
-    }
-
-    const clusters = try allocator.alloc(contract.CellCluster, count);
-    errdefer allocator.free(clusters);
-    var out_idx: usize = 0;
+    var extraction = ClusterExtractionAssembly{ .allocator = allocator };
+    errdefer extraction.deinit();
     for (cells, 0..) |cell, idx| {
         if (cell.continuation) continue;
         if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
         const text = textForCell(cell, cache);
         if (isBlankText(text)) continue;
-        clusters[out_idx] = renderableCluster(cell, text, inferredRenderableCellSpan(cells, idx));
-        out_idx += 1;
+        try extraction.append(renderableCluster(cell, text, inferredRenderableCellSpan(cells, idx)));
     }
 
-    return .{ .allocator = allocator, .clusters = clusters };
+    return extraction.toOwnedClusters();
 }
 
 pub fn selectComplexWithDamage(
@@ -337,39 +412,21 @@ pub fn selectComplexWithDamage(
     damage: scene_mod.DamageInput,
 ) !ComplexSelection {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
-    var complex_cell_count: usize = 0;
-    for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
-        if (classifyComplexCell(cell, cache)) complex_cell_count += 1;
-    }
-
-    const complex_cells = try allocator.alloc(contract.RenderableCell, complex_cell_count);
-    errdefer allocator.free(complex_cells);
-    var complex_cell_idx: usize = 0;
+    var selection = ComplexSelectionAssembly{ .allocator = allocator };
+    errdefer selection.deinit();
     for (cells) |cell| {
         if (cell.continuation) continue;
         if (!damage_filter.includeSpan(cell.first_cell, cell.cell_span)) continue;
         if (!classifyComplexCell(cell, cache)) continue;
-        complex_cells[complex_cell_idx] = cell;
-        complex_cell_idx += 1;
+        try selection.appendCell(cell);
     }
 
-    var complex_cluster_count: usize = 0;
-    for (clusters) |cluster_value| {
-        if (classifyComplexCluster(cells, cluster_value, cache)) complex_cluster_count += 1;
-    }
-
-    const complex_clusters = try allocator.alloc(contract.CellCluster, complex_cluster_count);
-    errdefer allocator.free(complex_clusters);
-    var complex_cluster_idx: usize = 0;
     for (clusters) |cluster_value| {
         if (!classifyComplexCluster(cells, cluster_value, cache)) continue;
-        complex_clusters[complex_cluster_idx] = cluster_value;
-        complex_cluster_idx += 1;
+        try selection.appendCluster(cluster_value);
     }
 
-    return .{ .allocator = allocator, .cells = complex_cells, .clusters = complex_clusters };
+    return selection.toOwnedSelection();
 }
 
 fn textForCell(cell: contract.RenderableCell, cache: contract.LineTextCache) contract.CellText {
