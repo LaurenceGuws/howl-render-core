@@ -86,35 +86,15 @@ pub fn buildSceneWithAtlasCacheOptions(
     const damage = normalizedDamage(options.damage, grid_metrics.rows, cell_metrics.cell_h_px);
     var assembly = SceneAssembly{ .allocator = allocator };
     errdefer assembly.deinit();
-    const missing_owned = try allocator.dupe(contract.MissingGlyph, missing);
-    errdefer allocator.free(missing_owned);
+    try assembly.missing.appendSlice(allocator, missing);
 
     try appendGroupSpriteDraws(&assembly, cache, cells, groups, cell_metrics, grid_metrics, damage);
-
-    const cursor_draws = if (options.cursor) |cursor|
-        if (damage.full or rowDirty(damage, cursor.cell_row))
-            try cursorDraws(allocator, cursor, cell_metrics)
-        else
-            try allocator.alloc(contract.TextCursorDraw, 0)
-    else
-        try allocator.alloc(contract.TextCursorDraw, 0);
-    errdefer allocator.free(cursor_draws);
+    try appendSceneCursorDraws(&assembly, options.cursor, damage, cell_metrics);
 
     try appendClearDraws(allocator, &assembly.clear_draws, cells, cell_metrics, grid_metrics, damage);
     try appendBackgroundDraws(allocator, &assembly.background_draws, cells, cell_metrics, grid_metrics, damage);
     try appendDecorationDraws(&assembly, cache, cells, cell_metrics, grid_metrics, damage);
-
-    return .{ .allocator = allocator, .scene = .{
-        .full_redraw = damage.full,
-        .scroll_up_px = damage.scroll_up_px,
-        .clear_draws = try assembly.clear_draws.toOwnedSlice(allocator),
-        .background_draws = try assembly.background_draws.toOwnedSlice(allocator),
-        .sprite_draws = try assembly.sprite_draws.toOwnedSlice(allocator),
-        .decoration_draws = try assembly.decoration_draws.toOwnedSlice(allocator),
-        .cursor_draws = cursor_draws,
-        .raster_requests = try assembly.raster_requests.toOwnedSlice(allocator),
-        .missing = missing_owned,
-    } };
+    return assembly.toOwnedScene(damage);
 }
 
 const NormalizedDamage = struct {
@@ -131,15 +111,33 @@ const SceneAssembly = struct {
     background_draws: std.ArrayList(contract.TextBackgroundDraw) = .empty,
     clear_draws: std.ArrayList(contract.TextClearDraw) = .empty,
     decoration_draws: std.ArrayList(contract.TextDecorationDraw) = .empty,
+    cursor_draws: std.ArrayList(contract.TextCursorDraw) = .empty,
     raster_requests: std.ArrayList(contract.SpriteRasterRequest) = .empty,
+    missing: std.ArrayList(contract.MissingGlyph) = .empty,
 
     fn deinit(self: *SceneAssembly) void {
         self.sprite_draws.deinit(self.allocator);
         self.background_draws.deinit(self.allocator);
         self.clear_draws.deinit(self.allocator);
         self.decoration_draws.deinit(self.allocator);
+        self.cursor_draws.deinit(self.allocator);
         self.raster_requests.deinit(self.allocator);
+        self.missing.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    fn toOwnedScene(self: *SceneAssembly, damage: NormalizedDamage) !OwnedTextScene {
+        return .{ .allocator = self.allocator, .scene = .{
+            .full_redraw = damage.full,
+            .scroll_up_px = damage.scroll_up_px,
+            .clear_draws = try self.clear_draws.toOwnedSlice(self.allocator),
+            .background_draws = try self.background_draws.toOwnedSlice(self.allocator),
+            .sprite_draws = try self.sprite_draws.toOwnedSlice(self.allocator),
+            .decoration_draws = try self.decoration_draws.toOwnedSlice(self.allocator),
+            .cursor_draws = try self.cursor_draws.toOwnedSlice(self.allocator),
+            .raster_requests = try self.raster_requests.toOwnedSlice(self.allocator),
+            .missing = try self.missing.toOwnedSlice(self.allocator),
+        } };
     }
 
     fn appendRasterizedSpriteDraw(
@@ -164,7 +162,77 @@ const SceneAssembly = struct {
             .cell_span = draw.cell_span,
         });
     }
+
+    fn appendDecoration(self: *SceneAssembly, draw: contract.TextDecorationDraw) !void {
+        if (self.decoration_draws.items.len > 0) {
+            const last = &self.decoration_draws.items[self.decoration_draws.items.len - 1];
+            const last_end_x = last.x_px + @as(i32, @intCast(last.width_px));
+            if (last.kind == draw.kind and
+                last.y_px == draw.y_px and
+                last.height_px == draw.height_px and
+                sameRgba8(last.color, draw.color) and
+                last_end_x == draw.x_px)
+            {
+                const merged_cell_span = @as(u32, last.cell_span) + @as(u32, draw.cell_span);
+                last.width_px +%= draw.width_px;
+                last.cell_span = @intCast(@min(merged_cell_span, @as(u32, std.math.maxInt(u8))));
+                return;
+            }
+        }
+        try self.decoration_draws.append(self.allocator, draw);
+    }
+
+    fn appendUndercurl(
+        self: *SceneAssembly,
+        cache: *atlas_cache.OwnedAtlasCache,
+        cell: contract.RenderableCell,
+        x: i32,
+        row_y: i32,
+        width: u16,
+        deco: metrics.DecorationGeometry,
+        cell_metrics: contract.CellMetrics,
+        color: contract.Rgba8,
+    ) !void {
+        const cell_h = @max(cell_metrics.cell_h_px, 1);
+        const underline_position: u16 = @intCast(std.math.clamp(deco.underline_y_px, 0, @as(i32, @intCast(cell_h - 1))));
+        const underline_thickness = deco.underline_h_px;
+        const half_thickness = underline_thickness / 2;
+        const half_remainder = underline_thickness % 2;
+        const position_base = @min(underline_position, saturatingSub(cell_h, half_thickness + half_remainder));
+        const bounded_thickness = @max(@as(u16, 1), @min(underline_thickness, saturatingSub(cell_h, position_base + 1)));
+        const max_height = cell_h - saturatingSub(position_base, bounded_thickness / 2);
+        const amplitude: u16 = @max(@as(u16, 1), max_height / 4);
+        const stroke: u16 = if (bounded_thickness < 3) 0 else bounded_thickness - 2;
+        var y_px: u16 = @intCast(@min(@as(u32, position_base) + @as(u32, amplitude) * 2, @as(u32, cell_h - 1)));
+        if (y_px + amplitude > cell_h - 1) y_px = saturatingSub(cell_h - 1, amplitude);
+        const period: u16 = @max(saturatingSub(cell_metrics.cell_w_px, 1), 1);
+        const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
+        const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
+        const req = rasterizer.requestForUndercurl(key, width, cell_h, decoration);
+        try self.appendRasterizedSpriteDraw(cache, req, .{
+            .x_px = x,
+            .y_px = row_y,
+            .width_px = width,
+            .height_px = cell_h,
+            .color = color,
+            .first_cell = cell.first_cell,
+            .cell_span = cell.cell_span,
+        });
+    }
 };
+
+fn appendSceneCursorDraws(
+    assembly: *SceneAssembly,
+    cursor: ?CursorInput,
+    damage: NormalizedDamage,
+    cell_metrics: contract.CellMetrics,
+) !void {
+    const cursor_value = cursor orelse return;
+    if (!damage.full and !rowDirty(damage, cursor_value.cell_row)) return;
+    const draws = try cursorDraws(assembly.allocator, cursor_value, cell_metrics);
+    defer assembly.allocator.free(draws);
+    try assembly.cursor_draws.appendSlice(assembly.allocator, draws);
+}
 
 const SpriteDrawInput = struct {
     x_px: i32,
@@ -397,7 +465,7 @@ fn appendDecorationDraws(
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
         if (cell.underline) try appendUnderlineDraws(assembly, cache, cell, base_x, base_y, width_px, deco, cell_metrics);
-        if (cell.strikethrough) try appendMergedDecorationDraw(assembly, .{
+        if (cell.strikethrough) try assembly.appendDecoration(.{
             .kind = .strikethrough,
             .x_px = base_x,
             .y_px = base_y + deco.strikethrough_y_px,
@@ -410,31 +478,17 @@ fn appendDecorationDraws(
     }
 }
 
-fn appendDecorationDraw(assembly: *SceneAssembly, kind: contract.DecorationKind, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
-    try appendMergedDecorationDraw(assembly, .{ .kind = kind, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
-}
-
-fn appendRawDecorationDraw(assembly: *SceneAssembly, kind: contract.DecorationKind, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
-    try assembly.decoration_draws.append(assembly.allocator, .{ .kind = kind, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
-}
-
-fn appendMergedDecorationDraw(assembly: *SceneAssembly, draw: contract.TextDecorationDraw) !void {
-    if (assembly.decoration_draws.items.len > 0) {
-        const last = &assembly.decoration_draws.items[assembly.decoration_draws.items.len - 1];
-        const last_end_x = last.x_px + @as(i32, @intCast(last.width_px));
-        if (last.kind == draw.kind and
-            last.y_px == draw.y_px and
-            last.height_px == draw.height_px and
-            sameRgba8(last.color, draw.color) and
-            last_end_x == draw.x_px)
-        {
-            const merged_cell_span = @as(u32, last.cell_span) + @as(u32, draw.cell_span);
-            last.width_px +%= draw.width_px;
-            last.cell_span = @intCast(@min(merged_cell_span, @as(u32, std.math.maxInt(u8))));
-            return;
-        }
-    }
-    try assembly.decoration_draws.append(assembly.allocator, draw);
+fn appendDecorationDraw(
+    assembly: *SceneAssembly,
+    kind: contract.DecorationKind,
+    cell: contract.RenderableCell,
+    x: i32,
+    y: i32,
+    width: u16,
+    height: u16,
+    color: contract.Rgba8,
+) !void {
+    try assembly.appendDecoration(.{ .kind = kind, .x_px = x, .y_px = y, .width_px = width, .height_px = height, .color = color, .first_cell = cell.first_cell, .cell_span = cell.cell_span });
 }
 
 fn appendUnderlineDraws(
@@ -469,46 +523,8 @@ fn appendUnderlineDraws(
             var off: u16 = 0;
             while (off < width) : (off += step) try appendDecorationDraw(assembly, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
         },
-        .curly => try appendUndercurlSprite(assembly, cache, cell, x, row_y, width, deco, cell_metrics, color),
+        .curly => try assembly.appendUndercurl(cache, cell, x, row_y, width, deco, cell_metrics, color),
     }
-}
-
-fn appendUndercurlSprite(
-    assembly: *SceneAssembly,
-    cache: *atlas_cache.OwnedAtlasCache,
-    cell: contract.RenderableCell,
-    x: i32,
-    row_y: i32,
-    width: u16,
-    deco: metrics.DecorationGeometry,
-    cell_metrics: contract.CellMetrics,
-    color: contract.Rgba8,
-) !void {
-    const cell_h = @max(cell_metrics.cell_h_px, 1);
-    const underline_position: u16 = @intCast(std.math.clamp(deco.underline_y_px, 0, @as(i32, @intCast(cell_h - 1))));
-    const underline_thickness = deco.underline_h_px;
-    const half_thickness = underline_thickness / 2;
-    const half_remainder = underline_thickness % 2;
-    const position_base = @min(underline_position, saturatingSub(cell_h, half_thickness + half_remainder));
-    const bounded_thickness = @max(@as(u16, 1), @min(underline_thickness, saturatingSub(cell_h, position_base + 1)));
-    const max_height = cell_h - saturatingSub(position_base, bounded_thickness / 2);
-    const amplitude: u16 = @max(@as(u16, 1), max_height / 4);
-    const stroke: u16 = if (bounded_thickness < 3) 0 else bounded_thickness - 2;
-    var y_px: u16 = @intCast(@min(@as(u32, position_base) + @as(u32, amplitude) * 2, @as(u32, cell_h - 1)));
-    if (y_px + amplitude > cell_h - 1) y_px = saturatingSub(cell_h - 1, amplitude);
-    const period: u16 = @max(saturatingSub(cell_metrics.cell_w_px, 1), 1);
-    const decoration = contract.DecorationSpriteRaster{ .stroke_px = stroke, .amplitude_px = amplitude, .period_px = period, .y_px = y_px };
-    const key = sprite_key.hashUndercurl(width, cell_h, stroke, amplitude, period, y_px);
-    const req = rasterizer.requestForUndercurl(key, width, cell_h, decoration);
-    try assembly.appendRasterizedSpriteDraw(cache, req, .{
-        .x_px = x,
-        .y_px = row_y,
-        .width_px = width,
-        .height_px = cell_h,
-        .color = color,
-        .first_cell = cell.first_cell,
-        .cell_span = cell.cell_span,
-    });
 }
 
 fn saturatingSub(a: u16, b: u16) u16 {
