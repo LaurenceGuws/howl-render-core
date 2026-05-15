@@ -1,5 +1,5 @@
 const std = @import("std");
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 const metrics = @import("metrics.zig");
 const special_glyphs = @import("special_glyphs.zig");
 const PixelIndex = @TypeOf(@as([]const u8, &.{}).len);

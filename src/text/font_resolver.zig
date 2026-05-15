@@ -1,7 +1,7 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
-const pipeline = @import("../text_pipeline.zig");
+const contract = @import("contract.zig");
+const pipeline = @import("pipeline.zig");
 const font_session = @import("font_session.zig");
 const symbol_map = @import("symbol_map.zig");
 

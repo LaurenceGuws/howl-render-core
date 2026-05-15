@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 
 pub fn hashGlyphSequence(face: contract.FontFaceId, glyphs: []const contract.GlyphInstance, cell_span: u8, cell_metrics: contract.CellMetrics) contract.SpriteKey {
     var h = std.hash.Wyhash.init(0);

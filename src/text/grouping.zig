@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 const font_resolver = @import("font_resolver.zig");
 const metrics = @import("metrics.zig");
 const shape_run = @import("shape_run.zig");

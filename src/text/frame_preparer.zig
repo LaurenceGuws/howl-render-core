@@ -9,22 +9,21 @@ const c = @cImport({
     }
     @cInclude("time.h");
 });
-const contract = @import("../text_contract.zig");
-const pipeline = @import("../text_pipeline.zig");
-const types = @import("../types.zig");
+const contract = @import("contract.zig");
+const pipeline = @import("pipeline.zig");
 const atlas_cache = @import("atlas_cache.zig");
 const cluster = @import("cluster.zig");
 const font_resolver = @import("font_resolver.zig");
 const font_session = @import("font_session.zig");
 const ft_hb_provider = @import("ft_hb_provider.zig");
 const grouping = @import("grouping.zig");
-const metrics_mod = @import("metrics.zig");
-const provider_mod = @import("provider.zig");
+const metrics = @import("metrics.zig");
+const provider = @import("provider.zig");
 const rasterizer = @import("rasterizer.zig");
-const scene_mod = @import("scene.zig");
+const scene = @import("scene.zig");
 const shape_run = @import("shape_run.zig");
 const sprite_key = @import("sprite_key.zig");
-const text_lane = @import("text_lane.zig");
+const lane = @import("lane.zig");
 
 pub const PrepareTimings = struct {
     input_us: u64 = 0,
@@ -54,7 +53,7 @@ pub const TextFramePreparer = struct {
     atlas: atlas_cache.OwnedAtlasCache,
     shaper: shape_run.Shaper,
     sprite_rasterizer: rasterizer.Rasterizer,
-    glyph_lookup: provider_mod.LookupGlyphOp,
+    glyph_lookup: provider.LookupGlyphOp,
     glyph_raster: pipeline.RasterizeGlyphOp,
     direct_normal: DirectNormalScratch = .{},
 
@@ -63,21 +62,21 @@ pub const TextFramePreparer = struct {
     }
 
     pub fn initCapacity(allocator: std.mem.Allocator, atlas_capacity: usize) !TextFramePreparer {
-        return initWithProvider(allocator, atlas_capacity, provider_mod.defaultProvider());
+        return initWithProvider(allocator, atlas_capacity, provider.defaultProvider());
     }
 
     pub fn initWithShaper(allocator: std.mem.Allocator, atlas_capacity: usize, shaper: shape_run.Shaper) !TextFramePreparer {
         return initWithProvider(allocator, atlas_capacity, .{ .shaper = shaper });
     }
 
-    pub fn initWithProvider(allocator: std.mem.Allocator, atlas_capacity: usize, provider: provider_mod.TextProvider) !TextFramePreparer {
+    pub fn initWithProvider(allocator: std.mem.Allocator, atlas_capacity: usize, text_provider: provider.TextProvider) !TextFramePreparer {
         return .{
             .allocator = allocator,
             .atlas = try atlas_cache.OwnedAtlasCache.init(allocator, atlas_capacity),
-            .shaper = provider.shaper,
-            .sprite_rasterizer = provider.rasterizer,
-            .glyph_lookup = provider.glyph_lookup,
-            .glyph_raster = provider.glyph_raster,
+            .shaper = text_provider.shaper,
+            .sprite_rasterizer = text_provider.rasterizer,
+            .glyph_lookup = text_provider.glyph_lookup,
+            .glyph_raster = text_provider.glyph_raster,
         };
     }
 
@@ -92,8 +91,8 @@ pub const TextFramePreparer = struct {
         self.atlas.next_slot = 0;
     }
 
-    pub fn prepareCellsWithSessionOptions(self: *TextFramePreparer, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: PrepareOptions) !OwnedPreparedTextFrame {
-        var lane_report = text_lane.LaneReport{};
+    pub fn prepareCellsWithSessionOptions(self: *TextFramePreparer, cells: []const contract.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: PrepareOptions) !OwnedPreparedTextFrame {
+        var lane_report = lane.LaneReport{};
         if (try self.prepareDirectNormal(.{ .raw_cells = cells }, .require_all_normal, grid_metrics, session, options, &lane_report)) |direct| {
             return self.finishNormalOnlyFrame(direct, lane_report, .{});
         }
@@ -106,7 +105,7 @@ pub const TextFramePreparer = struct {
     }
 
     pub fn prepareCellTextInputsWithSessionOptions(self: *TextFramePreparer, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: PrepareOptions) !OwnedPreparedTextFrame {
-        var lane_report = text_lane.LaneReport{};
+        var lane_report = lane.LaneReport{};
         if (try self.prepareDirectNormal(.{ .inputs = inputs }, .require_all_normal, grid_metrics, session, options, &lane_report)) |direct| {
             return self.finishNormalOnlyFrame(direct, lane_report, .{});
         }
@@ -135,7 +134,7 @@ pub const TextFramePreparer = struct {
         var clusters = try cluster.extractClustersWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), grid_metrics, options.scene.damage);
         timings.clusters_us = elapsedUs(clusters_start_ns);
         errdefer clusters.deinit();
-        var final_lane_report = text_lane.LaneReport.init(owned_text_cache.view(), owned_renderable.cells, clusters.clusters);
+        var final_lane_report = lane.LaneReport.init(owned_text_cache.view(), owned_renderable.cells, clusters.clusters);
         const direct = (try self.prepareDirectNormal(
             .{ .prepared = .{ .cells = owned_renderable.cells, .text_cache = owned_text_cache.view() } },
             .skip_complex,
@@ -186,18 +185,18 @@ pub const TextFramePreparer = struct {
         final_prepared.shaped_runs = try shapeComplexRuns(self, final_prepared.runs.?.runs, final_prepared.text_cache.view(), complex.clusters, session.metrics, timings, &final_prepared.lane_report, complex.cells);
         final_prepared.grouped = try groupComplexRuns(self, final_prepared.shaped_runs.?.runs, final_prepared.runs.?.sprite_routes, complex.clusters, session.metrics, timings, &final_prepared.lane_report, final_prepared.text_cache.view(), complex.cells);
         const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex.cells, final_prepared.grouped.?.groups.groups, final_prepared.runs.?.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        var text_scene = try scene.buildSceneWithAtlasCacheOptions(self.allocator, complex.cells, final_prepared.grouped.?.groups.groups, final_prepared.runs.?.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
         timings.scene_us = elapsedUs(scene_start_ns);
-        errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| final_prepared.lane_report.recordLegacySceneSpriteDraw(final_prepared.text_cache.view(), complex.cells, draw);
+        errdefer text_scene.deinit();
+        for (text_scene.scene.sprite_draws) |draw| final_prepared.lane_report.recordLegacySceneSpriteDraw(final_prepared.text_cache.view(), complex.cells, draw);
 
         const raster_start_ns = monotonicNs();
-        var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
+        var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, text_scene.scene.raster_requests);
         timings.raster_us = elapsedUs(raster_start_ns);
         errdefer raster_plan.deinit();
-        const complex_sprite_cache_hits = scene.scene.sprite_draws.len - scene.scene.raster_requests.len;
+        const complex_sprite_cache_hits = text_scene.scene.sprite_draws.len - text_scene.scene.raster_requests.len;
 
-        const merged = try self.mergePreparedScene(final_prepared.direct, &scene, &raster_plan);
+        const merged = try self.mergePreparedScene(final_prepared.direct, &text_scene, &raster_plan);
         final_prepared.direct.outputs = &.{};
         final_prepared.direct.outputs_owned = false;
 
@@ -209,7 +208,7 @@ pub const TextFramePreparer = struct {
             .shaped_runs = final_prepared.shaped_runs.?.runs.len,
             .glyph_groups = final_prepared.grouped.?.groups.groups.len,
             .sprite_cache_hits = @intCast((self.direct_normal.sprite_draws.items.len - self.direct_normal.raster_reqs.items.len) + complex_sprite_cache_hits),
-            .sprite_cache_misses = @intCast(self.direct_normal.raster_reqs.items.len + scene.scene.raster_requests.len),
+            .sprite_cache_misses = @intCast(self.direct_normal.raster_reqs.items.len + text_scene.scene.raster_requests.len),
             .rasterized_sprites = @intCast(merged.raster_plan.outputs.len),
             .missing_glyphs = merged.scene.scene.missing.len,
         };
@@ -227,25 +226,25 @@ pub const TextFramePreparer = struct {
     fn mergePreparedScene(
         self: *TextFramePreparer,
         direct: DirectNormalProduct,
-        scene: *scene_mod.OwnedTextScene,
+        text_scene: *scene.OwnedTextScene,
         raster_plan: *rasterizer.OwnedRasterPlan,
     ) !PreparedSceneMerge {
         const merged_clear_draws = try cloneSlice(contract.TextClearDraw, self.allocator, self.direct_normal.clear_draws.items);
         errdefer self.allocator.free(merged_clear_draws);
         const merged_cursor_draws = try cloneSlice(contract.TextCursorDraw, self.allocator, self.direct_normal.cursor_draws.items);
         errdefer self.allocator.free(merged_cursor_draws);
-        const merged_background_draws = try mergeFirstCellSlices(contract.TextBackgroundDraw, self.allocator, self.direct_normal.background_draws.items, scene.scene.background_draws);
+        const merged_background_draws = try mergeFirstCellSlices(contract.TextBackgroundDraw, self.allocator, self.direct_normal.background_draws.items, text_scene.scene.background_draws);
         errdefer self.allocator.free(merged_background_draws);
-        const merged_sprite_draws = try mergeFirstCellSlices(contract.TextSpriteDraw, self.allocator, self.direct_normal.sprite_draws.items, scene.scene.sprite_draws);
+        const merged_sprite_draws = try mergeFirstCellSlices(contract.TextSpriteDraw, self.allocator, self.direct_normal.sprite_draws.items, text_scene.scene.sprite_draws);
         errdefer self.allocator.free(merged_sprite_draws);
-        const merged_decoration_draws = try mergeFirstCellSlices(contract.TextDecorationDraw, self.allocator, self.direct_normal.decoration_draws.items, scene.scene.decoration_draws);
+        const merged_decoration_draws = try mergeFirstCellSlices(contract.TextDecorationDraw, self.allocator, self.direct_normal.decoration_draws.items, text_scene.scene.decoration_draws);
         errdefer self.allocator.free(merged_decoration_draws);
-        const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.direct_normal.missing.items, scene.scene.missing);
+        const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.direct_normal.missing.items, text_scene.scene.missing);
         errdefer self.allocator.free(merged_missing);
         var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.outputs, direct.outputs_owned, raster_plan);
         errdefer merged_raster_plan.deinit();
 
-        installMergedScene(scene, direct.damage, .{
+        installMergedScene(text_scene, direct.damage, .{
             .clear_draws = merged_clear_draws,
             .cursor_draws = merged_cursor_draws,
             .background_draws = merged_background_draws,
@@ -253,13 +252,13 @@ pub const TextFramePreparer = struct {
             .decoration_draws = merged_decoration_draws,
             .missing = merged_missing,
         });
-        return .{ .scene = scene.*, .raster_plan = merged_raster_plan };
+        return .{ .scene = text_scene.*, .raster_plan = merged_raster_plan };
     }
 
     fn finishNormalOnlyFrame(
         self: *TextFramePreparer,
         direct: DirectNormalProduct,
-        lane_report: text_lane.LaneReport,
+        lane_report: lane.LaneReport,
         timings: PrepareTimings,
     ) OwnedPreparedTextFrame {
         var final_lane_report = lane_report;
@@ -280,7 +279,7 @@ pub const TextFramePreparer = struct {
         grid_metrics: contract.GridMetrics,
         session: font_session.FontSession,
         options: PrepareOptions,
-        lane_report: *text_lane.LaneReport,
+        lane_report: *lane.LaneReport,
     ) !?DirectNormalProduct {
         const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
         const source_len = directNormalSourceLen(source);
@@ -307,7 +306,7 @@ const MergedSceneBuffers = struct {
 };
 
 const PreparedSceneMerge = struct {
-    scene: scene_mod.OwnedTextScene,
+    scene: scene.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
 };
 
@@ -316,7 +315,7 @@ const PreparedComplexFrame = struct {
     renderable: cluster.OwnedRenderableCells,
     clusters: cluster.OwnedClusters,
     direct: DirectNormalProduct,
-    lane_report: text_lane.LaneReport,
+    lane_report: lane.LaneReport,
     runs: ?font_resolver.OwnedResolvedRuns = null,
     shaped_runs: ?shape_run.OwnedShapedRuns = null,
     grouped: ?PreparedGroups = null,
@@ -355,7 +354,7 @@ const DirectNormalDecision = enum {
 const DirectNormalCandidate = struct {
     item: DirectNormalItem,
     text: contract.CellText,
-    choice: text_lane.LaneClass,
+    choice: lane.LaneClass,
 };
 
 fn countDirectNormalVisible(
@@ -363,7 +362,7 @@ fn countDirectNormalVisible(
     damage: DirectDamage,
     grid_metrics: contract.GridMetrics,
     policy: DirectNormalPolicy,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
 ) ?u32 {
     var visible_count: u32 = 0;
     var idx: u32 = 0;
@@ -385,7 +384,7 @@ fn appendDirectNormalVisible(
     grid_metrics: contract.GridMetrics,
     session: font_session.FontSession,
     policy: DirectNormalPolicy,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
 ) !void {
     var idx: u32 = 0;
     while (idx < directNormalSourceLen(source)) : (idx += 1) {
@@ -402,7 +401,7 @@ fn appendDirectNormalVisible(
 
 fn directNormalDecision(
     policy: DirectNormalPolicy,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
     candidate: DirectNormalCandidate,
 ) DirectNormalDecision {
     return switch (policy) {
@@ -429,7 +428,7 @@ fn directNormalCandidate(
     const item = directNormalSourceItem(source, idx) orelse return null;
     if (!includeDirectSpan(damage, grid_metrics, item.renderable.first_cell, item.renderable.cell_span)) return null;
     const text = item.text();
-    return .{ .item = item, .text = text, .choice = text_lane.classifyRenderableCell(item.renderable, text) };
+    return .{ .item = item, .text = text, .choice = lane.classifyRenderableCell(item.renderable, text) };
 }
 
 fn resolveComplexRuns(
@@ -439,7 +438,7 @@ fn resolveComplexRuns(
     grid_metrics: contract.GridMetrics,
     session: font_session.FontSession,
     timings: *PrepareTimings,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
     cells: []const contract.RenderableCell,
 ) !font_resolver.OwnedResolvedRuns {
     const resolve_start_ns = monotonicNs();
@@ -456,7 +455,7 @@ fn shapeComplexRuns(
     clusters: []const contract.CellCluster,
     cell_metrics: contract.CellMetrics,
     timings: *PrepareTimings,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
     cells: []const contract.RenderableCell,
 ) !shape_run.OwnedShapedRuns {
     const shape_start_ns = monotonicNs();
@@ -473,7 +472,7 @@ fn groupComplexRuns(
     clusters: []const contract.CellCluster,
     cell_metrics: contract.CellMetrics,
     timings: *PrepareTimings,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
     text_cache: contract.LineTextCache,
     cells: []const contract.RenderableCell,
 ) !PreparedGroups {
@@ -489,7 +488,7 @@ fn groupComplexRuns(
 }
 
 pub const OwnedPreparedTextFrame = struct {
-    scene: scene_mod.OwnedTextScene,
+    scene: scene.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
     timings: PrepareTimings = .{},
 
@@ -520,7 +519,7 @@ const DirectNormalPolicy = enum {
 };
 
 const DirectNormalSource = union(enum) {
-    raw_cells: []const types.CellInput,
+    raw_cells: []const contract.CellInput,
     inputs: []const cluster.CellTextInput,
     prepared: struct {
         cells: []const contract.RenderableCell,
@@ -565,7 +564,7 @@ fn applyCounters(total: *pipeline.TextPrepareCounters, delta: pipeline.TextPrepa
     total.missing_glyphs += delta.missing_glyphs;
 }
 
-fn directNormalCounters(self: *TextFramePreparer, lane_report: text_lane.LaneReport, direct: DirectNormalProduct) pipeline.TextPrepareCounters {
+fn directNormalCounters(self: *TextFramePreparer, lane_report: lane.LaneReport, direct: DirectNormalProduct) pipeline.TextPrepareCounters {
     return .{
         .cell_texts = lane_report.visible_cells,
         .clusters = lane_report.normal_clusters,
@@ -576,7 +575,7 @@ fn directNormalCounters(self: *TextFramePreparer, lane_report: text_lane.LaneRep
     };
 }
 
-fn directScene(allocator: std.mem.Allocator, damage: DirectDamage, preparer: *const TextFramePreparer) scene_mod.OwnedTextScene {
+fn directScene(allocator: std.mem.Allocator, damage: DirectDamage, preparer: *const TextFramePreparer) scene.OwnedTextScene {
     return .{ .allocator = allocator, .scene = .{
         .full_redraw = damage.full,
         .scroll_up_px = damage.scroll_up_px,
@@ -590,23 +589,23 @@ fn directScene(allocator: std.mem.Allocator, damage: DirectDamage, preparer: *co
     }, .owned = false };
 }
 
-fn installMergedScene(scene: *scene_mod.OwnedTextScene, damage: DirectDamage, merged: MergedSceneBuffers) void {
-    std.debug.assert(scene.owned);
-    std.debug.assert(scene.scene.raster_requests.len <= scene.scene.sprite_draws.len);
-    scene.allocator.free(scene.scene.clear_draws);
-    scene.allocator.free(scene.scene.cursor_draws);
-    scene.allocator.free(scene.scene.background_draws);
-    scene.allocator.free(scene.scene.sprite_draws);
-    scene.allocator.free(scene.scene.decoration_draws);
-    scene.allocator.free(scene.scene.missing);
-    scene.scene.full_redraw = damage.full;
-    scene.scene.scroll_up_px = damage.scroll_up_px;
-    scene.scene.clear_draws = merged.clear_draws;
-    scene.scene.cursor_draws = merged.cursor_draws;
-    scene.scene.background_draws = merged.background_draws;
-    scene.scene.sprite_draws = merged.sprite_draws;
-    scene.scene.decoration_draws = merged.decoration_draws;
-    scene.scene.missing = merged.missing;
+fn installMergedScene(text_scene: *scene.OwnedTextScene, damage: DirectDamage, merged: MergedSceneBuffers) void {
+    std.debug.assert(text_scene.owned);
+    std.debug.assert(text_scene.scene.raster_requests.len <= text_scene.scene.sprite_draws.len);
+    text_scene.allocator.free(text_scene.scene.clear_draws);
+    text_scene.allocator.free(text_scene.scene.cursor_draws);
+    text_scene.allocator.free(text_scene.scene.background_draws);
+    text_scene.allocator.free(text_scene.scene.sprite_draws);
+    text_scene.allocator.free(text_scene.scene.decoration_draws);
+    text_scene.allocator.free(text_scene.scene.missing);
+    text_scene.scene.full_redraw = damage.full;
+    text_scene.scene.scroll_up_px = damage.scroll_up_px;
+    text_scene.scene.clear_draws = merged.clear_draws;
+    text_scene.scene.cursor_draws = merged.cursor_draws;
+    text_scene.scene.background_draws = merged.background_draws;
+    text_scene.scene.sprite_draws = merged.sprite_draws;
+    text_scene.scene.decoration_draws = merged.decoration_draws;
+    text_scene.scene.missing = merged.missing;
 }
 
 fn directNormalSourceItem(source: DirectNormalSource, idx: u32) ?DirectNormalItem {
@@ -639,7 +638,7 @@ fn directNormalSourceItem(source: DirectNormalSource, idx: u32) ?DirectNormalIte
     };
 }
 
-fn recordDirectNormalLane(lane_report: *text_lane.LaneReport, text: contract.CellText) void {
+fn recordDirectNormalLane(lane_report: *lane.LaneReport, text: contract.CellText) void {
     lane_report.visible_cells += 1;
     lane_report.normal_cells += 1;
     if (!blankText(text)) lane_report.normal_clusters += 1;
@@ -655,7 +654,7 @@ fn appendDirectNormalRenderable(
     text: contract.CellText,
     grid_metrics: contract.GridMetrics,
     session: font_session.FontSession,
-    lane_report: *text_lane.LaneReport,
+    lane_report: *lane.LaneReport,
 ) !void {
     self.direct_normal.renderable.appendAssumeCapacity(renderable);
     if (text.first_cp == 0 or text.first_cp == '\t') return;
@@ -701,7 +700,7 @@ fn appendDirectNormalRenderable(
     lane_report.direct_normal_draws += 1;
 }
 
-fn finishDirectNormalScene(self: *TextFramePreparer, damage: DirectDamage, lane_report: *text_lane.LaneReport) !DirectNormalProduct {
+fn finishDirectNormalScene(self: *TextFramePreparer, damage: DirectDamage, lane_report: *lane.LaneReport) !DirectNormalProduct {
     var outputs: []rasterizer.RasterSpriteOutput = &.{};
     var outputs_owned = false;
     if (self.direct_normal.raster_reqs.items.len > 0) {
@@ -776,7 +775,7 @@ fn resolveDirectNormalFace(session: font_session.FontSession, cell: contract.Ren
     return session.findStyle(cell.style, cell.presentation, text) orelse session.findFallback(cell.style, cell.presentation, text);
 }
 
-fn rawRenderableCell(cell: types.CellInput, idx: u32, cells: []const types.CellInput) contract.RenderableCell {
+fn rawRenderableCell(cell: contract.CellInput, idx: u32, cells: []const contract.CellInput) contract.RenderableCell {
     return .{
         .text_id = .{ .value = 0 },
         .first_cell = idx,
@@ -916,7 +915,7 @@ const DirectDamage = struct {
     dirty_cols_start: []const u16,
     dirty_cols_end: []const u16,
 
-    fn init(damage: scene_mod.DamageInput, rows: u16, cell_h_px: u16) DirectDamage {
+    fn init(damage: scene.DamageInput, rows: u16, cell_h_px: u16) DirectDamage {
         const valid = !damage.full and
             damage.dirty_rows.len == @as(usize, rows) and
             damage.dirty_cols_start.len == @as(usize, rows) and
@@ -948,7 +947,7 @@ fn includeDirectSpan(damage: DirectDamage, grid_metrics: contract.GridMetrics, f
     return !(end_col < dirty_start or start_col > dirty_end);
 }
 
-fn inferredCellSpan(cells: []const types.CellInput, idx: u32) u8 {
+fn inferredCellSpan(cells: []const contract.CellInput, idx: u32) u8 {
     var span: u8 = 1;
     for (cells[@intCast(idx + 1)..]) |cell| {
         if (!cell.continuation or span == std.math.maxInt(u8)) break;
@@ -1033,7 +1032,7 @@ fn appendDirectClears(
 
 fn appendDirectCursor(
     out: *std.ArrayListUnmanaged(contract.TextCursorDraw),
-    cursor: ?scene_mod.CursorInput,
+    cursor: ?scene.CursorInput,
     cell_metrics: contract.CellMetrics,
     damage: DirectDamage,
 ) void {
@@ -1041,7 +1040,7 @@ fn appendDirectCursor(
     if (!damage.full and !directRowDirty(damage, cursor_value.cell_row)) return;
     const base_x: i32 = @as(i32, @intCast(cursor_value.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
     const base_y: i32 = @as(i32, @intCast(cursor_value.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
-    const geom = metrics_mod.cursorGeometry(cell_metrics);
+    const geom = metrics.cursorGeometry(cell_metrics);
     switch (cursor_value.shape) {
         .block => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
         .beam => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
@@ -1063,8 +1062,8 @@ fn appendDirectDecorations(
     grid_metrics: contract.GridMetrics,
     damage: DirectDamage,
 ) void {
-    const font_metrics = metrics_mod.defaultFontMetrics(cell_metrics);
-    const deco = metrics_mod.decorationGeometry(cell_metrics, font_metrics);
+    const font_metrics = metrics.defaultFontMetrics(cell_metrics);
+    const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
         if (!cell.underline and !cell.strikethrough) continue;
@@ -1133,15 +1132,15 @@ fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
 }
 
     pub const PrepareOptions = struct {
-    scene: scene_mod.BuildOptions = .{},
+    scene: scene.BuildOptions = .{},
 };
 
 test "text frame preparer prepares cell inputs into clusters and runs" {
     var engine = TextFramePreparer.init(std.testing.allocator);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
     };
@@ -1158,9 +1157,9 @@ test "text frame preparer prepares cell inputs into clusters and runs" {
 test "text frame preparer records sprite routes through resolver" {
     var engine = TextFramePreparer.init(std.testing.allocator);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 0x2500, .fg = white, .bg = black },
     };
@@ -1179,9 +1178,9 @@ test "text frame preparer records sprite routes through resolver" {
 test "text frame preparer scene is grid positioned" {
     var engine = TextFramePreparer.init(std.testing.allocator);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black },
         .{ .codepoint = 'c', .fg = white, .bg = black },
@@ -1198,9 +1197,9 @@ test "text frame preparer scene is grid positioned" {
 test "text frame preparer rerasterizes pending atlas entries across prepares" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{.{ .codepoint = 'z', .fg = white, .bg = black }};
     var first = try engine.prepareCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     const first_slot = first.scene.scene.sprite_draws[0].sprite.slot;
     first.deinit();
@@ -1216,9 +1215,9 @@ test "text frame preparer rerasterizes pending atlas entries across prepares" {
 test "text frame preparer rerasterizes sprites after cell metrics change" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{.{ .codepoint = 0x2588, .fg = white, .bg = black }};
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{.{ .codepoint = 0x2588, .fg = white, .bg = black }};
     var first = try engine.prepareCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 } }, .{});
     const first_key = first.scene.scene.sprite_draws[0].sprite.key.value;
     first.deinit();
@@ -1233,9 +1232,9 @@ test "text frame preparer rerasterizes sprites after cell metrics change" {
 test "text frame preparer rerasterizes sprites after box thickness change" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 8);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{.{ .codepoint = 0x256d, .fg = white, .bg = black }};
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{.{ .codepoint = 0x256d, .fg = white, .bg = black }};
     var first = try engine.prepareCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 }, .metrics = .{ .cell_w_px = 18, .cell_h_px = 18, .baseline_px = 14, .box_thickness_px = 1 } }, .{});
     const first_key = first.scene.scene.sprite_draws[0].sprite.key.value;
     first.deinit();
@@ -1259,8 +1258,8 @@ test "text frame preparer accepts configurable shaper" {
     var stub = Stub{};
     var engine = try TextFramePreparer.initWithShaper(std.testing.allocator, 8, .{ .ctx = &stub, .shape_run = Stub.shape });
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'q', 0x0332 };
     const inputs = [_]cluster.CellTextInput{.{ .codepoints = &combining, .fg = white, .bg = black }};
     var analysis = try engine.prepareCellTextInputsWithSessionOptions(&inputs, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
@@ -1282,9 +1281,9 @@ test "text frame preparer accepts unified provider rasterizer" {
     var stub = Stub{};
     var engine = try TextFramePreparer.initWithProvider(std.testing.allocator, 8, .{ .rasterizer = .{ .ctx = &stub, .rasterize_sprite = Stub.raster } });
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{.{ .codepoint = 0x2500, .fg = white, .bg = black }};
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{.{ .codepoint = 0x2500, .fg = white, .bg = black }};
     var analysis = try engine.prepareCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{ .primary_face = .{ .value = 1 } }, .{});
     defer analysis.deinit();
     try std.testing.expectEqual(@as(usize, 1), stub.hits);
@@ -1293,9 +1292,9 @@ test "text frame preparer accepts unified provider rasterizer" {
 test "text frame preparer prepare options produce scene cursor draws" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{.{ .codepoint = 'c', .fg = white, .bg = black }};
     var analysis = try engine.prepareCellsWithSessionOptions(&cells, .{ .cols = 1, .rows = 1 }, .{
         .primary_face = .{ .value = 1 },
         .metrics = .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 },
@@ -1310,8 +1309,8 @@ test "text frame preparer prepare options produce scene cursor draws" {
 test "text frame preparer prepares rich multi-codepoint cell inputs" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332, 0x0308 };
     const emoji = [_]u32{ 0x2716, 0xfe0f };
     const inputs = [_]cluster.CellTextInput{
@@ -1329,8 +1328,8 @@ test "text frame preparer prepares rich multi-codepoint cell inputs" {
 test "text frame preparer direct-renders pure normal cell text inputs" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const a = [_]u32{'a'};
     const b = [_]u32{'b'};
     const inputs = [_]cluster.CellTextInput{
@@ -1349,8 +1348,8 @@ test "text frame preparer direct-renders pure normal cell text inputs" {
 test "text frame preparer keeps mixed cell text normals out of legacy path" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const a = [_]u32{'a'};
     const combining = [_]u32{ 'i', 0x0332 };
     const inputs = [_]cluster.CellTextInput{
@@ -1368,9 +1367,9 @@ test "text frame preparer keeps mixed cell text normals out of legacy path" {
 test "text frame preparer marks curly underline cells complex before shaping" {
     var engine = try TextFramePreparer.initCapacity(std.testing.allocator, 16);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'a', .fg = white, .bg = black },
         .{ .codepoint = 'b', .fg = white, .bg = black, .underline = true, .underline_style = .curly },
     };
@@ -1403,8 +1402,8 @@ test "text frame preparer keeps icon codepoints out of the normal lane" {
 
     var engine = try TextFramePreparer.initWithShaper(std.testing.allocator, 16, .{ .ctx = undefined, .shape_run = Stub.shape });
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const icon = [_]u32{0xf101};
     const blank = [_]u32{' '};
     const ascii = [_]u32{'a'};
@@ -1444,13 +1443,13 @@ test "text frame preparer uses ft hb source coverage for fallback" {
     };
     var dummy: u8 = 0;
     var ft_hb = ft_hb_provider.FtHbSource{ .ctx = &dummy, .has_codepoint = Backend.has };
-    var provider = ft_hb.textProvider();
-    var shaper = FallbackShaper{ .inner = provider.shaper };
-    provider.shaper = .{ .ctx = &shaper, .shape_run = FallbackShaper.shape };
-    var engine = try TextFramePreparer.initWithProvider(std.testing.allocator, 16, provider);
+    var text_provider = ft_hb.textProvider();
+    var shaper = FallbackShaper{ .inner = text_provider.shaper };
+    text_provider.shaper = .{ .ctx = &shaper, .shape_run = FallbackShaper.shape };
+    var engine = try TextFramePreparer.initWithProvider(std.testing.allocator, 16, text_provider);
     defer engine.deinit();
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const combining = [_]u32{ 'i', 0x0332 };
     const inputs = [_]cluster.CellTextInput{.{ .codepoints = &combining, .fg = white, .bg = black }};
     const faces = [_]font_session.FontFaceRecord{

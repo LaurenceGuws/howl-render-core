@@ -1,15 +1,15 @@
 
 const std = @import("std");
 const surface = @import("surface.zig");
-const types = @import("types.zig");
-const text_frame_preparer = @import("text/text_frame_preparer.zig");
-const text_scene = @import("text/scene.zig");
+const contract = @import("../text/contract.zig");
+const frame_preparer = @import("../text/frame_preparer.zig");
+const scene = @import("../text/scene.zig");
 
 pub const FrameTheme = struct {
-    default_fg: types.Rgba8,
-    default_bg: types.Rgba8,
-    cursor_color: types.Rgba8,
-    ansi16: [16]types.Rgba8,
+    default_fg: contract.Rgba8,
+    default_bg: contract.Rgba8,
+    cursor_color: contract.Rgba8,
+    ansi16: [16]contract.Rgba8,
 };
 pub const default_theme = FrameTheme{
     .default_fg = .{ .r = 204, .g = 204, .b = 204, .a = 255 },
@@ -35,7 +35,7 @@ pub const default_theme = FrameTheme{
     },
 };
 
-fn indexed256(idx: u8, t: FrameTheme) types.Rgba8 {
+fn indexed256(idx: u8, t: FrameTheme) contract.Rgba8 {
     if (idx < 16) return t.ansi16[idx];
     if (idx < 232) {
         const i: u32 = idx - 16;
@@ -48,7 +48,7 @@ fn indexed256(idx: u8, t: FrameTheme) types.Rgba8 {
     return .{ .r = gray, .g = gray, .b = gray, .a = 255 };
 }
 
-fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
+fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) contract.Rgba8 {
     return switch (color.kind) {
         .default => if (is_fg) t.default_fg else t.default_bg,
         .indexed => indexed256(@intCast(color.value & 0xFF), t),
@@ -61,12 +61,12 @@ fn colorToRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
     };
 }
 
-fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) types.Rgba8 {
+fn colorToTextSceneRgba8(color: anytype, is_fg: bool, t: FrameTheme) contract.Rgba8 {
     if (!is_fg and color.kind == .default) return .{ .r = t.default_bg.r, .g = t.default_bg.g, .b = t.default_bg.b, .a = 0 };
     return colorToRgba8(color, is_fg, t);
 }
 
-fn mapCursorShape(shape: anytype) text_scene.CursorShape {
+fn mapCursorShape(shape: anytype) scene.CursorShape {
     return switch (shape) {
         .block => .block,
         .underline => .underline,
@@ -75,7 +75,7 @@ fn mapCursorShape(shape: anytype) text_scene.CursorShape {
     };
 }
 
-fn mapTextSceneCursorShape(shape: anytype) text_scene.CursorShape {
+fn mapTextSceneCursorShape(shape: anytype) scene.CursorShape {
     const name = @tagName(shape);
     if (std.mem.eql(u8, name, "underline")) return .underline;
     if (std.mem.eql(u8, name, "beam")) return .beam;
@@ -83,7 +83,7 @@ fn mapTextSceneCursorShape(shape: anytype) text_scene.CursorShape {
     return .block;
 }
 
-fn mapUnderlineStyle(style: surface.UnderlineStyle) types.UnderlineStyle {
+fn mapUnderlineStyle(style: surface.UnderlineStyle) contract.UnderlineStyle {
     return switch (style) {
         .straight => .straight,
         .double => .double,
@@ -107,7 +107,7 @@ fn isAlacrittyEmptyCell(cell: surface.Cell) bool {
     return blank and default_colors and !visible_flags;
 }
 
-fn emptyCellInput() types.CellInput {
+fn emptyCellInput() contract.CellInput {
     return .{
         .codepoint = 0,
         .fg = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
@@ -116,7 +116,7 @@ fn emptyCellInput() types.CellInput {
     };
 }
 
-fn mapCellInput(src: surface.Cell, t: FrameTheme) types.CellInput {
+fn mapCellInput(src: surface.Cell, t: FrameTheme) contract.CellInput {
     return .{
         .codepoint = src.codepoint,
         .fg = colorToTextSceneRgba8(src.fg_color, true, t),
@@ -139,7 +139,7 @@ fn canMapDirtyOnly(state: anytype) bool {
 }
 
 fn mapDirtyCellsOnly(
-    dst: []types.CellInput,
+    dst: []contract.CellInput,
     cells: []const surface.Cell,
     grid_cols: u16,
     grid_rows: u16,
@@ -168,9 +168,9 @@ fn mapDirtyCellsOnly(
 
 pub const OwnedFrameTextInput = struct {
     allocator: std.mem.Allocator,
-    cells: []types.CellInput,
-    grid: @import("text_contract.zig").GridMetrics,
-    options: text_frame_preparer.PrepareOptions,
+    cells: []contract.CellInput,
+    grid: contract.GridMetrics,
+    options: frame_preparer.PrepareOptions,
 
     pub fn deinit(self: *OwnedFrameTextInput) void {
         self.allocator.free(self.cells);
@@ -207,7 +207,7 @@ pub fn vtStateToFrameTextInputWithTheme(
     state: anytype,
     t: FrameTheme,
 ) !OwnedFrameTextInput {
-    const cell_inputs = try allocator.alloc(types.CellInput, state.grid.cells.len);
+    const cell_inputs = try allocator.alloc(contract.CellInput, state.grid.cells.len);
     errdefer allocator.free(cell_inputs);
 
     if (canMapDirtyOnly(state)) {
@@ -228,7 +228,7 @@ pub fn vtStateToFrameTextInputWithTheme(
         }
     }
 
-    const cursor: ?text_scene.CursorInput = if (state.cursor.visible) .{
+    const cursor: ?scene.CursorInput = if (state.cursor.visible) .{
         .cell_col = state.cursor.col,
         .cell_row = state.cursor.row,
         .shape = mapTextSceneCursorShape(state.cursor.shape),

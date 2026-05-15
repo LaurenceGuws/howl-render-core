@@ -1,7 +1,7 @@
 
 const builtin = @import("builtin");
 const std = @import("std");
-const frame_input = @import("frame_input.zig");
+const input = @import("frame/input.zig");
 const render_options = @import("render_options");
 const render = @import("render.zig").Render;
 const time_c = @cImport({
@@ -270,20 +270,20 @@ pub const Renderer = struct {
             self.target_epoch = query.epoch;
             self.target_valid = false;
         }
-        var input = try frame_input.vtStateToTextSceneInput(allocator, state);
-        defer input.deinit();
+        var text_input = try input.vtStateToTextSceneInput(allocator, state);
+        defer text_input.deinit();
         if (!self.target_valid) {
             if (self.text_preparer) |*preparer| preparer.clearAtlas();
-            input.options.scene.damage.full = true;
-            input.options.scene.damage.scroll_up_rows = 0;
+            text_input.options.scene.damage.full = true;
+            text_input.options.scene.damage.scroll_up_rows = 0;
         }
         self.resolve = .{};
         const preparer = try self.ensureTextPreparer(allocator);
         var prepared = try preparer.prepareCellsWithSessionOptions(
-            input.cells,
-            input.grid,
+            text_input.cells,
+            text_input.grid,
             self.backend.fontSession(&faces, &self.resolve),
-            input.options,
+            text_input.options,
         );
         errdefer prepared.deinit();
         const raster_uploads_committed = try self.backend.uploadTextSceneRaster(prepared.scene.scene, prepared.raster_plan.outputs);

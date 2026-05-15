@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 const symbol_map = @import("symbol_map.zig");
 
 pub const TextLane = enum(u1) {

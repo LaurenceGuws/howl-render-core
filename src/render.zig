@@ -1,32 +1,95 @@
 
 const std = @import("std");
-const types = @import("types.zig");
-const frame_input = @import("frame_input.zig");
-const frame_pipeline = @import("frame_pipeline.zig");
-const frame_queue = @import("frame_queue.zig");
-const frame_snapshot = @import("frame_snapshot.zig");
-const frame_metrics = @import("frame_metrics.zig");
-const surface = @import("surface.zig");
-const text_contract = @import("text_contract.zig");
-const text_pipeline = @import("text_pipeline.zig");
-const text = @import("text.zig");
+const input = @import("frame/input.zig");
+const pipeline = @import("frame/pipeline.zig");
+const queue = @import("frame/queue.zig");
+const snapshot = @import("frame/snapshot.zig");
+const metrics = @import("frame/metrics.zig");
+const surface = @import("frame/surface.zig");
+const contract = @import("text/contract.zig");
+const text_pipeline = @import("text/pipeline.zig");
+const text = @import("text/text.zig");
 
 pub const Render = struct {
-    pub const BackendConfig = types.BackendConfig;
-    pub const BackendCapability = types.BackendCapability;
-    pub const PixelSize = types.PixelSize;
-    pub const CellSize = types.CellSize;
-    pub const GridSize = types.GridSize;
-    pub const FramePixels = types.FramePixels;
-    pub const Rgba8 = types.Rgba8;
-    pub const FillRect = types.FillRect;
-    pub const GlyphQuad = types.GlyphQuad;
-    pub const AtlasUpload = types.AtlasUpload;
-    pub const RenderStats = types.RenderStats;
-    pub const CellInput = types.CellInput;
-    pub const FrameTheme = frame_input.FrameTheme;
-    pub const OwnedFrameTextInput = frame_input.OwnedFrameTextInput;
-    pub const OwnedTextSceneInput = frame_input.OwnedTextSceneInput;
+    pub const PixelSize = struct {
+        width: u16,
+        height: u16,
+    };
+    pub const CellSize = struct {
+        width: u16,
+        height: u16,
+    };
+    pub const GridSize = struct {
+        cols: u16,
+        rows: u16,
+    };
+    pub const FramePixels = struct {
+        render_width: i32,
+        render_height: i32,
+        grid_width: i32,
+        grid_height: i32,
+
+        pub fn renderWidth(self: FramePixels) u16 {
+            return @intCast(@max(self.render_width, 1));
+        }
+
+        pub fn renderHeight(self: FramePixels) u16 {
+            return @intCast(@max(self.render_height, 1));
+        }
+
+        pub fn gridWidth(self: FramePixels) u16 {
+            return @intCast(@max(self.grid_width, 1));
+        }
+
+        pub fn gridHeight(self: FramePixels) u16 {
+            return @intCast(@max(self.grid_height, 1));
+        }
+    };
+    pub const BackendConfig = struct {
+        surface_px: PixelSize,
+        cell_px: CellSize,
+        font_size_px: u16 = 16,
+        font_path: ?[:0]const u8 = null,
+        target_texture: u32 = 0,
+    };
+    pub const BackendCapability = struct {
+        max_atlas_slots: u32,
+        supports_fill_rect: bool,
+        supports_glyph_quads: bool,
+    };
+    pub const Rgba8 = contract.Rgba8;
+    pub const FillRect = struct {
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        color: Rgba8,
+    };
+    pub const GlyphQuad = struct {
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        codepoint: u21,
+        fg: Rgba8,
+        bg: ?Rgba8 = null,
+    };
+    pub const AtlasUpload = struct {
+        codepoint: u21,
+        width: u16,
+        height: u16,
+    };
+    pub const RenderStats = struct {
+        fills: usize,
+        glyphs: usize,
+        atlas_uploads: usize,
+        has_cursor: bool,
+        full_redraw: bool,
+    };
+    pub const CellInput = contract.CellInput;
+    pub const FrameTheme = input.FrameTheme;
+    pub const OwnedFrameTextInput = input.OwnedFrameTextInput;
+    pub const OwnedTextSceneInput = input.OwnedTextSceneInput;
     pub const SurfaceState = surface.SurfaceState;
     pub const SurfaceColor = surface.Color;
     pub const UnderlineStyle = surface.UnderlineStyle;
@@ -38,25 +101,25 @@ pub const Render = struct {
     pub const SurfaceCursorShape = surface.CursorShape;
     pub const SurfaceCursorInfo = surface.CursorInfo;
     pub const SurfaceFrameData = surface.FrameData;
-    pub const FrameSnapshot = frame_snapshot.Snapshot;
-    pub const FrameSnapshotDirty = frame_snapshot.Dirty;
-    pub const FrameSnapshotDamage = frame_snapshot.Damage;
-    pub const FrameSnapshotDirtyView = frame_snapshot.DirtyView;
-    pub const PrepareMetrics = frame_metrics.PrepareMetrics;
-    pub const RenderMetrics = frame_metrics.RenderMetrics;
-    pub const Metrics = frame_metrics.RuntimeMetrics;
+    pub const FrameSnapshot = snapshot.Snapshot;
+    pub const FrameSnapshotDirty = snapshot.Dirty;
+    pub const FrameSnapshotDamage = snapshot.Damage;
+    pub const FrameSnapshotDirtyView = snapshot.DirtyView;
+    pub const PrepareMetrics = metrics.PrepareMetrics;
+    pub const RenderMetrics = metrics.RenderMetrics;
+    pub const Metrics = metrics.RuntimeMetrics;
     pub const SourceReceipt = struct {
         published: bool,
         queued: bool,
-        damage_kind: frame_pipeline.DamageKind,
+        damage_kind: pipeline.DamageKind,
         source_seq: u64,
         geometry_epoch: u64,
     };
     pub const GeometryReceipt = struct {
         changed: bool,
-        render_px: types.PixelSize,
-        grid_px: types.PixelSize,
-        cell_px: types.CellSize,
+        render_px: PixelSize,
+        grid_px: PixelSize,
+        cell_px: CellSize,
         geometry_epoch: u64,
     };
     // render retains only render-relevant publication state; title and output proof stay out of damage policy.
@@ -76,14 +139,14 @@ pub const Render = struct {
         snapshot_seq: u64 = 0,
         vt_epoch: u64 = 0,
         last_alt_screen: bool = false,
-        damage_kind: frame_pipeline.DamageKind = .none,
+        damage_kind: pipeline.DamageKind = .none,
 
         pub fn deinit(self: *Publication, allocator: std.mem.Allocator) void {
             self.snapshot.deinit(allocator);
             self.* = .{};
         }
 
-        pub fn copyFrom(self: *Publication, allocator: std.mem.Allocator, source: SourceView, damage_kind: frame_pipeline.DamageKind) !void {
+        pub fn copyFrom(self: *Publication, allocator: std.mem.Allocator, source: SourceView, damage_kind: pipeline.DamageKind) !void {
             try self.snapshot.copyFrom(allocator, source.snapshot);
             self.cols = source.cols;
             self.rows = source.rows;
@@ -142,8 +205,8 @@ pub const Render = struct {
         pub fn takePendingToken(
             self: *PublicationState,
             geometry_epoch: u64,
-            submitted_token: ?frame_pipeline.SnapshotToken,
-        ) ?frame_pipeline.SnapshotToken {
+            submitted_token: ?pipeline.SnapshotToken,
+        ) ?pipeline.SnapshotToken {
             if (!self.pending) return null;
             const publication = self.publication orelse return null;
             std.debug.assert(publication.snapshot.cols == publication.cols);
@@ -167,7 +230,7 @@ pub const Render = struct {
             self: *PublicationState,
             allocator: std.mem.Allocator,
             source: SourceView,
-            damage_kind: frame_pipeline.DamageKind,
+            damage_kind: pipeline.DamageKind,
         ) void {
             self.ensureSnapshot(allocator, source.rows, source.cols);
             const publication = &(self.publication orelse unreachable);
@@ -190,7 +253,7 @@ pub const Render = struct {
             publication.snapshot = FrameSnapshot.init(allocator, rows, cols) catch @panic("render publication allocation failed");
         }
 
-        fn classify(self: *const PublicationState, source: SourceView) frame_pipeline.DamageKind {
+        fn classify(self: *const PublicationState, source: SourceView) pipeline.DamageKind {
             const prior = self.publication orelse return .full;
             if (source.snapshot_seq == prior.snapshot_seq) return .none;
             if (source.cols != prior.cols or source.rows != prior.rows) return .full;
@@ -211,9 +274,9 @@ pub const Render = struct {
         pub const Metrics = Render.Metrics;
         allocator: std.mem.Allocator,
         surface_owner: FrameQueue.TerminalSurface = .{},
-        render_px: types.PixelSize = .{ .width = 0, .height = 0 },
-        grid_px: types.PixelSize = .{ .width = 0, .height = 0 },
-        cell_px: types.CellSize = .{ .width = 0, .height = 0 },
+        render_px: PixelSize = .{ .width = 0, .height = 0 },
+        grid_px: PixelSize = .{ .width = 0, .height = 0 },
+        cell_px: CellSize = .{ .width = 0, .height = 0 },
         font_size_px: u16 = 1,
         geometry_epoch: u64 = 0,
         publication_state: PublicationState = .{},
@@ -270,14 +333,14 @@ pub const Render = struct {
             };
         }
 
-        pub fn prepare(self: *RenderRuntime) ?frame_pipeline.RenderRequest {
+        pub fn prepare(self: *RenderRuntime) ?pipeline.RenderRequest {
             if (self.publication_state.takePendingToken(self.geometry_epoch, self.surface_owner.submittedToken())) |token| {
                 _ = self.surface_owner.publishSnapshot(token, .opportunistic);
             }
             return self.surface_owner.takePrepare();
         }
 
-        pub fn publishPrepared(self: *RenderRuntime, prepared: frame_pipeline.PreparedFrame) u64 {
+        pub fn publishPrepared(self: *RenderRuntime, prepared: pipeline.PreparedFrame) u64 {
             std.debug.assert(prepared.token.geometry_epoch == self.geometry_epoch);
             return self.surface_owner.publishPrepared(prepared);
         }
@@ -294,11 +357,11 @@ pub const Render = struct {
             };
         }
 
-        pub fn requestFullPrepare(self: *RenderRuntime, token: frame_pipeline.SnapshotToken) void {
+        pub fn requestFullPrepare(self: *RenderRuntime, token: pipeline.SnapshotToken) void {
             self.surface_owner.requestFullPrepare(token);
         }
 
-        pub fn acceptSubmitted(self: *RenderRuntime, frame: frame_pipeline.SubmittedFrame) void {
+        pub fn acceptSubmitted(self: *RenderRuntime, frame: pipeline.SubmittedFrame) void {
             if (frame.token.geometry_epoch != self.geometry_epoch) {
                 self.surface_owner.requestFullPrepare(frame.token);
                 return;
@@ -354,63 +417,63 @@ pub const Render = struct {
         }
     };
     pub const Geometry = struct {
-        render_px: types.PixelSize,
-        grid_px: types.PixelSize,
-        cell_px: types.CellSize,
+        render_px: PixelSize,
+        grid_px: PixelSize,
+        cell_px: CellSize,
     };
     pub const SurfaceQuery = struct {
-        render_px: types.PixelSize,
-        grid_px: types.PixelSize,
-        cell_px: types.CellSize,
+        render_px: PixelSize,
+        grid_px: PixelSize,
+        cell_px: CellSize,
         font_size_px: u16,
         epoch: u64,
     };
-    pub const FramePipeline = frame_pipeline;
-    pub const FrameQueue = frame_queue;
+    pub const FramePipeline = pipeline;
+    pub const FrameQueue = queue;
     pub const SurfaceHandle = struct {
         texture_id: u32,
         width: u16,
         height: u16,
         epoch: u64,
     };
-    pub const BackendCaps = text_contract.BackendCaps;
-    pub const FontStyle = text_contract.FontStyle;
-    pub const TextPresentation = text_contract.TextPresentation;
-    pub const FontMetrics = text_contract.FontMetrics;
-    pub const CellMetrics = text_contract.CellMetrics;
-    pub const GridMetrics = text_contract.GridMetrics;
-    pub const FontFaceId = text_contract.FontFaceId;
-    pub const CellTextId = text_contract.CellTextId;
-    pub const SpriteKey = text_contract.SpriteKey;
-    pub const CellText = text_contract.CellText;
-    pub const LineTextCache = text_contract.LineTextCache;
-    pub const RenderableCell = text_contract.RenderableCell;
-    pub const CellCluster = text_contract.CellCluster;
-    pub const RunFont = text_contract.RunFont;
-    pub const TextRun = text_contract.TextRun;
-    pub const ResolvedRun = text_contract.ResolvedRun;
-    pub const GlyphInstance = text_contract.GlyphInstance;
-    pub const GlyphPlacement = text_contract.GlyphPlacement;
-    pub const GlyphGroupKind = text_contract.GlyphGroupKind;
-    pub const GlyphGroup = text_contract.GlyphGroup;
-    pub const SpriteColorMode = text_contract.SpriteColorMode;
-    pub const SpritePosition = text_contract.SpritePosition;
-    pub const TextSpriteDraw = text_contract.TextSpriteDraw;
-    pub const TextBackgroundDraw = text_contract.TextBackgroundDraw;
-    pub const TextClearDraw = text_contract.TextClearDraw;
-    pub const TextCursorDraw = text_contract.TextCursorDraw;
-    pub const DecorationKind = text_contract.DecorationKind;
-    pub const TextDecorationDraw = text_contract.TextDecorationDraw;
-    pub const SpriteRasterKind = text_contract.SpriteRasterKind;
-    pub const DecorationSpriteRaster = text_contract.DecorationSpriteRaster;
-    pub const SpriteRasterRequest = text_contract.SpriteRasterRequest;
-    pub const TextScene = text_contract.TextScene;
-    pub const SpecialSpriteRoute = text_contract.SpecialSpriteRoute;
-    pub const TextCluster = text_contract.TextCluster;
-    pub const ShapedGlyph = text_contract.ShapedGlyph;
-    pub const ShapedRun = text_contract.ShapedRun;
-    pub const MissingGlyphReason = text_contract.MissingGlyphReason;
-    pub const MissingGlyph = text_contract.MissingGlyph;
+    pub const BackendCaps = contract.BackendCaps;
+    pub const FontStyle = contract.FontStyle;
+    pub const TextPresentation = contract.TextPresentation;
+    pub const FontMetrics = contract.FontMetrics;
+    pub const CellMetrics = contract.CellMetrics;
+    pub const GridMetrics = contract.GridMetrics;
+    pub const FontFaceId = contract.FontFaceId;
+    pub const CellTextId = contract.CellTextId;
+    pub const SpriteKey = contract.SpriteKey;
+    pub const CellText = contract.CellText;
+    pub const LineTextCache = contract.LineTextCache;
+    pub const RenderableCell = contract.RenderableCell;
+    pub const CellCluster = contract.CellCluster;
+    pub const RunFont = contract.RunFont;
+    pub const TextRun = contract.TextRun;
+    pub const ResolvedRun = contract.ResolvedRun;
+    pub const GlyphInstance = contract.GlyphInstance;
+    pub const GlyphPlacement = contract.GlyphPlacement;
+    pub const GlyphGroupKind = contract.GlyphGroupKind;
+    pub const GlyphGroup = contract.GlyphGroup;
+    pub const SpriteColorMode = contract.SpriteColorMode;
+    pub const SpritePosition = contract.SpritePosition;
+    pub const TextSpriteDraw = contract.TextSpriteDraw;
+    pub const TextBackgroundDraw = contract.TextBackgroundDraw;
+    pub const TextClearDraw = contract.TextClearDraw;
+    pub const TextCursorDraw = contract.TextCursorDraw;
+    pub const DecorationKind = contract.DecorationKind;
+    pub const TextDecorationDraw = contract.TextDecorationDraw;
+    pub const SpriteRasterKind = contract.SpriteRasterKind;
+    pub const DecorationSpriteRaster = contract.DecorationSpriteRaster;
+    pub const SpriteRasterRequest = contract.SpriteRasterRequest;
+    pub const TextScene = contract.TextScene;
+    pub const SpecialSpriteRoute = contract.SpecialSpriteRoute;
+    pub const TextCluster = contract.TextCluster;
+    pub const ShapedGlyph = contract.ShapedGlyph;
+    pub const ShapedRun = contract.ShapedRun;
+    pub const MissingGlyphReason = contract.MissingGlyphReason;
+    pub const MissingGlyph = contract.MissingGlyph;
     pub const ResolveStage = text_pipeline.ResolveStage;
     pub const ResolveRequest = text_pipeline.ResolveRequest;
     pub const ResolveHit = text_pipeline.ResolveHit;
@@ -441,8 +504,8 @@ pub const Render = struct {
         InvalidSurfaceSize,
         InvalidGridSize,
     };
-    config: types.BackendConfig,
-    capability: types.BackendCapability,
+    config: BackendConfig,
+    capability: BackendCapability,
 
     pub fn init(config: BackendConfig, capability: BackendCapability) Render {
         return .{
@@ -457,7 +520,7 @@ pub const Render = struct {
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedTextSceneInput {
-        return frame_input.vtStateToTextSceneInput(allocator, state);
+        return input.vtStateToTextSceneInput(allocator, state);
     }
 
     pub fn vtStateToFrameTextInput(
@@ -465,7 +528,7 @@ pub const Render = struct {
         allocator: std.mem.Allocator,
         state: anytype,
     ) !OwnedFrameTextInput {
-        return frame_input.vtStateToFrameTextInput(allocator, state);
+        return input.vtStateToFrameTextInput(allocator, state);
     }
 
     /// Derive grid dimensions from pixel-space area and cell-size policy.
@@ -489,9 +552,9 @@ pub const Render = struct {
 test "render runtime owns source publication and retained-frame queue" {
     var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
-    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 3);
-    defer snapshot.deinit(std.testing.allocator);
-    for (snapshot.cells.items, 0..) |*cell, idx| cell.codepoint = @intCast('a' + idx);
+    var frame_snapshot_value = try Render.FrameSnapshot.init(std.testing.allocator, 2, 3);
+    defer frame_snapshot_value.deinit(std.testing.allocator);
+    for (frame_snapshot_value.cells.items, 0..) |*cell, idx| cell.codepoint = @intCast('a' + idx);
 
     const first_geometry = runtime.syncGeometry(.{
         .render_px = .{ .width = 24, .height = 32 },
@@ -508,7 +571,7 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expectEqual(@as(u64, 1), query.epoch);
 
     const clean_source = Render.SourceView{
-        .snapshot = &snapshot,
+        .snapshot = &frame_snapshot_value,
         .cols = 3,
         .rows = 2,
         .scrollback_count = 0,
@@ -523,14 +586,14 @@ test "render runtime owns source publication and retained-frame queue" {
     const clean_receipt = runtime.acceptSource(clean_source);
     try std.testing.expect(clean_receipt.published);
     try std.testing.expect(clean_receipt.queued);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.full, clean_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.full, clean_receipt.damage_kind);
     try std.testing.expect(runtime.publication_state.publication != null);
     try std.testing.expectEqual(@as(u21, 'a'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[5].codepoint);
     const request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 1), request.token.snapshot_seq);
     try std.testing.expectEqual(@as(u64, 1), request.known_target_epoch);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.full, request.token.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.full, request.token.damage_kind);
     runtime.acceptSubmitted(.{
         .token = request.token,
         .target_epoch = request.known_target_epoch,
@@ -539,7 +602,7 @@ test "render runtime owns source publication and retained-frame queue" {
     try std.testing.expect(runtime.prepare() == null);
 
     const duplicate_source = Render.SourceView{
-        .snapshot = &snapshot,
+        .snapshot = &frame_snapshot_value,
         .cols = 3,
         .rows = 2,
         .scrollback_count = 0,
@@ -553,7 +616,7 @@ test "render runtime owns source publication and retained-frame queue" {
     };
     const duplicate_receipt = runtime.acceptSource(duplicate_source);
     try std.testing.expect(!duplicate_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.none, duplicate_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.none, duplicate_receipt.damage_kind);
     try std.testing.expect(runtime.prepare() == null);
 
     var republished_source = clean_source;
@@ -562,7 +625,7 @@ test "render runtime owns source publication and retained-frame queue" {
     const republished_receipt = runtime.acceptSource(republished_source);
     try std.testing.expect(republished_receipt.published);
     try std.testing.expect(republished_receipt.queued);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.full, republished_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.full, republished_receipt.damage_kind);
     const republished_request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 2), republished_request.token.snapshot_seq);
     try std.testing.expectEqual(@as(u21, 'a'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
@@ -573,24 +636,24 @@ test "render runtime owns source publication and retained-frame queue" {
     scroll_source.vt_epoch = 2;
     scroll_source.scrollback_count = 2;
     scroll_source.scrollback_offset = 1;
-    snapshot.clearDirty();
-    snapshot.dirty = .partial;
-    snapshot.scroll_up_rows = 1;
-    snapshot.dirty_rows.items[1] = true;
-    snapshot.dirty_cols_start.items[1] = 0;
-    snapshot.dirty_cols_end.items[1] = 2;
-    snapshot.cells.items[0].codepoint = 'c';
-    snapshot.cells.items[1].codepoint = 'd';
-    snapshot.cells.items[2].codepoint = 'e';
-    snapshot.cells.items[3].codepoint = 'f';
-    snapshot.cells.items[4].codepoint = 'X';
-    snapshot.cells.items[5].codepoint = 'Y';
+    frame_snapshot_value.clearDirty();
+    frame_snapshot_value.dirty = .partial;
+    frame_snapshot_value.scroll_up_rows = 1;
+    frame_snapshot_value.dirty_rows.items[1] = true;
+    frame_snapshot_value.dirty_cols_start.items[1] = 0;
+    frame_snapshot_value.dirty_cols_end.items[1] = 2;
+    frame_snapshot_value.cells.items[0].codepoint = 'c';
+    frame_snapshot_value.cells.items[1].codepoint = 'd';
+    frame_snapshot_value.cells.items[2].codepoint = 'e';
+    frame_snapshot_value.cells.items[3].codepoint = 'f';
+    frame_snapshot_value.cells.items[4].codepoint = 'X';
+    frame_snapshot_value.cells.items[5].codepoint = 'Y';
     const scroll_receipt = runtime.acceptSource(scroll_source);
     try std.testing.expect(scroll_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.scroll, scroll_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.scroll, scroll_receipt.damage_kind);
     const scroll_request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 3), scroll_request.token.snapshot_seq);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.scroll, scroll_request.token.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.scroll, scroll_request.token.damage_kind);
     try std.testing.expectEqual(@as(u21, 'd'), runtime.publication_state.publication.?.snapshot.cells.items[0].codepoint);
     try std.testing.expectEqual(@as(u21, 'e'), runtime.publication_state.publication.?.snapshot.cells.items[1].codepoint);
     try std.testing.expectEqual(@as(u21, 'f'), runtime.publication_state.publication.?.snapshot.cells.items[2].codepoint);
@@ -603,15 +666,15 @@ test "render runtime owns source publication and retained-frame queue" {
     selection_source.selection_anchor_col = 1;
     selection_source.selection_current_depth = 2;
     selection_source.selection_current_col = 2;
-    snapshot.clearDirty();
-    snapshot.dirty = .partial;
-    snapshot.dirty_rows.items[0] = true;
-    snapshot.dirty_cols_start.items[0] = 2;
-    snapshot.dirty_cols_end.items[0] = 2;
-    snapshot.cells.items[2].codepoint = 'Q';
+    frame_snapshot_value.clearDirty();
+    frame_snapshot_value.dirty = .partial;
+    frame_snapshot_value.dirty_rows.items[0] = true;
+    frame_snapshot_value.dirty_cols_start.items[0] = 2;
+    frame_snapshot_value.dirty_cols_end.items[0] = 2;
+    frame_snapshot_value.cells.items[2].codepoint = 'Q';
     const selection_receipt = runtime.acceptSource(selection_source);
     try std.testing.expect(selection_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.partial, selection_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.partial, selection_receipt.damage_kind);
     try std.testing.expectEqual(@as(u21, 'Q'), runtime.publication_state.publication.?.snapshot.cells.items[2].codepoint);
 
     var focus_source = selection_source;
@@ -619,23 +682,23 @@ test "render runtime owns source publication and retained-frame queue" {
     focus_source.focused = false;
     const focus_receipt = runtime.acceptSource(focus_source);
     try std.testing.expect(focus_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.partial, focus_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.partial, focus_receipt.damage_kind);
 
     var hover_source = focus_source;
     hover_source.snapshot_seq = 8;
     hover_source.hover_link_id = 7;
     const hover_receipt = runtime.acceptSource(hover_source);
     try std.testing.expect(hover_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.partial, hover_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.partial, hover_receipt.damage_kind);
 
     var dirty_source = hover_source;
     dirty_source.snapshot_seq = 9;
     dirty_source.vt_epoch = 4;
     const dirty_receipt = runtime.acceptSource(dirty_source);
     try std.testing.expect(dirty_receipt.published);
-    try std.testing.expectEqual(frame_pipeline.DamageKind.full, dirty_receipt.damage_kind);
+    try std.testing.expectEqual(pipeline.DamageKind.full, dirty_receipt.damage_kind);
 
-    const submitted = frame_pipeline.SubmittedFrame{
+    const submitted = pipeline.SubmittedFrame{
         .token = .{ .snapshot_seq = 6, .dirty_epoch = 6, .geometry_epoch = 1, .damage_base_seq = 0, .damage_kind = .full },
         .target_epoch = 1,
         .content_valid = true,
@@ -662,9 +725,9 @@ test "render runtime owns source publication and retained-frame queue" {
 test "render runtime metrics stay owned by render" {
     var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
-    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 2, 2);
-    defer snapshot.deinit(std.testing.allocator);
-    snapshot.clearDirty();
+    var frame_snapshot_value = try Render.FrameSnapshot.init(std.testing.allocator, 2, 2);
+    defer frame_snapshot_value.deinit(std.testing.allocator);
+    frame_snapshot_value.clearDirty();
 
     const empty_metrics = runtime.takeMetrics();
     try std.testing.expectEqual(@as(u64, 0), empty_metrics.snapshot_publishes);
@@ -680,7 +743,7 @@ test "render runtime metrics stay owned by render" {
     try std.testing.expectEqual(@as(u64, 1), geometry_receipt.geometry_epoch);
 
     const source = Render.SourceView{
-        .snapshot = &snapshot,
+        .snapshot = &frame_snapshot_value,
         .cols = 2,
         .rows = 2,
         .scrollback_count = 0,

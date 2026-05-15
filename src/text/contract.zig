@@ -1,6 +1,6 @@
 
 const std = @import("std");
-pub const Rgba8 = @import("rgba.zig").Rgba8;
+pub const Rgba8 = @import("../frame/rgba.zig").Rgba8;
 
 pub const UnderlineStyle = enum {
     straight,
@@ -50,6 +50,18 @@ pub const CellMetrics = struct {
 pub const GridMetrics = struct {
     cols: u16,
     rows: u16 = 1,
+};
+
+pub const CellInput = struct {
+    codepoint: u21,
+    fg: Rgba8,
+    bg: Rgba8,
+    underline_color: Rgba8 = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
+    underline_style: UnderlineStyle = .straight,
+    underline: bool = false,
+    strikethrough: bool = false,
+    continuation: bool = false,
+    empty: bool = false,
 };
 
 pub const FontFaceId = extern struct {

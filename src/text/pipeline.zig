@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("text_contract.zig");
+const contract = @import("contract.zig");
 
 pub const ResolveStage = enum(u5) {
     blank,

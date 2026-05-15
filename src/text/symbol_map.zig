@@ -1,5 +1,5 @@
 
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 const special_glyphs = @import("special_glyphs.zig");
 
 pub fn builtinRoute(cp: u32) ?contract.SpecialSpriteRoute {

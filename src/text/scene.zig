@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
+const contract = @import("contract.zig");
 const atlas_cache = @import("atlas_cache.zig");
 const metrics = @import("metrics.zig");
 const rasterizer = @import("rasterizer.zig");

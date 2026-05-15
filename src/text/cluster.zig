@@ -1,9 +1,8 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
-const types = @import("../types.zig");
-const scene_mod = @import("scene.zig");
-const text_lane = @import("text_lane.zig");
+const contract = @import("contract.zig");
+const scene = @import("scene.zig");
+const lane = @import("lane.zig");
 
 const VS15: u32 = 0xfe0e;
 const VS16: u32 = 0xfe0f;
@@ -211,7 +210,7 @@ const CellLineTextCacheAssembly = struct {
         self.* = undefined;
     }
 
-    fn appendCell(self: *CellLineTextCacheAssembly, cell: types.CellInput) void {
+    fn appendCell(self: *CellLineTextCacheAssembly, cell: contract.CellInput) void {
         const idx = self.count;
         self.codepoints[@intCast(idx)] = cell.codepoint;
         self.texts[@intCast(idx)] = .{
@@ -365,7 +364,7 @@ pub fn clusterForCell(text: contract.CellText, first_cell: u32, span: u8, style:
     };
 }
 
-pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const types.CellInput) !OwnedLineTextCache {
+pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const contract.CellInput) !OwnedLineTextCache {
     var assembly = try CellLineTextCacheAssembly.init(allocator, @intCast(cells.len));
     errdefer assembly.deinit();
 
@@ -376,9 +375,9 @@ pub fn buildLineTextCacheFromCells(allocator: std.mem.Allocator, cells: []const 
 
 pub fn buildSparseCellsWithDamage(
     allocator: std.mem.Allocator,
-    cells: []const types.CellInput,
+    cells: []const contract.CellInput,
     grid_metrics: contract.GridMetrics,
-    damage: scene_mod.DamageInput,
+    damage: scene.DamageInput,
 ) !SparseCells {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
     var assembly = try SparseCellAssembly.init(allocator, cells.len);
@@ -445,7 +444,7 @@ fn findText(texts: []const contract.CellText, cps: []const u32) ?usize {
 
 pub fn buildRenderableCellsFromCells(
     allocator: std.mem.Allocator,
-    cells: []const types.CellInput,
+    cells: []const contract.CellInput,
     cache: contract.LineTextCache,
 ) !OwnedRenderableCells {
     var assembly = try InputRenderableAssembly.init(allocator, @intCast(cells.len));
@@ -493,7 +492,7 @@ pub fn extractClustersWithDamage(
     cells: []const contract.RenderableCell,
     cache: contract.LineTextCache,
     grid_metrics: contract.GridMetrics,
-    damage: scene_mod.DamageInput,
+    damage: scene.DamageInput,
 ) !OwnedClusters {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
     var extraction = ClusterExtractionAssembly{ .allocator = allocator };
@@ -515,7 +514,7 @@ pub fn selectComplexWithDamage(
     cache: contract.LineTextCache,
     clusters: []const contract.CellCluster,
     grid_metrics: contract.GridMetrics,
-    damage: scene_mod.DamageInput,
+    damage: scene.DamageInput,
 ) !ComplexSelection {
     const damage_filter = DamageFilter.init(damage, grid_metrics);
     var selection = ComplexSelectionAssembly{ .allocator = allocator };
@@ -562,7 +561,7 @@ const DamageFilter = struct {
     dirty_cols_end: []const u16,
     valid: bool,
 
-    fn init(damage: scene_mod.DamageInput, grid_metrics: contract.GridMetrics) DamageFilter {
+    fn init(damage: scene.DamageInput, grid_metrics: contract.GridMetrics) DamageFilter {
         const row_count = @as(usize, grid_metrics.rows);
         const valid = !damage.full and
             damage.dirty_rows.len == row_count and
@@ -604,7 +603,7 @@ fn writeSingleCodepointText(texts: []contract.CellText, codepoints: []u32, idx: 
     };
 }
 
-fn renderableFromCellInput(text_id: contract.CellTextId, first_cell: u32, cell_span: u8, cell: types.CellInput, continuation: bool) contract.RenderableCell {
+fn renderableFromCellInput(text_id: contract.CellTextId, first_cell: u32, cell_span: u8, cell: contract.CellInput, continuation: bool) contract.RenderableCell {
     return .{
         .text_id = text_id,
         .first_cell = first_cell,
@@ -656,14 +655,14 @@ fn renderableCluster(cell: contract.RenderableCell, text: contract.CellText, cel
 }
 
 fn classifyComplexCell(cell: contract.RenderableCell, cache: contract.LineTextCache) bool {
-    return text_lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane == .complex;
+    return lane.classifyRenderableCell(cell, textForCell(cell, cache)).lane == .complex;
 }
 
 fn classifyComplexCluster(cells: []const contract.RenderableCell, cluster_value: contract.CellCluster, cache: contract.LineTextCache) bool {
-    return text_lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane == .complex;
+    return lane.classifyClusterInCells(cells, cluster_value, textForCluster(cluster_value, cache)).lane == .complex;
 }
 
-fn inferredCellSpan(cells: []const types.CellInput, idx: usize) u8 {
+fn inferredCellSpan(cells: []const contract.CellInput, idx: usize) u8 {
     var span: usize = 1;
     while (idx + span < cells.len and cells[idx + span].continuation) : (span += 1) {}
     return @intCast(@min(span, std.math.maxInt(u8)));
@@ -723,9 +722,9 @@ test "single codepoint text preserves first codepoint" {
 
 test "cell inputs build text cache renderable cells clusters and runs" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
         .{ .codepoint = 'C', .fg = white, .bg = black, .continuation = true },
@@ -748,9 +747,9 @@ test "cell inputs build text cache renderable cells clusters and runs" {
 
 test "blank cells do not produce text clusters" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = ' ', .fg = white, .bg = black },
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black },
@@ -770,9 +769,9 @@ test "blank cells do not produce text clusters" {
 
 test "continuation cells expand base cell spans" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 0x4f60, .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
         .{ .codepoint = 'x', .fg = white, .bg = black },
@@ -794,9 +793,9 @@ test "continuation cells expand base cell spans" {
 
 test "partial damage filters clean clusters before shaping" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 'B', .fg = white, .bg = black },
         .{ .codepoint = 'C', .fg = white, .bg = black },
@@ -825,9 +824,9 @@ test "partial damage filters clean clusters before shaping" {
 
 test "sparse cells keep only damaged base cells" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = 0, .fg = white, .bg = black, .continuation = true },
         .{ .codepoint = 'B', .fg = white, .bg = black },
@@ -854,9 +853,9 @@ test "sparse cells keep only damaged base cells" {
 
 test "sparse cells intern repeated codepoints" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = 'Z', .fg = white, .bg = black },
         .{ .codepoint = 'Z', .fg = white, .bg = black },
         .{ .codepoint = 'Y', .fg = white, .bg = black },
@@ -872,9 +871,9 @@ test "sparse cells intern repeated codepoints" {
 
 test "sparse cells skip Alacritty-empty cells" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
-    const cells = [_]types.CellInput{
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const cells = [_]contract.CellInput{
         .{ .codepoint = ' ', .fg = white, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .empty = true },
         .{ .codepoint = 'A', .fg = white, .bg = black },
         .{ .codepoint = '\t', .fg = white, .bg = .{ .r = 0, .g = 0, .b = 0, .a = 0 }, .empty = true },
@@ -890,8 +889,8 @@ test "sparse cells skip Alacritty-empty cells" {
 
 test "rich cell text interning deduplicates codepoint sequences" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const underline_i = [_]u32{ 'i', 0x0332, 0x0308 };
     const inputs = [_]CellTextInput{
         .{ .codepoints = &underline_i, .fg = white, .bg = black },
@@ -912,8 +911,8 @@ test "rich cell text interning deduplicates codepoint sequences" {
 
 test "rich cell text detects emoji and text presentation selectors" {
     const allocator = std.testing.allocator;
-    const white = types.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
-    const black = types.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    const white = contract.Rgba8{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    const black = contract.Rgba8{ .r = 0, .g = 0, .b = 0, .a = 255 };
     const text_x = [_]u32{ 0x2716, VS15 };
     const emoji_x = [_]u32{ 0x2716, VS16 };
     const inputs = [_]CellTextInput{

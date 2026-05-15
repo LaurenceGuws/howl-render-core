@@ -1,7 +1,7 @@
 
 const std = @import("std");
-const contract = @import("../text_contract.zig");
-const generated_special_raster = @import("generated_special_raster.zig");
+const contract = @import("contract.zig");
+const special_raster = @import("special_raster.zig");
 const metrics = @import("metrics.zig");
 
 pub const RasterSpriteRequest = struct {
@@ -131,10 +131,10 @@ test "raster output reports non-empty alpha bounds" {
     try std.testing.expectEqual(@as(u16, 2), bounds.height_px);
 }
 
-pub const requestForUndercurl = generated_special_raster.requestForUndercurl;
-pub const rasterizeUndercurlAlpha = generated_special_raster.rasterizeUndercurlAlpha;
-pub const rasterizeGeneratedSpecialAlpha = generated_special_raster.rasterizeGeneratedSpecialAlpha;
-pub const rasterizeGeneratedSpecialAlphaWithMetrics = generated_special_raster.rasterizeGeneratedSpecialAlphaWithMetrics;
+pub const requestForUndercurl = special_raster.requestForUndercurl;
+pub const rasterizeUndercurlAlpha = special_raster.rasterizeUndercurlAlpha;
+pub const rasterizeGeneratedSpecialAlpha = special_raster.rasterizeGeneratedSpecialAlpha;
+pub const rasterizeGeneratedSpecialAlphaWithMetrics = special_raster.rasterizeGeneratedSpecialAlphaWithMetrics;
 
 fn spriteWidthPx(cell_span: u8, cell_w_px: u16) u16 {
     std.debug.assert(cell_w_px > 0);

@@ -1,7 +1,7 @@
 
 const std = @import("std");
-const frame_metrics = @import("frame_metrics.zig");
-const pipeline = @import("frame_pipeline.zig");
+const queue_metrics = @import("metrics.zig");
+const pipeline = @import("pipeline.zig");
 
 const ThreadMutex = struct {
     state: std.Io.Mutex = .init,
@@ -55,7 +55,7 @@ pub const TerminalSurface = struct {
         idle,
     };
 
-    pub const Metrics = frame_metrics.RuntimeMetrics;
+    pub const Metrics = queue_metrics.RuntimeMetrics;
 
     pub fn setVisible(self: *TerminalSurface, visible: bool) void {
         lockMutex(&self.mutex);
@@ -410,11 +410,11 @@ test "surface coalesces snapshots into latest prepare request" {
     try std.testing.expectEqual(@as(u64, 2), request.sequence);
     try std.testing.expectEqual(@as(u64, 2), request.item.token.snapshot_seq);
     try std.testing.expect(surface.takePrepareEnvelope() == null);
-    const metrics = surface.metricsSnapshot();
-    try std.testing.expectEqual(@as(u64, 2), metrics.snapshot_publishes);
-    try std.testing.expectEqual(@as(u64, 2), metrics.prepare_requests);
-    try std.testing.expectEqual(@as(u64, 1), metrics.prepare_coalesces);
-    try std.testing.expectEqual(@as(u64, 1), metrics.prepare_takes);
+    const metrics_snapshot = surface.metricsSnapshot();
+    try std.testing.expectEqual(@as(u64, 2), metrics_snapshot.snapshot_publishes);
+    try std.testing.expectEqual(@as(u64, 2), metrics_snapshot.prepare_requests);
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.prepare_coalesces);
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.prepare_takes);
 }
 
 test "surface turns partial snapshot full without matching retained base" {
@@ -524,10 +524,10 @@ test "surface validates submit candidates before GPU mutation" {
         .submit => |prepared| try std.testing.expectEqual(@as(u64, 2), prepared.token.snapshot_seq),
         else => return error.TestUnexpectedResult,
     }
-    const metrics = surface.metricsSnapshot();
-    try std.testing.expectEqual(@as(u64, 1), metrics.prepared_publishes);
-    try std.testing.expectEqual(@as(u64, 1), metrics.submit_takes);
-    try std.testing.expectEqual(@as(u64, 1), metrics.submit_valid);
+    const metrics_snapshot = surface.metricsSnapshot();
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.prepared_publishes);
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.submit_takes);
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.submit_valid);
 }
 
 test "surface reports stale submit when newer snapshot already won" {
@@ -566,9 +566,9 @@ test "surface rejects stale submit and requests full latest prepare" {
     const request = surface.takePrepareEnvelope() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 2), request.item.token.snapshot_seq);
     try std.testing.expectEqual(pipeline.DamageKind.full, request.item.token.damage_kind);
-    const metrics = surface.metricsSnapshot();
-    try std.testing.expectEqual(@as(u64, 1), metrics.submit_rejected);
-    try std.testing.expectEqual(@as(u64, 1), metrics.full_prepare_requests);
+    const metrics_snapshot = surface.metricsSnapshot();
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.submit_rejected);
+    try std.testing.expectEqual(@as(u64, 1), metrics_snapshot.full_prepare_requests);
 }
 
 test "surface drops pending prepare at submitted token" {
