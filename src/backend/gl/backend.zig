@@ -6,7 +6,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const render = @import("../../render.zig").Render;
-const clip_rect = @import("../shared/clip_rect.zig");
 const shared_text_cache = @import("../shared/text_cache.zig");
 const atlas_mod = @import("internal/atlas.zig");
 const c_api = @import("internal/c_api.zig");
@@ -38,33 +37,6 @@ const ThreadMutex = struct {
 
 const primary_face_id: u32 = provider_mod.primary_face_id;
 const ResolvedGlyphKey = provider_mod.ResolvedGlyphKey;
-
-const TexturedGlyph = struct {
-    clipped: clip_rect.ClipRect,
-    color: render.Rgba8,
-    tex_u0: f32,
-    tex_v0: f32,
-    tex_u1: f32,
-    tex_v1: f32,
-};
-
-const TexturedVertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32,
-    v: f32,
-};
-
-const QuadVertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32,
-    v: f32,
-    r: u8,
-    g: u8,
-    b: u8,
-    a: u8,
-};
 
 fn fallbackFaceId(index: u32) u32 {
     return index + 2;
@@ -173,12 +145,7 @@ pub const Backend = struct {
     atlas_slot_has_alpha: []bool = &.{},
     atlas_slot_gpu_uploaded: []bool = &.{},
     atlas_next_slot: u32 = 0,
-    atlas_texture: u32 = 0,
-    atlas_tex_width: u16 = 0,
-    atlas_tex_height: u16 = 0,
-    scroll_scratch_texture: u32 = 0,
-    scroll_scratch_width: u16 = 0,
-    scroll_scratch_height: u16 = 0,
+    draw_pass: atlas_mod.DrawPass = .{},
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
@@ -194,15 +161,6 @@ pub const Backend = struct {
     resolve_counters: render.ResolveCounters = .{},
     resolve_stage: render.ResolveStage = .style_policy,
     active_resolve: ?*render.ResolveObservability = null,
-    fill_vertices: []QuadVertex = &.{},
-    glyph_vertices: []QuadVertex = &.{},
-    text_vertices: []TexturedVertex = &.{},
-    text_shader_program: u32 = 0,
-    text_shader_pos_loc: c_int = -1,
-    text_shader_uv_loc: c_int = -1,
-    text_shader_color_loc: c_int = -1,
-    text_shader_sampler_loc: c_int = -1,
-    fallback_fill_vertices: []QuadVertex = &.{},
     face_text_cache: shared_text_cache.FaceTextCache,
     shape_run_cache: shared_text_cache.ShapeRunCache,
     glyph_cell_cache: shared_text_cache.GlyphCellCache,
@@ -222,8 +180,7 @@ pub const Backend = struct {
     /// Release backend resources and prevent further rendering.
     pub fn deinit(self: *Backend) void {
         self.deinitAtlasStorage();
-        self.deinitVertexBuffers();
-        self.deinitShaderObjects();
+        atlas_mod.deinitDrawResources(self);
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
         self.face_text_cache.deinit();
@@ -365,17 +322,17 @@ pub const Backend = struct {
         if (!hasCurrentContext()) {
             if (builtin.is_test) {
                 self.pass_count += 1;
-                return textSceneRenderReport(self, scene);
+                return atlas_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
             }
             return error.NoContext;
         }
         try atlas_mod.prepareSceneTarget(self);
         try atlas_mod.beginTargetPass(self);
         defer atlas_mod.endTargetPass(self);
-        drawTextScene(self, self.config.surface_px, scene);
+        atlas_mod.drawTextScene(self, self.config.surface_px, scene);
         self.target_content_valid = true;
         self.pass_count += 1;
-        return textSceneRenderReport(self, scene);
+        return atlas_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {
@@ -530,20 +487,6 @@ pub const Backend = struct {
         freeOwnedSlice(u16, &self.atlas_slot_draw_h);
         freeOwnedSlice(bool, &self.atlas_slot_has_alpha);
         freeOwnedSlice(bool, &self.atlas_slot_gpu_uploaded);
-    }
-
-    fn deinitVertexBuffers(self: *Backend) void {
-        freeOwnedSlice(QuadVertex, &self.fill_vertices);
-        freeOwnedSlice(QuadVertex, &self.glyph_vertices);
-        freeOwnedSlice(TexturedVertex, &self.text_vertices);
-        freeOwnedSlice(QuadVertex, &self.fallback_fill_vertices);
-    }
-
-    fn deinitShaderObjects(self: *Backend) void {
-        if (self.text_shader_program != 0 and hasCurrentContext()) {
-            c.glDeleteProgram(self.text_shader_program);
-            self.text_shader_program = 0;
-        }
     }
 
 };
@@ -793,373 +736,13 @@ fn drawAlphaQuadraticStroke(dst: []u8, w: u16, h: u16, p0: PointF, p1: PointF, p
     }
 }
 
-fn findSceneSpriteSlot(scene: render.TextScene, key: render.SpriteKey) ?u32 {
-    for (scene.sprite_draws) |draw| {
-        if (draw.sprite.key.value == key.value) return draw.sprite.slot;
-    }
-    return null;
-}
-
 fn hasCurrentContext() bool {
     return c.glGetString(c.GL_VERSION) != null;
-}
-
-fn drawTextScene(backend: *Backend, surface: render.PixelSize, scene: render.TextScene) void {
-    c.glViewport(0, 0, @as(c_int, @intCast(surface.width)), @as(c_int, @intCast(surface.height)));
-    c.glDisable(c.GL_DEPTH_TEST);
-    c.glMatrixMode(c.GL_PROJECTION);
-    c.glPushMatrix();
-    c.glLoadIdentity();
-    c.glOrtho(
-        0.0,
-        @as(f64, @floatFromInt(surface.width)),
-        @as(f64, @floatFromInt(surface.height)),
-        0.0,
-        -1.0,
-        1.0,
-    );
-    c.glMatrixMode(c.GL_MODELVIEW);
-    c.glPushMatrix();
-    c.glLoadIdentity();
-    c.glDisable(c.GL_TEXTURE_2D);
-    defer {
-        c.glDisable(c.GL_TEXTURE_2D);
-        c.glPopMatrix();
-        c.glMatrixMode(c.GL_PROJECTION);
-        c.glPopMatrix();
-        c.glMatrixMode(c.GL_MODELVIEW);
-    }
-
-    c.glEnable(c.GL_BLEND);
-    c.glBlendFunc(c.GL_SRC_ALPHA, c.GL_ONE_MINUS_SRC_ALPHA);
-    defer c.glDisable(c.GL_BLEND);
-
-    if (scene.full_redraw) {
-        c.glDisable(c.GL_SCISSOR_TEST);
-        c.glClearColor(0.0, 0.0, 0.0, 1.0);
-        c.glClear(c.GL_COLOR_BUFFER_BIT);
-    } else if (scene.scroll_up_px > 0) {
-        atlas_mod.applyScrollReusePx(backend, surface, scene.scroll_up_px);
-    }
-
-    drawSceneClears(backend, surface, scene.clear_draws);
-    drawSceneBackgrounds(backend, surface, scene.background_draws);
-    drawSceneDecorations(backend, surface, scene.decoration_draws);
-    if (backend.atlas_texture != 0) {
-        c.glEnable(c.GL_TEXTURE_2D);
-        c.glBindTexture(c.GL_TEXTURE_2D, backend.atlas_texture);
-        c.glTexEnvi(c.GL_TEXTURE_ENV, c.GL_TEXTURE_ENV_MODE, c.GL_MODULATE);
-    }
-    drawSceneSprites(backend, surface, scene.sprite_draws);
-    if (backend.atlas_texture != 0) {
-        c.glBindTexture(c.GL_TEXTURE_2D, 0);
-        c.glDisable(c.GL_TEXTURE_2D);
-    }
-    drawSceneCursors(backend, surface, scene.cursor_draws);
-}
-
-fn drawSceneBackgrounds(backend: *Backend, surface: render.PixelSize, backgrounds: []const render.TextBackgroundDraw) void {
-    drawSceneRectBatch(render.TextBackgroundDraw, backend, surface, backgrounds);
-}
-
-fn drawSceneClears(backend: *Backend, surface: render.PixelSize, clears: []const render.TextClearDraw) void {
-    drawSceneRectBatch(render.TextClearDraw, backend, surface, clears);
-}
-
-fn drawSceneDecorations(backend: *Backend, surface: render.PixelSize, decorations: []const render.TextDecorationDraw) void {
-    drawSceneRectBatch(render.TextDecorationDraw, backend, surface, decorations);
-}
-
-fn drawSceneCursors(backend: *Backend, surface: render.PixelSize, cursors: []const render.TextCursorDraw) void {
-    drawSceneRectBatch(render.TextCursorDraw, backend, surface, cursors);
-}
-
-fn drawSceneRectBatch(comptime Draw: type, backend: *Backend, surface: render.PixelSize, draws: []const Draw) void {
-    if (draws.len == 0) return;
-    var vertices = ensureVertexCapacity(&backend.fill_vertices, draws.len * 4) orelse {
-        for (draws) |draw| drawRect(surface, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-        return;
-    };
-    var count: usize = 0;
-    for (draws) |draw| {
-        _ = appendRectVertices(surface, vertices, &count, draw.x_px, draw.y_px, draw.width_px, draw.height_px, draw.color);
-    }
-    drawSolidVertices(vertices[0..count]);
-}
-
-fn textSceneRenderReport(self: *const Backend, scene: render.TextScene) TextSceneRenderReport {
-    return .{
-        .pass_index = self.pass_count,
-        .texture_id = self.target_texture orelse 0,
-        .raster_uploads_committed = 0,
-        .full_redraw = scene.full_redraw,
-        .scroll_up_px = scene.scroll_up_px,
-        .clear_draws = scene.clear_draws.len,
-        .background_draws = scene.background_draws.len,
-        .sprite_draws = scene.sprite_draws.len,
-        .decoration_draws = scene.decoration_draws.len,
-        .cursor_draws = scene.cursor_draws.len,
-    };
-}
-
-fn drawSceneSprites(backend: *Backend, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
-    if (draws.len == 0) return;
-    if (ensureTextShader(backend)) {
-        drawSceneSpritesShader(backend, surface, draws);
-        return;
-    }
-    var sprite_vertices = ensureVertexCapacity(&backend.glyph_vertices, draws.len * 4) orelse {
-        for (draws) |draw| drawSceneSprite(backend, surface, draw);
-        return;
-    };
-    var sprite_count: usize = 0;
-    for (draws) |draw| {
-        const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse continue;
-        appendTexturedGlyphVertices(sprite_vertices, &sprite_count, textured);
-    }
-    drawTexturedVertices(sprite_vertices[0..sprite_count]);
-}
-
-fn drawSceneSpritesShader(backend: *Backend, surface: render.PixelSize, draws: []const render.TextSpriteDraw) void {
-    if (backend.text_shader_program == 0 or backend.atlas_texture == 0) return;
-    c.glUseProgram(backend.text_shader_program);
-    defer c.glUseProgram(0);
-    c.glActiveTexture(c.GL_TEXTURE0);
-    c.glBindTexture(c.GL_TEXTURE_2D, backend.atlas_texture);
-    if (backend.text_shader_sampler_loc >= 0) c.glUniform1i(backend.text_shader_sampler_loc, 0);
-
-    for (draws) |draw| {
-        const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse continue;
-        if (backend.text_shader_color_loc >= 0) {
-            c.glUniform4f(
-                backend.text_shader_color_loc,
-                @as(f32, @floatFromInt(textured.color.r)) / 255.0,
-                @as(f32, @floatFromInt(textured.color.g)) / 255.0,
-                @as(f32, @floatFromInt(textured.color.b)) / 255.0,
-                @as(f32, @floatFromInt(textured.color.a)) / 255.0,
-            );
-        }
-        drawTexturedGlyphShader(backend, textured);
-    }
-}
-
-fn drawSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: render.TextSpriteDraw) void {
-    const textured = prepareTexturedSceneSprite(backend, surface, draw) orelse return;
-    c.glEnable(c.GL_TEXTURE_2D);
-    c.glColor4ub(textured.color.r, textured.color.g, textured.color.b, textured.color.a);
-    c.glBegin(c.GL_QUADS);
-    emitTexturedGlyph(textured);
-    c.glEnd();
-}
-
-fn ensureVertexCapacity(buffer: *[]QuadVertex, needed: usize) ?[]QuadVertex {
-    if (needed == 0) return buffer.*;
-    if (buffer.len >= needed) return buffer.*;
-    const new_buffer = std.heap.c_allocator.realloc(buffer.*, needed) catch return null;
-    buffer.* = new_buffer;
-    return new_buffer;
-}
-
-fn appendRectVertices(surface: render.PixelSize, vertices: []QuadVertex, count: *usize, x: i32, y: i32, width: u16, height: u16, color: render.Rgba8) bool {
-    const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return false;
-    if (count.* + 4 > vertices.len) return false;
-    appendQuad(vertices, count, clipped, color, 0, 0, 0, 0);
-    return true;
-}
-
-fn appendTexturedGlyphVertices(vertices: []QuadVertex, count: *usize, glyph: TexturedGlyph) void {
-    if (count.* + 4 > vertices.len) return;
-    appendQuad(vertices, count, glyph.clipped, glyph.color, glyph.tex_u0, glyph.tex_v0, glyph.tex_u1, glyph.tex_v1);
-}
-
-fn appendQuad(vertices: []QuadVertex, count: *usize, clipped: clip_rect.ClipRect, color: render.Rgba8, tex_u0: f32, tex_v0: f32, tex_u1: f32, tex_v1: f32) void {
-    const x0: f32 = @floatFromInt(clipped.x);
-    const y0: f32 = @floatFromInt(clipped.y);
-    const x1: f32 = @floatFromInt(clipped.x + clipped.w);
-    const y1: f32 = @floatFromInt(clipped.y + clipped.h);
-    vertices[count.* + 0] = .{ .x = x0, .y = y0, .u = tex_u0, .v = tex_v0, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-    vertices[count.* + 1] = .{ .x = x1, .y = y0, .u = tex_u1, .v = tex_v0, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-    vertices[count.* + 2] = .{ .x = x1, .y = y1, .u = tex_u1, .v = tex_v1, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-    vertices[count.* + 3] = .{ .x = x0, .y = y1, .u = tex_u0, .v = tex_v1, .r = color.r, .g = color.g, .b = color.b, .a = color.a };
-    count.* += 4;
-}
-
-fn drawSolidVertices(vertices: []const QuadVertex) void {
-    if (vertices.len == 0) return;
-    c.glDisable(c.GL_TEXTURE_2D);
-    drawVertexArray(vertices, false);
-}
-
-fn drawTexturedVertices(vertices: []const QuadVertex) void {
-    if (vertices.len == 0) return;
-    c.glEnable(c.GL_TEXTURE_2D);
-    drawVertexArray(vertices, true);
-}
-
-fn drawTexturedGlyphShader(backend: *Backend, glyph: TexturedGlyph) void {
-    if (backend.text_shader_pos_loc < 0 or backend.text_shader_uv_loc < 0) return;
-    const x0: f32 = @floatFromInt(glyph.clipped.x);
-    const y0: f32 = @floatFromInt(glyph.clipped.y);
-    const x1: f32 = @floatFromInt(glyph.clipped.x + glyph.clipped.w);
-    const y1: f32 = @floatFromInt(glyph.clipped.y + glyph.clipped.h);
-    const vertices = [_]TexturedVertex{
-        .{ .x = x0, .y = y0, .u = glyph.tex_u0, .v = glyph.tex_v0 },
-        .{ .x = x1, .y = y0, .u = glyph.tex_u1, .v = glyph.tex_v0 },
-        .{ .x = x1, .y = y1, .u = glyph.tex_u1, .v = glyph.tex_v1 },
-        .{ .x = x0, .y = y1, .u = glyph.tex_u0, .v = glyph.tex_v1 },
-    };
-    const stride: c.GLsizei = @intCast(@sizeOf(TexturedVertex));
-    c.glEnableVertexAttribArray(@intCast(backend.text_shader_pos_loc));
-    c.glEnableVertexAttribArray(@intCast(backend.text_shader_uv_loc));
-    defer {
-        c.glDisableVertexAttribArray(@intCast(backend.text_shader_uv_loc));
-        c.glDisableVertexAttribArray(@intCast(backend.text_shader_pos_loc));
-    }
-    c.glVertexAttribPointer(@intCast(backend.text_shader_pos_loc), 2, c.GL_FLOAT, c.GL_FALSE, stride, &vertices[0].x);
-    c.glVertexAttribPointer(@intCast(backend.text_shader_uv_loc), 2, c.GL_FLOAT, c.GL_FALSE, stride, &vertices[0].u);
-    c.glDrawArrays(c.GL_QUADS, 0, 4);
-}
-
-fn drawVertexArray(vertices: []const QuadVertex, textured: bool) void {
-    if (vertices.len == 0) return;
-    c.glEnableClientState(c.GL_VERTEX_ARRAY);
-    c.glEnableClientState(c.GL_COLOR_ARRAY);
-    if (textured) c.glEnableClientState(c.GL_TEXTURE_COORD_ARRAY);
-    defer {
-        if (textured) c.glDisableClientState(c.GL_TEXTURE_COORD_ARRAY);
-        c.glDisableClientState(c.GL_COLOR_ARRAY);
-        c.glDisableClientState(c.GL_VERTEX_ARRAY);
-    }
-
-    const stride: c.GLsizei = @intCast(@sizeOf(QuadVertex));
-    c.glVertexPointer(2, c.GL_FLOAT, stride, &vertices[0].x);
-    c.glColorPointer(4, c.GL_UNSIGNED_BYTE, stride, &vertices[0].r);
-    if (textured) c.glTexCoordPointer(2, c.GL_FLOAT, stride, &vertices[0].u);
-    c.glDrawArrays(c.GL_QUADS, 0, @intCast(vertices.len));
 }
 
 fn rasterizeFallbackGlyph(dst: []u8, cell_w: u16, cell_h: u16, codepoint: u21, gw: u16, gh: u16) void {
     render.Text.Fallback.rasterAsciiOrPlaceholder(dst, cell_w, codepoint, gw, gh);
     _ = cell_h;
-}
-
-fn useDeterministicTestTextFallback(backend: *Backend) bool {
-    return builtin.is_test and backend.config.font_path == null and backend.fallback_font_paths_len == 0;
-}
-
-fn drawRect(surface: render.PixelSize, x: i32, y: i32, width: u16, height: u16, color: render.Rgba8) void {
-    const clipped = clip_rect.clipRectTopOrigin(surface, x, y, width, height) orelse return;
-    c.glDisable(c.GL_TEXTURE_2D);
-    c.glColor4ub(color.r, color.g, color.b, color.a);
-    c.glBegin(c.GL_QUADS);
-    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y));
-    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y));
-    c.glVertex2f(@floatFromInt(clipped.x + clipped.w), @floatFromInt(clipped.y + clipped.h));
-    c.glVertex2f(@floatFromInt(clipped.x), @floatFromInt(clipped.y + clipped.h));
-    c.glEnd();
-}
-
-fn prepareTexturedSceneSprite(backend: *const Backend, surface: render.PixelSize, draw: render.TextSpriteDraw) ?TexturedGlyph {
-    if (backend.atlas_texture == 0 or backend.atlas_pixels.len == 0) return null;
-    const slot = @as(usize, draw.sprite.slot);
-    if (slot >= backend.atlas_slot_has_alpha.len or !backend.atlas_slot_has_alpha[slot]) return null;
-    const slot_index = slot * backend.atlas_slot_stride;
-    if (slot_index + backend.atlas_slot_stride > backend.atlas_pixels.len) return null;
-    if (slot >= backend.atlas_slot_draw_x.len or slot >= backend.atlas_slot_draw_y.len or slot >= backend.atlas_slot_draw_w.len or slot >= backend.atlas_slot_draw_h.len) return null;
-    const draw_x = backend.atlas_slot_draw_x[slot];
-    const draw_y = backend.atlas_slot_draw_y[slot];
-    const gw = @min(@min(backend.atlas_slot_draw_w[slot], backend.atlas_cell_w -| draw_x), if (slot < backend.atlas_slot_width.len) backend.atlas_slot_width[slot] -| draw_x else backend.atlas_cell_w -| draw_x);
-    const gh = @min(@min(backend.atlas_slot_draw_h[slot], backend.atlas_cell_h -| draw_y), if (slot < backend.atlas_slot_height.len) backend.atlas_slot_height[slot] -| draw_y else backend.atlas_cell_h -| draw_y);
-    if (gw == 0 or gh == 0) return null;
-    const dest_x = draw.x_px + @as(i32, @intCast(draw_x));
-    const dest_y = draw.y_px + @as(i32, @intCast(draw_y));
-    const clipped = clip_rect.clipRectTopOrigin(surface, dest_x, dest_y, gw, gh) orelse return null;
-    const cols = @min(backend.capabilities().max_atlas_slots, Backend.AtlasTexCols);
-    const slot_x = (slot % cols) * @as(usize, backend.atlas_cell_w);
-    const slot_y = (slot / cols) * @as(usize, backend.atlas_cell_h);
-
-    const clip_dx: usize = @intCast(@max(clipped.x - dest_x, 0));
-    const clip_dy: usize = @intCast(@max(clipped.y - dest_y, 0));
-    return .{
-        .clipped = clipped,
-        .color = draw.color,
-        .tex_u0 = @as(f32, @floatFromInt(slot_x + @as(usize, draw_x) + clip_dx)) / @as(f32, @floatFromInt(backend.atlas_tex_width)),
-        .tex_v0 = @as(f32, @floatFromInt(slot_y + @as(usize, draw_y) + clip_dy)) / @as(f32, @floatFromInt(backend.atlas_tex_height)),
-        .tex_u1 = @as(f32, @floatFromInt(slot_x + @as(usize, draw_x) + clip_dx + @as(usize, @intCast(clipped.w)))) / @as(f32, @floatFromInt(backend.atlas_tex_width)),
-        .tex_v1 = @as(f32, @floatFromInt(slot_y + @as(usize, draw_y) + clip_dy + @as(usize, @intCast(clipped.h)))) / @as(f32, @floatFromInt(backend.atlas_tex_height)),
-    };
-}
-
-fn ensureTextShader(backend: *Backend) bool {
-    if (backend.text_shader_program != 0) return true;
-    if (!hasCurrentContext()) return false;
-    const vertex_src =
-        \\#version 120
-        \\attribute vec2 a_pos;
-        \\attribute vec2 a_uv;
-        \\varying vec2 v_uv;
-        \\void main() {
-        \\    v_uv = a_uv;
-        \\    gl_Position = gl_ModelViewProjectionMatrix * vec4(a_pos, 0.0, 1.0);
-        \\}
-    ;
-    const fragment_src =
-        \\#version 120
-        \\uniform sampler2D u_atlas;
-        \\uniform vec4 u_color;
-        \\varying vec2 v_uv;
-        \\void main() {
-        \\    float alpha = texture2D(u_atlas, v_uv).a;
-        \\    gl_FragColor = vec4(u_color.rgb, u_color.a * alpha);
-        \\}
-    ;
-    const vert = compileShader(c.GL_VERTEX_SHADER, vertex_src) orelse return false;
-    defer c.glDeleteShader(vert);
-    const frag = compileShader(c.GL_FRAGMENT_SHADER, fragment_src) orelse return false;
-    defer c.glDeleteShader(frag);
-    const program = c.glCreateProgram();
-    if (program == 0) return false;
-    c.glAttachShader(program, vert);
-    c.glAttachShader(program, frag);
-    c.glLinkProgram(program);
-    var ok: c.GLint = 0;
-    c.glGetProgramiv(program, c.GL_LINK_STATUS, &ok);
-    if (ok == 0) {
-        c.glDeleteProgram(program);
-        return false;
-    }
-    backend.text_shader_program = program;
-    backend.text_shader_pos_loc = c.glGetAttribLocation(program, "a_pos");
-    backend.text_shader_uv_loc = c.glGetAttribLocation(program, "a_uv");
-    backend.text_shader_color_loc = c.glGetUniformLocation(program, "u_color");
-    backend.text_shader_sampler_loc = c.glGetUniformLocation(program, "u_atlas");
-    return backend.text_shader_pos_loc >= 0 and backend.text_shader_uv_loc >= 0;
-}
-
-fn compileShader(kind: c.GLenum, source: [:0]const u8) ?u32 {
-    const shader = c.glCreateShader(kind);
-    if (shader == 0) return null;
-    var ptr: [*c]const u8 = source.ptr;
-    c.glShaderSource(shader, 1, &ptr, null);
-    c.glCompileShader(shader);
-    var ok: c.GLint = 0;
-    c.glGetShaderiv(shader, c.GL_COMPILE_STATUS, &ok);
-    if (ok == 0) {
-        c.glDeleteShader(shader);
-        return null;
-    }
-    return shader;
-}
-
-fn emitTexturedGlyph(glyph: TexturedGlyph) void {
-    c.glTexCoord2f(glyph.tex_u0, glyph.tex_v0);
-    c.glVertex2f(@floatFromInt(glyph.clipped.x), @floatFromInt(glyph.clipped.y));
-    c.glTexCoord2f(glyph.tex_u1, glyph.tex_v0);
-    c.glVertex2f(@floatFromInt(glyph.clipped.x + glyph.clipped.w), @floatFromInt(glyph.clipped.y));
-    c.glTexCoord2f(glyph.tex_u1, glyph.tex_v1);
-    c.glVertex2f(@floatFromInt(glyph.clipped.x + glyph.clipped.w), @floatFromInt(glyph.clipped.y + glyph.clipped.h));
-    c.glTexCoord2f(glyph.tex_u0, glyph.tex_v1);
-    c.glVertex2f(@floatFromInt(glyph.clipped.x), @floatFromInt(glyph.clipped.y + glyph.clipped.h));
 }
 
 test {

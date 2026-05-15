@@ -676,7 +676,16 @@ fn rasterizeProviderGlyphFromFace(_: anytype, dst: []u8, width: u16, height: u16
             const dx: u16 = @intCast(dx_i);
             const dy: u16 = @intCast(dy_i);
             if (dx >= width or dy >= height) continue;
-            dst[rasterPixelOffset(width, dx, dy)] = bitmapAlpha(bitmap.buffer[0 .. @as(usize, pitch_abs) * @as(usize, bh)], bitmap.pixel_mode, pitch_abs, pitch_is_negative, bw, bh, @intCast(xx), @intCast(yy));
+            dst[rasterPixelOffset(width, dx, dy)] = bitmapAlpha(
+                bitmap.buffer[0 .. @as(usize, pitch_abs) * @as(usize, bh)],
+                bitmap.pixel_mode,
+                pitch_abs,
+                pitch_is_negative,
+                bw,
+                bh,
+                @as(u16, @intCast(xx)),
+                @as(u16, @intCast(yy)),
+            );
         }
     }
     return true;
