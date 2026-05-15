@@ -56,14 +56,7 @@ pub const TextFramePreparer = struct {
     sprite_rasterizer: rasterizer.Rasterizer,
     glyph_lookup: provider_mod.LookupGlyphOp,
     glyph_raster: pipeline.RasterizeGlyphOp,
-    normal_renderable: std.ArrayListUnmanaged(contract.RenderableCell) = .{ .items = &.{}, .capacity = 0 },
-    normal_missing: std.ArrayListUnmanaged(contract.MissingGlyph) = .{ .items = &.{}, .capacity = 0 },
-    normal_sprite_draws: std.ArrayListUnmanaged(contract.TextSpriteDraw) = .{ .items = &.{}, .capacity = 0 },
-    normal_background_draws: std.ArrayListUnmanaged(contract.TextBackgroundDraw) = .{ .items = &.{}, .capacity = 0 },
-    normal_clear_draws: std.ArrayListUnmanaged(contract.TextClearDraw) = .{ .items = &.{}, .capacity = 0 },
-    normal_decoration_draws: std.ArrayListUnmanaged(contract.TextDecorationDraw) = .{ .items = &.{}, .capacity = 0 },
-    normal_cursor_draws: std.ArrayListUnmanaged(contract.TextCursorDraw) = .{ .items = &.{}, .capacity = 0 },
-    normal_raster_reqs: std.ArrayListUnmanaged(pipeline.RasterizeRequest) = .{ .items = &.{}, .capacity = 0 },
+    direct_normal: DirectNormalScratch = .{},
 
     pub fn init(allocator: std.mem.Allocator) TextFramePreparer {
         return initCapacity(allocator, 4096) catch unreachable;
@@ -89,14 +82,7 @@ pub const TextFramePreparer = struct {
     }
 
     pub fn deinit(self: *TextFramePreparer) void {
-        self.normal_raster_reqs.deinit(self.allocator);
-        self.normal_cursor_draws.deinit(self.allocator);
-        self.normal_decoration_draws.deinit(self.allocator);
-        self.normal_clear_draws.deinit(self.allocator);
-        self.normal_background_draws.deinit(self.allocator);
-        self.normal_sprite_draws.deinit(self.allocator);
-        self.normal_missing.deinit(self.allocator);
-        self.normal_renderable.deinit(self.allocator);
+        self.direct_normal.deinit(self.allocator);
         self.atlas.deinit();
         self.* = undefined;
     }
@@ -107,8 +93,9 @@ pub const TextFramePreparer = struct {
     }
 
     pub fn prepareCellsWithSessionOptions(self: *TextFramePreparer, cells: []const types.CellInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: PrepareOptions) !OwnedPreparedTextFrame {
-        if (try self.prepareDirectNormal(.{ .raw_cells = cells }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
-            return self.finishDirectNormalFrame(direct.damage, direct.lane_report, direct.build, .{});
+        var lane_report = text_lane.LaneReport{};
+        if (try self.prepareDirectNormal(.{ .raw_cells = cells }, .require_all_normal, grid_metrics, session, options, &lane_report)) |direct| {
+            return self.finishNormalOnlyFrame(direct, lane_report, .{});
         }
         var timings = PrepareTimings{};
         const sparse_start_ns = monotonicNs();
@@ -119,8 +106,9 @@ pub const TextFramePreparer = struct {
     }
 
     pub fn prepareCellTextInputsWithSessionOptions(self: *TextFramePreparer, inputs: []const cluster.CellTextInput, grid_metrics: contract.GridMetrics, session: font_session.FontSession, options: PrepareOptions) !OwnedPreparedTextFrame {
-        if (try self.prepareDirectNormal(.{ .inputs = inputs }, .require_all_normal, grid_metrics, session, options, null)) |direct| {
-            return self.finishDirectNormalFrame(direct.damage, direct.lane_report, direct.build, .{});
+        var lane_report = text_lane.LaneReport{};
+        if (try self.prepareDirectNormal(.{ .inputs = inputs }, .require_all_normal, grid_metrics, session, options, &lane_report)) |direct| {
+            return self.finishNormalOnlyFrame(direct, lane_report, .{});
         }
         var text_cache = try cluster.buildLineTextCacheFromInputs(self.allocator, inputs);
         errdefer text_cache.deinit();
@@ -160,15 +148,18 @@ pub const TextFramePreparer = struct {
         if (final_lane_report.complex_cells == 0) {
             owned_text_cache.deinit();
             clusters.deinit();
-            return self.finishPreparedDirectNormalFrame(owned_renderable, direct.build, final_lane_report, timings);
+            owned_renderable.deinit();
+            return self.finishNormalOnlyFrame(direct, final_lane_report, timings);
         }
 
         return self.prepareComplexFrame(
-            owned_text_cache,
-            owned_renderable,
-            clusters,
-            direct,
-            final_lane_report,
+            .{
+                .text_cache = owned_text_cache,
+                .renderable = owned_renderable,
+                .clusters = clusters,
+                .direct = direct,
+                .lane_report = final_lane_report,
+            },
             grid_metrics,
             session,
             options,
@@ -178,76 +169,27 @@ pub const TextFramePreparer = struct {
 
     fn prepareComplexFrame(
         self: *TextFramePreparer,
-        owned_text_cache: cluster.OwnedLineTextCache,
-        owned_renderable: cluster.OwnedRenderableCells,
-        clusters: cluster.OwnedClusters,
-        direct: DirectNormalPrepare,
-        lane_report: text_lane.LaneReport,
+        prepared: PreparedComplexFrame,
         grid_metrics: contract.GridMetrics,
         session: font_session.FontSession,
         options: PrepareOptions,
         timings: *PrepareTimings,
     ) !OwnedPreparedTextFrame {
-        var final_lane_report = lane_report;
-        var complex = try cluster.selectComplexWithDamage(self.allocator, owned_renderable.cells, owned_text_cache.view(), clusters.clusters, grid_metrics, options.scene.damage);
+        var final_prepared = prepared;
+        errdefer final_prepared.deinit(self.allocator);
+        var complex = try cluster.selectComplexWithDamage(self.allocator, final_prepared.renderable.cells, final_prepared.text_cache.view(), final_prepared.clusters.clusters, grid_metrics, options.scene.damage);
         defer complex.deinit();
-        std.debug.assert(complex.cells.len == final_lane_report.complex_cells);
-        std.debug.assert(complex.clusters.len == final_lane_report.complex_clusters);
+        std.debug.assert(complex.cells.len == final_prepared.lane_report.complex_cells);
+        std.debug.assert(complex.clusters.len == final_prepared.lane_report.complex_clusters);
 
-        var runs = try resolveComplexRuns(self, owned_text_cache.view(), complex.clusters, grid_metrics, session, timings, &final_lane_report, complex.cells);
-        errdefer runs.deinit();
-
-        var shaped_runs = try shapeComplexRuns(self, runs.runs, owned_text_cache.view(), complex.clusters, session.metrics, timings, &final_lane_report, complex.cells);
-        errdefer shaped_runs.deinit();
-
-        var grouped = try groupComplexRuns(self, shaped_runs.runs, runs.sprite_routes, complex.clusters, session.metrics, timings, &final_lane_report, owned_text_cache.view(), complex.cells);
-        errdefer grouped.deinit();
-
-        return self.finishPreparedComplexFrame(
-            owned_text_cache,
-            owned_renderable,
-            clusters,
-            direct,
-            final_lane_report,
-            grid_metrics,
-            session,
-            options,
-            timings,
-            complex.cells,
-            runs,
-            shaped_runs,
-            grouped,
-        );
-    }
-
-    fn finishPreparedComplexFrame(
-        self: *TextFramePreparer,
-        owned_text_cache: cluster.OwnedLineTextCache,
-        owned_renderable: cluster.OwnedRenderableCells,
-        clusters: cluster.OwnedClusters,
-        direct: DirectNormalPrepare,
-        lane_report: text_lane.LaneReport,
-        grid_metrics: contract.GridMetrics,
-        session: font_session.FontSession,
-        options: PrepareOptions,
-        timings: *PrepareTimings,
-        complex_cells: []const contract.RenderableCell,
-        runs: font_resolver.OwnedResolvedRuns,
-        shaped_runs: shape_run.OwnedShapedRuns,
-        grouped: PreparedGroups,
-    ) !OwnedPreparedTextFrame {
-        var final_lane_report = lane_report;
-        var final_text_cache = owned_text_cache;
-        var final_renderable = owned_renderable;
-        var final_clusters = clusters;
-        var final_runs = runs;
-        var final_shaped_runs = shaped_runs;
-        var final_grouped = grouped;
+        final_prepared.runs = try resolveComplexRuns(self, final_prepared.text_cache.view(), complex.clusters, grid_metrics, session, timings, &final_prepared.lane_report, complex.cells);
+        final_prepared.shaped_runs = try shapeComplexRuns(self, final_prepared.runs.?.runs, final_prepared.text_cache.view(), complex.clusters, session.metrics, timings, &final_prepared.lane_report, complex.cells);
+        final_prepared.grouped = try groupComplexRuns(self, final_prepared.shaped_runs.?.runs, final_prepared.runs.?.sprite_routes, complex.clusters, session.metrics, timings, &final_prepared.lane_report, final_prepared.text_cache.view(), complex.cells);
         const scene_start_ns = monotonicNs();
-        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex_cells, final_grouped.groups.groups, final_runs.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
+        var scene = try scene_mod.buildSceneWithAtlasCacheOptions(self.allocator, complex.cells, final_prepared.grouped.?.groups.groups, final_prepared.runs.?.missing, session.metrics, grid_metrics, &self.atlas, options.scene);
         timings.scene_us = elapsedUs(scene_start_ns);
         errdefer scene.deinit();
-        for (scene.scene.sprite_draws) |draw| final_lane_report.recordLegacySceneSpriteDraw(final_text_cache.view(), complex_cells, draw);
+        for (scene.scene.sprite_draws) |draw| final_prepared.lane_report.recordLegacySceneSpriteDraw(final_prepared.text_cache.view(), complex.cells, draw);
 
         const raster_start_ns = monotonicNs();
         var raster_plan = try rasterizer.rasterizeRequestsWithRasterizer(self.allocator, self.sprite_rasterizer, scene.scene.raster_requests);
@@ -255,29 +197,25 @@ pub const TextFramePreparer = struct {
         errdefer raster_plan.deinit();
         const complex_sprite_cache_hits = scene.scene.sprite_draws.len - scene.scene.raster_requests.len;
 
-        const merged = try self.mergePreparedScene(direct, &scene, &raster_plan);
+        const merged = try self.mergePreparedScene(final_prepared.direct, &scene, &raster_plan);
+        final_prepared.direct.outputs = &.{};
+        final_prepared.direct.outputs_owned = false;
 
-        final_lane_report.assertValid();
+        final_prepared.lane_report.assertValid();
         var counters = pipeline.TextPrepareCounters{
-            .cell_texts = final_lane_report.visible_cells,
-            .clusters = final_lane_report.normal_clusters + final_lane_report.complex_clusters,
-            .resolved_runs = final_runs.runs.len,
-            .shaped_runs = final_shaped_runs.runs.len,
-            .glyph_groups = final_grouped.groups.groups.len,
-            .sprite_cache_hits = @intCast((self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len) + complex_sprite_cache_hits),
-            .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len + scene.scene.raster_requests.len),
+            .cell_texts = final_prepared.lane_report.visible_cells,
+            .clusters = final_prepared.lane_report.normal_clusters + final_prepared.lane_report.complex_clusters,
+            .resolved_runs = final_prepared.runs.?.runs.len,
+            .shaped_runs = final_prepared.shaped_runs.?.runs.len,
+            .glyph_groups = final_prepared.grouped.?.groups.groups.len,
+            .sprite_cache_hits = @intCast((self.direct_normal.sprite_draws.items.len - self.direct_normal.raster_reqs.items.len) + complex_sprite_cache_hits),
+            .sprite_cache_misses = @intCast(self.direct_normal.raster_reqs.items.len + scene.scene.raster_requests.len),
             .rasterized_sprites = @intCast(merged.raster_plan.outputs.len),
             .missing_glyphs = merged.scene.scene.missing.len,
         };
-        for (final_shaped_runs.runs) |run| counters.shaped_glyphs += run.glyphs.len;
+        for (final_prepared.shaped_runs.?.runs) |run| counters.shaped_glyphs += run.glyphs.len;
         applyCounters(&self.counters, counters);
-
-        final_renderable.deinit();
-        final_text_cache.deinit();
-        final_clusters.deinit();
-        final_grouped.deinit();
-        final_shaped_runs.deinit();
-        final_runs.deinit();
+        final_prepared.deinit(self.allocator);
 
         return .{
             .scene = merged.scene,
@@ -288,23 +226,23 @@ pub const TextFramePreparer = struct {
 
     fn mergePreparedScene(
         self: *TextFramePreparer,
-        direct: DirectNormalPrepare,
+        direct: DirectNormalProduct,
         scene: *scene_mod.OwnedTextScene,
         raster_plan: *rasterizer.OwnedRasterPlan,
     ) !PreparedSceneMerge {
-        const merged_clear_draws = try cloneSlice(contract.TextClearDraw, self.allocator, self.normal_clear_draws.items);
+        const merged_clear_draws = try cloneSlice(contract.TextClearDraw, self.allocator, self.direct_normal.clear_draws.items);
         errdefer self.allocator.free(merged_clear_draws);
-        const merged_cursor_draws = try cloneSlice(contract.TextCursorDraw, self.allocator, self.normal_cursor_draws.items);
+        const merged_cursor_draws = try cloneSlice(contract.TextCursorDraw, self.allocator, self.direct_normal.cursor_draws.items);
         errdefer self.allocator.free(merged_cursor_draws);
-        const merged_background_draws = try mergeFirstCellSlices(contract.TextBackgroundDraw, self.allocator, self.normal_background_draws.items, scene.scene.background_draws);
+        const merged_background_draws = try mergeFirstCellSlices(contract.TextBackgroundDraw, self.allocator, self.direct_normal.background_draws.items, scene.scene.background_draws);
         errdefer self.allocator.free(merged_background_draws);
-        const merged_sprite_draws = try mergeFirstCellSlices(contract.TextSpriteDraw, self.allocator, self.normal_sprite_draws.items, scene.scene.sprite_draws);
+        const merged_sprite_draws = try mergeFirstCellSlices(contract.TextSpriteDraw, self.allocator, self.direct_normal.sprite_draws.items, scene.scene.sprite_draws);
         errdefer self.allocator.free(merged_sprite_draws);
-        const merged_decoration_draws = try mergeFirstCellSlices(contract.TextDecorationDraw, self.allocator, self.normal_decoration_draws.items, scene.scene.decoration_draws);
+        const merged_decoration_draws = try mergeFirstCellSlices(contract.TextDecorationDraw, self.allocator, self.direct_normal.decoration_draws.items, scene.scene.decoration_draws);
         errdefer self.allocator.free(merged_decoration_draws);
-        const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.normal_missing.items, scene.scene.missing);
+        const merged_missing = try mergeSlices(contract.MissingGlyph, self.allocator, self.direct_normal.missing.items, scene.scene.missing);
         errdefer self.allocator.free(merged_missing);
-        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.build.outputs, direct.build.outputs_owned, raster_plan);
+        var merged_raster_plan = try mergeRasterPlans(self.allocator, direct.outputs, direct.outputs_owned, raster_plan);
         errdefer merged_raster_plan.deinit();
 
         installMergedScene(scene, direct.damage, .{
@@ -318,32 +256,9 @@ pub const TextFramePreparer = struct {
         return .{ .scene = scene.*, .raster_plan = merged_raster_plan };
     }
 
-    fn finishDirectNormalFrame(
-        self: *TextFramePreparer,
-        damage: DirectDamage,
-        lane_report: text_lane.LaneReport,
-        direct: DirectNormalBuild,
-        timings: PrepareTimings,
-    ) OwnedPreparedTextFrame {
-        return self.finishNormalOnlyFrame(damage, direct, lane_report, timings);
-    }
-
-    fn finishPreparedDirectNormalFrame(
-        self: *TextFramePreparer,
-        owned_renderable: cluster.OwnedRenderableCells,
-        direct: DirectNormalBuild,
-        lane_report: text_lane.LaneReport,
-        timings: PrepareTimings,
-    ) OwnedPreparedTextFrame {
-        var final_renderable = owned_renderable;
-        final_renderable.deinit();
-        return self.finishNormalOnlyFrame(direct.damage, direct, lane_report, timings);
-    }
-
     fn finishNormalOnlyFrame(
         self: *TextFramePreparer,
-        damage: DirectDamage,
-        direct: DirectNormalBuild,
+        direct: DirectNormalProduct,
         lane_report: text_lane.LaneReport,
         timings: PrepareTimings,
     ) OwnedPreparedTextFrame {
@@ -352,7 +267,7 @@ pub const TextFramePreparer = struct {
         const counters = directNormalCounters(self, final_lane_report, direct);
         applyCounters(&self.counters, counters);
         return .{
-            .scene = directScene(self.allocator, damage, self),
+            .scene = directScene(self.allocator, direct.damage, self),
             .raster_plan = .{ .allocator = self.allocator, .outputs = direct.outputs, .owned = direct.outputs_owned },
             .timings = timings,
         };
@@ -365,21 +280,19 @@ pub const TextFramePreparer = struct {
         grid_metrics: contract.GridMetrics,
         session: font_session.FontSession,
         options: PrepareOptions,
-        lane_report_ptr: ?*text_lane.LaneReport,
-    ) !?DirectNormalPrepare {
+        lane_report: *text_lane.LaneReport,
+    ) !?DirectNormalProduct {
         const damage = DirectDamage.init(options.scene.damage, grid_metrics.rows, session.metrics.cell_h_px);
-        var direct_lane_report = text_lane.LaneReport{};
-        const lane_report = lane_report_ptr orelse &direct_lane_report;
         const source_len = directNormalSourceLen(source);
         const visible_count = countDirectNormalVisible(source, damage, grid_metrics, policy, lane_report) orelse return null;
         try initDirectNormalBuffers(self, visible_count, source_len, grid_metrics.rows);
         try appendDirectNormalVisible(self, source, damage, grid_metrics, session, policy, lane_report);
 
-        appendDirectBackgrounds(&self.normal_background_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectClears(&self.normal_clear_draws, session.metrics, grid_metrics, damage);
-        appendDirectDecorations(&self.normal_decoration_draws, self.normal_renderable.items, session.metrics, grid_metrics, damage);
-        appendDirectCursor(&self.normal_cursor_draws, options.scene.cursor, session.metrics, damage);
-        return .{ .damage = damage, .lane_report = lane_report.*, .build = try finishDirectNormalScene(self, damage, lane_report) };
+        appendDirectBackgrounds(&self.direct_normal.background_draws, self.direct_normal.renderable.items, session.metrics, grid_metrics, damage);
+        appendDirectClears(&self.direct_normal.clear_draws, session.metrics, grid_metrics, damage);
+        appendDirectDecorations(&self.direct_normal.decoration_draws, self.direct_normal.renderable.items, session.metrics, grid_metrics, damage);
+        appendDirectCursor(&self.direct_normal.cursor_draws, options.scene.cursor, session.metrics, damage);
+        return try finishDirectNormalScene(self, damage, lane_report);
     }
 
 };
@@ -396,6 +309,28 @@ const MergedSceneBuffers = struct {
 const PreparedSceneMerge = struct {
     scene: scene_mod.OwnedTextScene,
     raster_plan: rasterizer.OwnedRasterPlan,
+};
+
+const PreparedComplexFrame = struct {
+    text_cache: cluster.OwnedLineTextCache,
+    renderable: cluster.OwnedRenderableCells,
+    clusters: cluster.OwnedClusters,
+    direct: DirectNormalProduct,
+    lane_report: text_lane.LaneReport,
+    runs: ?font_resolver.OwnedResolvedRuns = null,
+    shaped_runs: ?shape_run.OwnedShapedRuns = null,
+    grouped: ?PreparedGroups = null,
+
+    fn deinit(self: *PreparedComplexFrame, allocator: std.mem.Allocator) void {
+        if (self.grouped) |*grouped| grouped.deinit();
+        if (self.shaped_runs) |*shaped_runs| shaped_runs.deinit();
+        if (self.runs) |*runs| runs.deinit();
+        self.direct.deinit(allocator);
+        self.clusters.deinit();
+        self.renderable.deinit();
+        self.text_cache.deinit();
+        self.* = undefined;
+    }
 };
 
 const PreparedGroups = struct {
@@ -565,16 +500,18 @@ pub const OwnedPreparedTextFrame = struct {
     }
 };
 
-const DirectNormalBuild = struct {
+const DirectNormalProduct = struct {
     damage: DirectDamage,
     outputs: []rasterizer.RasterSpriteOutput = &.{},
     outputs_owned: bool = false,
-};
 
-const DirectNormalPrepare = struct {
-    damage: DirectDamage,
-    lane_report: text_lane.LaneReport,
-    build: DirectNormalBuild,
+    fn deinit(self: *DirectNormalProduct, allocator: std.mem.Allocator) void {
+        if (!self.outputs_owned) return;
+        for (self.outputs) |*out| out.deinit();
+        allocator.free(self.outputs);
+        self.outputs = &.{};
+        self.outputs_owned = false;
+    }
 };
 
 const DirectNormalPolicy = enum {
@@ -628,14 +565,14 @@ fn applyCounters(total: *pipeline.TextPrepareCounters, delta: pipeline.TextPrepa
     total.missing_glyphs += delta.missing_glyphs;
 }
 
-fn directNormalCounters(self: *TextFramePreparer, lane_report: text_lane.LaneReport, direct: DirectNormalBuild) pipeline.TextPrepareCounters {
+fn directNormalCounters(self: *TextFramePreparer, lane_report: text_lane.LaneReport, direct: DirectNormalProduct) pipeline.TextPrepareCounters {
     return .{
         .cell_texts = lane_report.visible_cells,
         .clusters = lane_report.normal_clusters,
-        .sprite_cache_hits = @intCast(self.normal_sprite_draws.items.len - self.normal_raster_reqs.items.len),
-        .sprite_cache_misses = @intCast(self.normal_raster_reqs.items.len),
+        .sprite_cache_hits = @intCast(self.direct_normal.sprite_draws.items.len - self.direct_normal.raster_reqs.items.len),
+        .sprite_cache_misses = @intCast(self.direct_normal.raster_reqs.items.len),
         .rasterized_sprites = @intCast(direct.outputs.len),
-        .missing_glyphs = self.normal_missing.items.len,
+        .missing_glyphs = self.direct_normal.missing.items.len,
     };
 }
 
@@ -643,13 +580,13 @@ fn directScene(allocator: std.mem.Allocator, damage: DirectDamage, preparer: *co
     return .{ .allocator = allocator, .scene = .{
         .full_redraw = damage.full,
         .scroll_up_px = damage.scroll_up_px,
-        .clear_draws = preparer.normal_clear_draws.items,
-        .background_draws = preparer.normal_background_draws.items,
-        .sprite_draws = preparer.normal_sprite_draws.items,
-        .decoration_draws = preparer.normal_decoration_draws.items,
-        .cursor_draws = preparer.normal_cursor_draws.items,
+        .clear_draws = preparer.direct_normal.clear_draws.items,
+        .background_draws = preparer.direct_normal.background_draws.items,
+        .sprite_draws = preparer.direct_normal.sprite_draws.items,
+        .decoration_draws = preparer.direct_normal.decoration_draws.items,
+        .cursor_draws = preparer.direct_normal.cursor_draws.items,
         .raster_requests = &.{},
-        .missing = preparer.normal_missing.items,
+        .missing = preparer.direct_normal.missing.items,
     }, .owned = false };
 }
 
@@ -709,23 +646,7 @@ fn recordDirectNormalLane(lane_report: *text_lane.LaneReport, text: contract.Cel
 }
 
 fn initDirectNormalBuffers(self: *TextFramePreparer, visible_count: u32, cell_count: u32, rows: u16) !void {
-    std.debug.assert(cell_count >= visible_count);
-    try self.normal_renderable.ensureTotalCapacity(self.allocator, @intCast(cell_count));
-    try self.normal_missing.ensureTotalCapacity(self.allocator, @intCast(cell_count));
-    try self.normal_sprite_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count));
-    try self.normal_background_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count));
-    try self.normal_clear_draws.ensureTotalCapacity(self.allocator, @intCast(rows));
-    try self.normal_decoration_draws.ensureTotalCapacity(self.allocator, @intCast(cell_count * 2));
-    try self.normal_cursor_draws.ensureTotalCapacity(self.allocator, 4);
-    try self.normal_raster_reqs.ensureTotalCapacity(self.allocator, @intCast(cell_count));
-    self.normal_renderable.clearRetainingCapacity();
-    self.normal_missing.clearRetainingCapacity();
-    self.normal_sprite_draws.clearRetainingCapacity();
-    self.normal_background_draws.clearRetainingCapacity();
-    self.normal_clear_draws.clearRetainingCapacity();
-    self.normal_decoration_draws.clearRetainingCapacity();
-    self.normal_cursor_draws.clearRetainingCapacity();
-    self.normal_raster_reqs.clearRetainingCapacity();
+    try self.direct_normal.reset(self.allocator, visible_count, cell_count, rows);
 }
 
 fn appendDirectNormalRenderable(
@@ -736,11 +657,11 @@ fn appendDirectNormalRenderable(
     session: font_session.FontSession,
     lane_report: *text_lane.LaneReport,
 ) !void {
-    self.normal_renderable.appendAssumeCapacity(renderable);
+    self.direct_normal.renderable.appendAssumeCapacity(renderable);
     if (text.first_cp == 0 or text.first_cp == '\t') return;
 
     const face = resolveDirectNormalFace(session, renderable, text) orelse {
-        self.normal_missing.appendAssumeCapacity(.{
+        self.direct_normal.missing.appendAssumeCapacity(.{
             .codepoint = text.first_cp,
             .style = renderable.style,
             .presentation = renderable.presentation,
@@ -754,7 +675,7 @@ fn appendDirectNormalRenderable(
     const key = sprite_key.hashGlyphLocal(face.id, lookup.glyph_id, span, session.metrics);
     const residency = self.atlas.reserve(key, false);
     if (residency.pending) {
-        self.normal_raster_reqs.appendAssumeCapacity(.{
+        self.direct_normal.raster_reqs.appendAssumeCapacity(.{
             .face_id = face.id.value,
             .glyph_id = lookup.glyph_id,
             .atlas_key = key.value,
@@ -766,7 +687,7 @@ fn appendDirectNormalRenderable(
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     const col = renderable.first_cell % cols;
     const row = renderable.first_cell / cols;
-    self.normal_sprite_draws.appendAssumeCapacity(.{
+    self.direct_normal.sprite_draws.appendAssumeCapacity(.{
         .sprite = residency.position,
         .x_px = @as(i32, @intCast(col * @as(u32, session.metrics.cell_w_px))),
         .y_px = @as(i32, @intCast(row * @as(u32, session.metrics.cell_h_px))),
@@ -780,19 +701,19 @@ fn appendDirectNormalRenderable(
     lane_report.direct_normal_draws += 1;
 }
 
-fn finishDirectNormalScene(self: *TextFramePreparer, damage: DirectDamage, lane_report: *text_lane.LaneReport) !DirectNormalBuild {
+fn finishDirectNormalScene(self: *TextFramePreparer, damage: DirectDamage, lane_report: *text_lane.LaneReport) !DirectNormalProduct {
     var outputs: []rasterizer.RasterSpriteOutput = &.{};
     var outputs_owned = false;
-    if (self.normal_raster_reqs.items.len > 0) {
-        lane_report.direct_normal_raster_misses = self.normal_raster_reqs.items.len;
-        outputs = try self.allocator.alloc(rasterizer.RasterSpriteOutput, self.normal_raster_reqs.items.len);
+    if (self.direct_normal.raster_reqs.items.len > 0) {
+        lane_report.direct_normal_raster_misses = self.direct_normal.raster_reqs.items.len;
+        outputs = try self.allocator.alloc(rasterizer.RasterSpriteOutput, self.direct_normal.raster_reqs.items.len);
         outputs_owned = true;
         var filled: usize = 0;
         errdefer {
             for (outputs[0..filled]) |*out| out.deinit();
             self.allocator.free(outputs);
         }
-        for (self.normal_raster_reqs.items, 0..) |req, idx| {
+        for (self.direct_normal.raster_reqs.items, 0..) |req, idx| {
             var raster = try self.glyph_raster.rasterize(self.allocator, req);
             outputs[idx] = .{
                 .allocator = raster.allocator,
@@ -807,6 +728,49 @@ fn finishDirectNormalScene(self: *TextFramePreparer, damage: DirectDamage, lane_
     }
     return .{ .damage = damage, .outputs = outputs, .outputs_owned = outputs_owned };
 }
+
+const DirectNormalScratch = struct {
+    renderable: std.ArrayListUnmanaged(contract.RenderableCell) = .{ .items = &.{}, .capacity = 0 },
+    missing: std.ArrayListUnmanaged(contract.MissingGlyph) = .{ .items = &.{}, .capacity = 0 },
+    sprite_draws: std.ArrayListUnmanaged(contract.TextSpriteDraw) = .{ .items = &.{}, .capacity = 0 },
+    background_draws: std.ArrayListUnmanaged(contract.TextBackgroundDraw) = .{ .items = &.{}, .capacity = 0 },
+    clear_draws: std.ArrayListUnmanaged(contract.TextClearDraw) = .{ .items = &.{}, .capacity = 0 },
+    decoration_draws: std.ArrayListUnmanaged(contract.TextDecorationDraw) = .{ .items = &.{}, .capacity = 0 },
+    cursor_draws: std.ArrayListUnmanaged(contract.TextCursorDraw) = .{ .items = &.{}, .capacity = 0 },
+    raster_reqs: std.ArrayListUnmanaged(pipeline.RasterizeRequest) = .{ .items = &.{}, .capacity = 0 },
+
+    fn deinit(self: *DirectNormalScratch, allocator: std.mem.Allocator) void {
+        self.raster_reqs.deinit(allocator);
+        self.cursor_draws.deinit(allocator);
+        self.decoration_draws.deinit(allocator);
+        self.clear_draws.deinit(allocator);
+        self.background_draws.deinit(allocator);
+        self.sprite_draws.deinit(allocator);
+        self.missing.deinit(allocator);
+        self.renderable.deinit(allocator);
+        self.* = undefined;
+    }
+
+    fn reset(self: *DirectNormalScratch, allocator: std.mem.Allocator, visible_count: u32, cell_count: u32, rows: u16) !void {
+        std.debug.assert(cell_count >= visible_count);
+        try self.renderable.ensureTotalCapacity(allocator, @intCast(cell_count));
+        try self.missing.ensureTotalCapacity(allocator, @intCast(cell_count));
+        try self.sprite_draws.ensureTotalCapacity(allocator, @intCast(cell_count));
+        try self.background_draws.ensureTotalCapacity(allocator, @intCast(cell_count));
+        try self.clear_draws.ensureTotalCapacity(allocator, @intCast(rows));
+        try self.decoration_draws.ensureTotalCapacity(allocator, @intCast(cell_count * 2));
+        try self.cursor_draws.ensureTotalCapacity(allocator, 4);
+        try self.raster_reqs.ensureTotalCapacity(allocator, @intCast(cell_count));
+        self.renderable.clearRetainingCapacity();
+        self.missing.clearRetainingCapacity();
+        self.sprite_draws.clearRetainingCapacity();
+        self.background_draws.clearRetainingCapacity();
+        self.clear_draws.clearRetainingCapacity();
+        self.decoration_draws.clearRetainingCapacity();
+        self.cursor_draws.clearRetainingCapacity();
+        self.raster_reqs.clearRetainingCapacity();
+    }
+};
 
 fn resolveDirectNormalFace(session: font_session.FontSession, cell: contract.RenderableCell, text: contract.CellText) ?font_session.FontFaceRecord {
     return session.findStyle(cell.style, cell.presentation, text) orelse session.findFallback(cell.style, cell.presentation, text);
