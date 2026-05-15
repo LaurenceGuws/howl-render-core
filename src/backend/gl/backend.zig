@@ -8,6 +8,7 @@ const std = @import("std");
 const render = @import("../../render.zig").Render;
 const shared_text_cache = @import("../shared/text_cache.zig");
 const atlas_mod = @import("internal/atlas.zig");
+const draw_pass_mod = @import("internal/draw_pass.zig");
 const c_api = @import("internal/c_api.zig");
 const provider_mod = @import("internal/provider.zig");
 const c = c_api.c;
@@ -145,7 +146,7 @@ pub const Backend = struct {
     atlas_slot_has_alpha: []bool = &.{},
     atlas_slot_gpu_uploaded: []bool = &.{},
     atlas_next_slot: u32 = 0,
-    draw_pass: atlas_mod.DrawPass = .{},
+    draw_pass: draw_pass_mod.DrawPass = .{},
     ft_lib: ?FtLibrary = null,
     ft_face: ?FtFace = null,
     hb_font: ?HbFont = null,
@@ -180,7 +181,7 @@ pub const Backend = struct {
     /// Release backend resources and prevent further rendering.
     pub fn deinit(self: *Backend) void {
         self.deinitAtlasStorage();
-        atlas_mod.deinitDrawResources(self);
+        draw_pass_mod.deinitDrawResources(self);
         self.resetLoadedFace();
         self.shape_run_cache.deinit();
         self.face_text_cache.deinit();
@@ -189,7 +190,7 @@ pub const Backend = struct {
             _ = c.FT_Done_FreeType(self.ft_lib.?);
             self.ft_lib = null;
         }
-        atlas_mod.deinitTargetObjects(self);
+        draw_pass_mod.deinitTargetObjects(self);
         self.target_texture = null;
         self.owns_target_texture = false;
         self.target_content_valid = false;
@@ -313,7 +314,7 @@ pub const Backend = struct {
         if (surface_changed) self.surface_epoch +%= 1;
         if (surface_changed) self.target_content_valid = false;
         if (surface_changed and self.owns_target_texture and self.target_texture != null and hasCurrentContext()) {
-            atlas_mod.resizeOwnedTargetTexture(self);
+            draw_pass_mod.resizeOwnedTargetTexture(self);
         }
     }
 
@@ -322,17 +323,17 @@ pub const Backend = struct {
         if (!hasCurrentContext()) {
             if (builtin.is_test) {
                 self.pass_count += 1;
-                return atlas_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
+                return draw_pass_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
             }
             return error.NoContext;
         }
-        try atlas_mod.prepareSceneTarget(self);
-        try atlas_mod.beginTargetPass(self);
-        defer atlas_mod.endTargetPass(self);
-        atlas_mod.drawTextScene(self, self.config.surface_px, scene);
+        try draw_pass_mod.prepareSceneTarget(self);
+        try draw_pass_mod.beginTargetPass(self);
+        defer draw_pass_mod.endTargetPass(self);
+        draw_pass_mod.drawTextScene(self, self.config.surface_px, scene);
         self.target_content_valid = true;
         self.pass_count += 1;
-        return atlas_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
+        return draw_pass_mod.textSceneRenderReport(TextSceneRenderReport, self, scene);
     }
 
     fn slotCached(self: *const Backend, slot: u32, key: ResolvedGlyphKey, width: u16, height: u16) bool {
