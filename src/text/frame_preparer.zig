@@ -1,14 +1,6 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
-const c = @cImport({
-    if (builtin.target.abi == .android) {
-        @cDefine("_Nonnull", "");
-        @cDefine("_Nullable", "");
-        @cDefine("_Null_unspecified", "");
-    }
-    @cInclude("time.h");
-});
 const contract = @import("contract.zig");
 const pipeline = @import("pipeline.zig");
 const atlas_cache = @import("atlas_cache.zig");
@@ -17,7 +9,6 @@ const font_resolver = @import("font_resolver.zig");
 const font_session = @import("font_session.zig");
 const ft_hb_provider = @import("ft_hb_provider.zig");
 const grouping = @import("grouping.zig");
-const metrics = @import("metrics.zig");
 const provider = @import("provider.zig");
 const rasterizer = @import("rasterizer.zig");
 const scene = @import("scene.zig");
@@ -38,13 +29,48 @@ pub const PrepareTimings = struct {
 };
 
 fn monotonicNs() u64 {
-    var ts: c.struct_timespec = undefined;
-    if (c.clock_gettime(c.CLOCK_MONOTONIC, &ts) != 0) return 0;
-    return @as(u64, @intCast(ts.tv_sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.tv_nsec));
+    var ts: std.posix.timespec = undefined;
+    if (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &ts)) != .SUCCESS) return 0;
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
 fn elapsedUs(start_ns: u64) u64 {
     return @divTrunc(monotonicNs() -| start_ns, std.time.ns_per_us);
+}
+
+fn defaultFontMetrics(cell_metrics: contract.CellMetrics) contract.FontMetrics {
+    const thickness: f32 = @floatFromInt(scaledDecorationThickness(cell_metrics.cell_h_px));
+    const baseline: f32 = @floatFromInt(cell_metrics.baseline_px);
+    return .{
+        .ascent_px = baseline,
+        .descent_px = @floatFromInt(@as(i32, cell_metrics.cell_h_px) - @as(i32, cell_metrics.baseline_px)),
+        .line_gap_px = 0,
+        .underline_pos_px = baseline + thickness,
+        .underline_thickness_px = thickness,
+        .strikethrough_pos_px = baseline / 2.0,
+        .strikethrough_thickness_px = thickness,
+    };
+}
+
+fn decorationGeometry(cell_metrics: contract.CellMetrics, font_metrics: contract.FontMetrics) contract.DecorationGeometry {
+    return .{
+        .underline_y_px = std.math.clamp(@as(i32, @intFromFloat(@round(font_metrics.underline_pos_px))), 0, @as(i32, @intCast(cell_metrics.cell_h_px - 1))),
+        .underline_h_px = @max(@as(u16, @intFromFloat(@round(font_metrics.underline_thickness_px))), 1),
+        .strikethrough_y_px = std.math.clamp(@as(i32, @intFromFloat(@round(font_metrics.strikethrough_pos_px))), 0, @as(i32, @intCast(cell_metrics.cell_h_px - 1))),
+        .strikethrough_h_px = @max(@as(u16, @intFromFloat(@round(font_metrics.strikethrough_thickness_px))), 1),
+    };
+}
+
+fn cursorGeometry(cell_metrics: contract.CellMetrics) contract.CursorGeometry {
+    return .{
+        .beam_w_px = @max(cell_metrics.cell_w_px / 8, 1),
+        .underline_h_px = scaledDecorationThickness(cell_metrics.cell_h_px),
+        .hollow_stroke_px = 2,
+    };
+}
+
+fn scaledDecorationThickness(cell_h_px: u16) u16 {
+    return @intCast(@max(@divTrunc(@as(u32, @max(cell_h_px, 1)) + 15, 16), 1));
 }
 
 pub const TextFramePreparer = struct {
@@ -1040,7 +1066,7 @@ fn appendDirectCursor(
     if (!damage.full and !directRowDirty(damage, cursor_value.cell_row)) return;
     const base_x: i32 = @as(i32, @intCast(cursor_value.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
     const base_y: i32 = @as(i32, @intCast(cursor_value.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
-    const geom = metrics.cursorGeometry(cell_metrics);
+    const geom = cursorGeometry(cell_metrics);
     switch (cursor_value.shape) {
         .block => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
         .beam => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
@@ -1062,8 +1088,8 @@ fn appendDirectDecorations(
     grid_metrics: contract.GridMetrics,
     damage: DirectDamage,
 ) void {
-    const font_metrics = metrics.defaultFontMetrics(cell_metrics);
-    const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
+    const font_metrics = defaultFontMetrics(cell_metrics);
+    const deco = decorationGeometry(cell_metrics, font_metrics);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
         if (!cell.underline and !cell.strikethrough) continue;

@@ -1,37 +1,25 @@
-
 const builtin = @import("builtin");
 
 pub const c = @cImport({
-    if (builtin.target.abi == .android) {
-        @cDefine("_Nonnull", "");
-        @cDefine("_Nullable", "");
-        @cDefine("_Null_unspecified", "");
-    }
-    @cInclude("GLES2/gl2.h");
-    @cInclude("time.h");
     @cInclude("ft2build.h");
     @cInclude("freetype/freetype.h");
-    @cInclude("hb.h");
-    @cInclude("hb-ft.h");
+    @cInclude("harfbuzz/hb.h");
+    @cInclude("harfbuzz/hb-ft.h");
 });
 
 pub const FtLibrary = c.FT_Library;
 pub const FtFace = c.FT_Face;
 pub const HbFont = *c.hb_font_t;
-pub const supports_complex_shaping = builtin.target.abi != .android;
 
 pub fn createHbFont(face: FtFace) ?HbFont {
-    if (!supports_complex_shaping) return null;
     return @ptrCast(c.hb_ft_font_create_referenced(face));
 }
 
 pub fn destroyHbFont(hb_font: ?HbFont) void {
-    if (!supports_complex_shaping) return;
     if (hb_font) |font| c.hb_font_destroy(font);
 }
 
 pub fn shapeGlyphId(hb_font: ?HbFont, face: FtFace, codepoint: u21) c_uint {
-    if (!supports_complex_shaping) return c.FT_Get_Char_Index(face, codepoint);
     if (hb_font) |font| {
         const buffer = c.hb_buffer_create() orelse return c.FT_Get_Char_Index(face, codepoint);
         defer c.hb_buffer_destroy(buffer);

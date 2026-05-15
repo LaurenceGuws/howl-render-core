@@ -2,7 +2,6 @@
 const std = @import("std");
 const contract = @import("contract.zig");
 const atlas_cache = @import("atlas_cache.zig");
-const metrics = @import("metrics.zig");
 const rasterizer = @import("rasterizer.zig");
 const sprite_key = @import("sprite_key.zig");
 
@@ -189,7 +188,7 @@ const SceneAssembly = struct {
         x: i32,
         row_y: i32,
         width: u16,
-        deco: metrics.DecorationGeometry,
+        deco: contract.DecorationGeometry,
         cell_metrics: contract.CellMetrics,
         color: contract.Rgba8,
     ) !void {
@@ -223,7 +222,7 @@ const SceneAssembly = struct {
     fn appendCursorDraws(self: *SceneAssembly, cursor: CursorInput, cell_metrics: contract.CellMetrics) !void {
         const base_x: i32 = @as(i32, @intCast(cursor.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
-        const geom = metrics.cursorGeometry(cell_metrics);
+        const geom = cursorGeometry(cell_metrics);
         switch (cursor.shape) {
             .block => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
             .beam => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
@@ -335,7 +334,7 @@ pub fn cursorDraws(
 ) ![]contract.TextCursorDraw {
     const base_x: i32 = @as(i32, @intCast(cursor.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
     const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
-    const geom = metrics.cursorGeometry(cell_metrics);
+    const geom = cursorGeometry(cell_metrics);
     const count: usize = if (cursor.shape == .hollow_block) 4 else 1;
     const draws = try allocator.alloc(contract.TextCursorDraw, count);
     errdefer allocator.free(draws);
@@ -468,8 +467,8 @@ fn appendDecorationDraws(
     grid_metrics: contract.GridMetrics,
     damage: NormalizedDamage,
 ) !void {
-    const font_metrics = metrics.defaultFontMetrics(cell_metrics);
-    const deco = metrics.decorationGeometry(cell_metrics, font_metrics);
+    const font_metrics = defaultFontMetrics(cell_metrics);
+    const deco = decorationGeometry(cell_metrics, font_metrics);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
         if (cell.continuation) continue;
@@ -514,7 +513,7 @@ fn appendUnderlineDraws(
     x: i32,
     row_y: i32,
     width: u16,
-    deco: metrics.DecorationGeometry,
+    deco: contract.DecorationGeometry,
     cell_metrics: contract.CellMetrics,
 ) !void {
     const color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
@@ -923,4 +922,39 @@ test "scene does not request raster for cache hit" {
     var owned = try buildSceneWithAtlasCacheOptions(std.testing.allocator, &.{}, &.{group}, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 8 }, &cache, .{});
     defer owned.deinit();
     try std.testing.expectEqual(@as(usize, 0), owned.scene.raster_requests.len);
+}
+
+fn defaultFontMetrics(cell_metrics: contract.CellMetrics) contract.FontMetrics {
+    const thickness: f32 = @floatFromInt(scaledDecorationThickness(cell_metrics.cell_h_px));
+    const baseline: f32 = @floatFromInt(cell_metrics.baseline_px);
+    return .{
+        .ascent_px = baseline,
+        .descent_px = @floatFromInt(@as(i32, cell_metrics.cell_h_px) - @as(i32, cell_metrics.baseline_px)),
+        .line_gap_px = 0,
+        .underline_pos_px = baseline + thickness,
+        .underline_thickness_px = thickness,
+        .strikethrough_pos_px = baseline / 2.0,
+        .strikethrough_thickness_px = thickness,
+    };
+}
+
+fn decorationGeometry(cell_metrics: contract.CellMetrics, font_metrics: contract.FontMetrics) contract.DecorationGeometry {
+    return .{
+        .underline_y_px = std.math.clamp(@as(i32, @intFromFloat(@round(font_metrics.underline_pos_px))), 0, @as(i32, @intCast(cell_metrics.cell_h_px - 1))),
+        .underline_h_px = @max(@as(u16, @intFromFloat(@round(font_metrics.underline_thickness_px))), 1),
+        .strikethrough_y_px = std.math.clamp(@as(i32, @intFromFloat(@round(font_metrics.strikethrough_pos_px))), 0, @as(i32, @intCast(cell_metrics.cell_h_px - 1))),
+        .strikethrough_h_px = @max(@as(u16, @intFromFloat(@round(font_metrics.strikethrough_thickness_px))), 1),
+    };
+}
+
+fn cursorGeometry(cell_metrics: contract.CellMetrics) contract.CursorGeometry {
+    return .{
+        .beam_w_px = @max(cell_metrics.cell_w_px / 8, 1),
+        .underline_h_px = scaledDecorationThickness(cell_metrics.cell_h_px),
+        .hollow_stroke_px = 2,
+    };
+}
+
+fn scaledDecorationThickness(cell_h_px: u16) u16 {
+    return @intCast(@max(@divTrunc(@as(u32, @max(cell_h_px, 1)) + 15, 16), 1));
 }

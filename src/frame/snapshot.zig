@@ -1,5 +1,6 @@
 
 const std = @import("std");
+const pipeline = @import("pipeline.zig");
 const surface = @import("surface.zig");
 
 pub const Cell = surface.Cell;
@@ -25,6 +26,39 @@ pub const DirtyView = struct {
     dirty_rows: []const bool,
     dirty_cols_start: []const u16,
     dirty_cols_end: []const u16,
+};
+
+pub const SourceView = struct {
+    snapshot: *const Snapshot,
+    cols: u16,
+    rows: u16,
+    scrollback_count: u64,
+    scrollback_offset: u64,
+    selection_anchor_depth: ?u64 = null,
+    selection_anchor_col: ?u16 = null,
+    selection_current_depth: ?u64 = null,
+    selection_current_col: ?u16 = null,
+    focused: bool = true,
+    hover_link_id: u32 = 0,
+    hover_underline_style: surface.UnderlineStyle = .straight,
+    snapshot_seq: u64 = 0,
+    vt_epoch: u64 = 0,
+    last_alt_screen: bool = false,
+
+    pub fn selectionActive(self: SourceView) bool {
+        return self.selection_anchor_depth != null and
+            self.selection_anchor_col != null and
+            self.selection_current_depth != null and
+            self.selection_current_col != null;
+    }
+};
+
+pub const SourceResponse = struct {
+    published: bool,
+    queued: bool,
+    damage_kind: pipeline.DamageKind,
+    source_seq: u64,
+    geometry_epoch: u64,
 };
 
 pub const Snapshot = struct {

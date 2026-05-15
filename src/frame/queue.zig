@@ -1,6 +1,5 @@
 
 const std = @import("std");
-const queue_metrics = @import("metrics.zig");
 const pipeline = @import("pipeline.zig");
 
 const ThreadMutex = struct {
@@ -55,7 +54,24 @@ pub const TerminalSurface = struct {
         idle,
     };
 
-    pub const Metrics = queue_metrics.RuntimeMetrics;
+    pub const Metrics = struct {
+        snapshot_publishes: u64 = 0,
+        snapshot_hidden_drops: u64 = 0,
+        snapshot_clean_drops: u64 = 0,
+        prepare_requests: u64 = 0,
+        prepare_coalesces: u64 = 0,
+        prepare_forced_full: u64 = 0,
+        prepare_takes: u64 = 0,
+        prepared_publishes: u64 = 0,
+        prepared_coalesces: u64 = 0,
+        submit_takes: u64 = 0,
+        submit_valid: u64 = 0,
+        submit_rejected: u64 = 0,
+        full_prepare_requests: u64 = 0,
+        submitted_accepts: u64 = 0,
+        presents: u64 = 0,
+        target_invalidations: u64 = 0,
+    };
 
     pub fn setVisible(self: *TerminalSurface, visible: bool) void {
         lockMutex(&self.mutex);

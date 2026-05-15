@@ -2,7 +2,6 @@
 const std = @import("std");
 const contract = @import("contract.zig");
 const special_raster = @import("special_raster.zig");
-const metrics = @import("metrics.zig");
 
 pub const RasterSpriteRequest = struct {
     key: contract.SpriteKey,
@@ -100,9 +99,14 @@ pub fn requestForGroup(group: contract.GlyphGroup, cell_metrics: contract.CellMe
         .width_px = width_px,
         .height_px = cell_metrics.cell_h_px,
         .baseline_px = cell_metrics.baseline_px,
-        .box_drawing = metrics.boxDrawingRasterMetrics(cell_metrics),
+        .box_drawing = boxDrawingRasterMetrics(cell_metrics),
         .color_mode = requestColorMode(group.kind),
     };
+}
+
+fn boxDrawingRasterMetrics(cell_metrics: contract.CellMetrics) contract.BoxDrawingRasterMetrics {
+    const light = if (cell_metrics.box_thickness_px == 0) @as(u16, 2) else cell_metrics.box_thickness_px;
+    return .{ .light_stroke_px = light, .heavy_stroke_px = @intCast(@min(@as(u32, light) * 2, std.math.maxInt(u16))) };
 }
 
 pub fn appendPendingRequest(

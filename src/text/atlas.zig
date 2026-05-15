@@ -1,5 +1,5 @@
 
-/// Text-atlas layout contract shared by backend owners.
+/// Text-atlas layout contract shared by surface execution owners.
 pub const AtlasLayout = struct {
     cell_w: u16,
     cell_h: u16,

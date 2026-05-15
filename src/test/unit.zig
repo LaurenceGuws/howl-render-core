@@ -1,17 +1,19 @@
 
 const std = @import("std");
-const Render = @import("../render.zig").Render;
-const Renderer = @import("../renderer.zig").Renderer;
+const Render = @import("../howl_render.zig");
+const SurfaceSession = Render.SurfaceSession;
+const surface = @import("../frame/surface.zig");
+const snapshot_mod = @import("../frame/snapshot.zig");
 
 test "render frame pixel geometry clamps to drawable size" {
-    const frame = Render.FramePixels{ .render_width = 0, .render_height = -2, .grid_width = 80, .grid_height = 24 };
+    const frame = surface.FramePixels{ .render_width = 0, .render_height = -2, .grid_width = 80, .grid_height = 24 };
     try std.testing.expectEqual(@as(u16, 1), frame.renderWidth());
     try std.testing.expectEqual(@as(u16, 1), frame.renderHeight());
     try std.testing.expectEqual(@as(u16, 80), frame.gridWidth());
     try std.testing.expectEqual(@as(u16, 24), frame.gridHeight());
 }
 
-test "renderer root helpers forward deterministically" {
+test "surface session root helpers forward deterministically" {
     const grid = Render.deriveGridSize(.{ .width = 80, .height = 48 }, .{ .width = 8, .height = 16 });
     try std.testing.expectEqual(@as(u16, 10), grid.cols);
     try std.testing.expectEqual(@as(u16, 3), grid.rows);
@@ -25,13 +27,13 @@ test "renderer root helpers forward deterministically" {
     try std.testing.expectEqual(@as(u16, 20), frame_grid.rows);
 }
 
-test "renderer serializes font resize against prepare" {
-    var renderer = Renderer.init(.{
+test "surface session serializes font resize against prepare" {
+    var session = SurfaceSession.init(.{
         .surface_px = .{ .width = 64, .height = 32 },
         .cell_px = .{ .width = 8, .height = 16 },
         .font_size_px = 16,
     });
-    defer renderer.deinit();
+    defer session.deinit();
     var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
     _ = runtime.syncGeometry(.{
@@ -58,7 +60,7 @@ test "renderer serializes font resize against prepare" {
             .dirty_cols_end = dirty_cols_end[0..],
         },
     };
-    const source = Render.SourceView{
+    const source = snapshot_mod.SourceView{
         .snapshot = &snapshot,
         .cols = 4,
         .rows = 2,
@@ -73,8 +75,8 @@ test "renderer serializes font resize against prepare" {
     };
 
     var failed = std.atomic.Value(bool).init(false);
-    const resize_thread = try std.Thread.spawn(.{}, RendererStress.resize, .{ &renderer, &failed });
-    const prepare_thread = try std.Thread.spawn(.{}, RendererStress.prepare, .{ &renderer, &runtime, frame, source, &failed });
+    const resize_thread = try std.Thread.spawn(.{}, SessionStress.resize, .{ &session, &failed });
+    const prepare_thread = try std.Thread.spawn(.{}, SessionStress.prepare, .{ &session, &runtime, frame, source, &failed });
     resize_thread.join();
     prepare_thread.join();
     try std.testing.expect(!failed.load(.acquire));
@@ -96,7 +98,7 @@ test "render runtime owner behavior remains reachable" {
     try std.testing.expect(geometry.changed);
     try std.testing.expectEqual(@as(u64, 1), geometry.geometry_epoch);
 
-    const source = Render.SourceView{
+    const source = snapshot_mod.SourceView{
         .snapshot = &snapshot,
         .cols = 3,
         .rows = 2,
@@ -109,9 +111,9 @@ test "render runtime owner behavior remains reachable" {
         .vt_epoch = 1,
         .last_alt_screen = false,
     };
-    const receipt = runtime.acceptSource(source);
-    try std.testing.expect(receipt.published);
-    try std.testing.expect(receipt.queued);
+    const response = runtime.acceptSource(source);
+    try std.testing.expect(response.published);
+    try std.testing.expect(response.queued);
     const request = runtime.prepare() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u64, 1), request.token.snapshot_seq);
     _ = runtime.publishPrepared(.{
@@ -157,26 +159,9 @@ test "render runtime stale retained-base validation stays explicit" {
     try std.testing.expectEqual(Render.FramePipeline.SubmitValidation.stale_target, Render.FramePipeline.validatePreparedFrame(stale_target, submitted));
 }
 
-test "renderer reuses retained atlas across matching frames" {
-    var renderer = Renderer.init(.{ .surface_px = .{ .width = 8, .height = 16 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
-    defer renderer.deinit();
-    var runtime = Render.RenderRuntime.init(std.testing.allocator);
-    defer runtime.deinit();
-    _ = runtime.syncGeometry(.{ .render_px = .{ .width = 8, .height = 16 }, .grid_px = .{ .width = 8, .height = 16 }, .cell_px = .{ .width = 8, .height = 16 } });
-    var snapshot = try Render.FrameSnapshot.init(std.testing.allocator, 1, 1);
-    defer snapshot.deinit(std.testing.allocator);
-    const cells = [_]Render.SurfaceCell{.{ .codepoint = 'A' }};
-    const frame = frameData(&cells, 1, 1, true, 0, &[_]bool{}, &[_]u16{}, &[_]u16{});
-
-    const first = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 1, 1);
-    try std.testing.expect(first.report.raster_uploads_committed == 1);
-    const second = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 1, 2);
-    try std.testing.expect(second.report.raster_uploads_committed == 0);
-}
-
-test "renderer forces full redraw while target contents are invalid" {
-    var renderer = Renderer.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
-    defer renderer.deinit();
+test "surface session forces full redraw while target contents are invalid" {
+    var session = SurfaceSession.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
+    defer session.deinit();
     var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
     _ = runtime.syncGeometry(.{ .render_px = .{ .width = 16, .height = 32 }, .grid_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 } });
@@ -188,15 +173,14 @@ test "renderer forces full redraw while target contents are invalid" {
     const dirty_end = [_]u16{ 0, 0 };
     const frame = frameData(&cells, 1, 2, false, 1, &dirty_rows, &dirty_start, &dirty_end);
 
-    const submitted = try runRendererFrame(&renderer, &runtime, &snapshot, frame, 1, 2, 1);
+    const submitted = try runRendererFrame(&session, &runtime, &snapshot, frame, 1, 2, 1);
     try std.testing.expect(submitted.report.full_redraw);
     try std.testing.expectEqual(@as(u16, 0), submitted.report.scroll_up_px);
 }
 
-test "renderer preserves partial scroll damage once retained target is valid" {
-    var renderer = Renderer.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
-    defer renderer.deinit();
-    try renderer.backend.bindTargetTexture(1);
+test "surface session preserves partial scroll damage once retained target is valid" {
+    var session = SurfaceSession.init(.{ .surface_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 }, .font_size_px = 16 });
+    defer session.deinit();
     var runtime = Render.RenderRuntime.init(std.testing.allocator);
     defer runtime.deinit();
     _ = runtime.syncGeometry(.{ .render_px = .{ .width = 16, .height = 32 }, .grid_px = .{ .width = 16, .height = 32 }, .cell_px = .{ .width = 8, .height = 16 } });
@@ -204,32 +188,32 @@ test "renderer preserves partial scroll damage once retained target is valid" {
     defer snapshot.deinit(std.testing.allocator);
     const cells = [_]Render.SurfaceCell{ .{ .codepoint = 'A' }, .{ .codepoint = 'B' } };
     const full_frame = frameData(&cells, 1, 2, true, 0, &[_]bool{}, &[_]u16{}, &[_]u16{});
-    _ = try runRendererFrame(&renderer, &runtime, &snapshot, full_frame, 1, 2, 1);
+    _ = try runSubmittedFrame(&session, &runtime, &snapshot, full_frame, 1, 2, 1, true);
 
     const dirty_rows = [_]bool{ false, true };
     const dirty_start = [_]u16{ 0, 0 };
     const dirty_end = [_]u16{ 0, 0 };
     const scroll_frame = frameData(&cells, 1, 2, false, 1, &dirty_rows, &dirty_start, &dirty_end);
-    const submitted = try runRendererFrame(&renderer, &runtime, &snapshot, scroll_frame, 1, 2, 2);
+    const submitted = try runSubmittedFrame(&session, &runtime, &snapshot, scroll_frame, 1, 2, 2, true);
     try std.testing.expect(!submitted.report.full_redraw);
     try std.testing.expectEqual(@as(u16, 16), submitted.report.scroll_up_px);
 }
 
-const RendererStress = struct {
-    fn resize(renderer: *Renderer, failed: *std.atomic.Value(bool)) void {
+const SessionStress = struct {
+    fn resize(session: *SurfaceSession, failed: *std.atomic.Value(bool)) void {
         _ = failed;
         var size: u16 = 8;
-        while (size < 64) : (size += 1) renderer.setFontSizePx(size);
+        while (size < 64) : (size += 1) session.setFontSizePx(size);
     }
 
-    fn prepare(renderer: *Renderer, runtime: *Render.RenderRuntime, frame: Render.SurfaceFrameData, source_template: Render.SourceView, failed: *std.atomic.Value(bool)) void {
+    fn prepare(session: *SurfaceSession, runtime: *Render.RenderRuntime, frame: Render.SurfaceFrameData, source_template: snapshot_mod.SourceView, failed: *std.atomic.Value(bool)) void {
         var idx: usize = 0;
         while (idx < 64) : (idx += 1) {
             var source = source_template;
             source.snapshot_seq = @intCast(idx + 1);
             source.vt_epoch = @intCast(idx + 1);
             _ = runtime.acceptSource(source);
-            const prepared = renderer.prepareFrame(std.heap.c_allocator, runtime, frame) catch {
+            const prepared = session.prepareSurface(std.heap.c_allocator, runtime, frame) catch {
                 failed.store(true, .release);
                 return;
             };
@@ -237,7 +221,18 @@ const RendererStress = struct {
                 failed.store(true, .release);
                 return;
             }
-            _ = renderer.submitFrame(runtime) catch {
+            const query = runtime.surfaceQuery();
+            _ = session.submitSurface(runtime, .{
+                .surface = .{
+                    .texture_id = 1,
+                    .width = @max(query.render_px.width, 1),
+                    .height = @max(query.render_px.height, 1),
+                    .epoch = query.epoch,
+                },
+                .uploads_committed = 0,
+                .render_us = 0,
+                .content_valid = true,
+            }) catch {
                 failed.store(true, .release);
                 return;
             };
@@ -246,15 +241,15 @@ const RendererStress = struct {
 };
 
 fn runRendererFrame(
-    renderer: *Renderer,
+    session: *SurfaceSession,
     runtime: *Render.RenderRuntime,
     snapshot: *Render.FrameSnapshot,
     frame: Render.SurfaceFrameData,
     cols: u16,
     rows: u16,
     seq: u64,
-) !Renderer.Submitted {
-    const source = Render.SourceView{
+) !Render.SurfaceFeedback {
+    const source = snapshot_mod.SourceView{
         .snapshot = snapshot,
         .cols = cols,
         .rows = rows,
@@ -268,8 +263,61 @@ fn runRendererFrame(
         .last_alt_screen = false,
     };
     _ = runtime.acceptSource(source);
-    if (try renderer.prepareFrame(std.testing.allocator, runtime, frame) != .prepared) return error.TestUnexpectedResult;
-    return switch (try renderer.submitFrame(runtime)) {
+    if (try session.prepareSurface(std.testing.allocator, runtime, frame) != .prepared) return error.TestUnexpectedResult;
+    const query = runtime.surfaceQuery();
+    return switch (try session.submitSurface(runtime, .{
+        .surface = .{
+            .texture_id = 1,
+            .width = @max(query.render_px.width, 1),
+            .height = @max(query.render_px.height, 1),
+            .epoch = query.epoch,
+        },
+        .uploads_committed = 0,
+        .render_us = 0,
+        .content_valid = true,
+    })) {
+        .rendered => |submitted| submitted,
+        else => error.TestUnexpectedResult,
+    };
+}
+
+fn runSubmittedFrame(
+    session: *SurfaceSession,
+    runtime: *Render.RenderRuntime,
+    snapshot: *Render.FrameSnapshot,
+    frame: Render.SurfaceFrameData,
+    cols: u16,
+    rows: u16,
+    seq: u64,
+    content_valid: bool,
+) !Render.SurfaceFeedback {
+    const source = snapshot_mod.SourceView{
+        .snapshot = snapshot,
+        .cols = cols,
+        .rows = rows,
+        .scrollback_count = 0,
+        .scrollback_offset = 0,
+        .focused = true,
+        .hover_link_id = 0,
+        .hover_underline_style = .straight,
+        .snapshot_seq = seq,
+        .vt_epoch = seq,
+        .last_alt_screen = false,
+    };
+    _ = runtime.acceptSource(source);
+    if (try session.prepareSurface(std.testing.allocator, runtime, frame) != .prepared) return error.TestUnexpectedResult;
+    const query = runtime.surfaceQuery();
+    return switch (try session.submitSurface(runtime, .{
+        .surface = .{
+            .texture_id = if (content_valid) 1 else 0,
+            .width = @max(query.render_px.width, 1),
+            .height = @max(query.render_px.height, 1),
+            .epoch = query.epoch,
+        },
+        .uploads_committed = 0,
+        .render_us = 0,
+        .content_valid = content_valid,
+    })) {
         .rendered => |submitted| submitted,
         else => error.TestUnexpectedResult,
     };

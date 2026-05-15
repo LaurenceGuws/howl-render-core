@@ -1,27 +1,19 @@
 // This repo ships a C ABI first until further notice.
 // Keep build entrypoints aligned around the shipped header and exported symbols, not privileged Zig imports.
-// The render backends exist to pressure-test one embedding contract early, not to let current host constraints reshape render ownership.
+// The render build now targets one owner-true surface package path.
 
 const std = @import("std");
 
-const RenderBackend = enum {
-    gl,
-    gles,
+const NonProdEntry = enum {
+    unit,
+    runtime_proof,
+    benchmark,
 };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const perf_optimize: std.builtin.OptimizeMode = .ReleaseFast;
-    const backend_opt = b.option([]const u8, "render-backend", "Selected renderer backend") orelse "gl";
-    const android_ndk_sysroot = b.option([]const u8, "android-ndk-sysroot", "Android NDK sysroot path for GLES linking") orelse "";
-    const selected_backend: RenderBackend = if (std.mem.eql(u8, backend_opt, "gl"))
-        .gl
-    else if (std.mem.eql(u8, backend_opt, "gles"))
-        .gles
-    else
-        std.debug.panic("unsupported renderer backend: {s}", .{backend_opt});
-
     const freetype_dep = b.dependency("freetype", .{
         .target = target,
         .optimize = optimize,
@@ -32,36 +24,23 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const harfbuzz_lib = harfbuzz_dep.artifact("harfbuzz");
-    if (selected_backend == .gles and target.result.abi == .android and android_ndk_sysroot.len > 0) {
-        freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{android_ndk_sysroot}) });
-        freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/aarch64-linux-android", .{android_ndk_sysroot}) });
-    }
 
-    const module_options = b.addOptions();
-    module_options.addOption(RenderBackend, "render_backend", selected_backend);
-    module_options.addOption(bool, "c_abi", false);
-    const perf_options = b.addOptions();
-    perf_options.addOption(RenderBackend, "render_backend", selected_backend);
-    perf_options.addOption(bool, "c_abi", false);
-    const ffi_options = b.addOptions();
-    ffi_options.addOption(RenderBackend, "render_backend", selected_backend);
-    ffi_options.addOption(bool, "c_abi", true);
-
+    const unit_root_options = b.addOptions();
+    unit_root_options.addOption(NonProdEntry, "entry", .unit);
+    const runtime_proof_root_options = b.addOptions();
+    runtime_proof_root_options.addOption(NonProdEntry, "entry", .runtime_proof);
+    const benchmark_root_options = b.addOptions();
+    benchmark_root_options.addOption(NonProdEntry, "entry", .benchmark);
     const internal_mod = b.createModule(.{
-        .root_source_file = b.path("src/howl_render.zig"),
+        .root_source_file = b.path("src/non_prod.zig"),
         .target = target,
         .optimize = optimize,
     });
-    internal_mod.addImport("render_options", module_options.createModule());
+    internal_mod.addImport("non_prod_options", unit_root_options.createModule());
     internal_mod.linkLibrary(freetype_lib);
     internal_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
     internal_mod.linkLibrary(harfbuzz_lib);
     internal_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
-    if (selected_backend == .gl) {
-        internal_mod.linkSystemLibrary("GL", .{});
-    } else if (target.result.abi != .android) {
-        internal_mod.linkSystemLibrary("GLESv2", .{});
-    }
 
     const perf_freetype_dep = b.dependency("freetype", .{
         .target = target,
@@ -73,10 +52,6 @@ pub fn build(b: *std.Build) void {
         .optimize = perf_optimize,
     });
     const perf_harfbuzz_lib = perf_harfbuzz_dep.artifact("harfbuzz");
-    if (selected_backend == .gles and target.result.abi == .android and android_ndk_sysroot.len > 0) {
-        perf_freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include", .{android_ndk_sysroot}) });
-        perf_freetype_lib.root_module.addSystemIncludePath(.{ .cwd_relative = b.fmt("{s}/usr/include/aarch64-linux-android", .{android_ndk_sysroot}) });
-    }
     const mod_tests = b.addTest(.{
         .name = "test-unit",
         .root_module = internal_mod,
@@ -89,7 +64,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const render_owner = b.createModule(.{
-        .root_source_file = b.path("src/render.zig"),
+        .root_source_file = b.path("src/howl_render.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -105,20 +80,15 @@ pub fn build(b: *std.Build) void {
     }
 
     const runtime_proof_mod = b.createModule(.{
-        .root_source_file = b.path("src/runtime_proof_root.zig"),
+        .root_source_file = b.path("src/non_prod.zig"),
         .target = target,
         .optimize = optimize,
     });
-    runtime_proof_mod.addImport("render_options", module_options.createModule());
+    runtime_proof_mod.addImport("non_prod_options", runtime_proof_root_options.createModule());
     runtime_proof_mod.linkLibrary(freetype_lib);
     runtime_proof_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
     runtime_proof_mod.linkLibrary(harfbuzz_lib);
     runtime_proof_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
-    if (selected_backend == .gl) {
-        runtime_proof_mod.linkSystemLibrary("GL", .{});
-    } else if (target.result.abi != .android) {
-        runtime_proof_mod.linkSystemLibrary("GLESv2", .{});
-    }
     const runtime_proof_tests = b.addTest(.{
         .name = "test-runtime-proof",
         .root_module = runtime_proof_mod,
@@ -152,16 +122,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    ffi_mod.addImport("render_options", ffi_options.createModule());
     ffi_mod.linkLibrary(freetype_lib);
     ffi_mod.addIncludePath(freetype_lib.getEmittedIncludeTree());
     ffi_mod.linkLibrary(harfbuzz_lib);
     ffi_mod.addIncludePath(harfbuzz_lib.getEmittedIncludeTree());
-    if (selected_backend == .gl) {
-        ffi_mod.linkSystemLibrary("GL", .{});
-    } else if (target.result.abi != .android) {
-        ffi_mod.linkSystemLibrary("GLESv2", .{});
-    }
     const ffi_lib = b.addLibrary(.{
         .name = "howl_render",
         .linkage = .dynamic,
@@ -173,20 +137,15 @@ pub fn build(b: *std.Build) void {
     b.installFile("include/howl_render.h", "include/howl_render.h");
 
     const benchmark_mod = b.createModule(.{
-        .root_source_file = b.path("src/render_benchmark_root.zig"),
+        .root_source_file = b.path("src/non_prod.zig"),
         .target = target,
         .optimize = perf_optimize,
     });
-    benchmark_mod.addImport("render_options", perf_options.createModule());
+    benchmark_mod.addImport("non_prod_options", benchmark_root_options.createModule());
     benchmark_mod.linkLibrary(perf_freetype_lib);
     benchmark_mod.addIncludePath(perf_freetype_lib.getEmittedIncludeTree());
     benchmark_mod.linkLibrary(perf_harfbuzz_lib);
     benchmark_mod.addIncludePath(perf_harfbuzz_lib.getEmittedIncludeTree());
-    if (selected_backend == .gl) {
-        benchmark_mod.linkSystemLibrary("GL", .{});
-    } else if (target.result.abi != .android) {
-        benchmark_mod.linkSystemLibrary("GLESv2", .{});
-    }
 
     const benchmark_exe = b.addExecutable(.{
         .name = "render_benchmark",

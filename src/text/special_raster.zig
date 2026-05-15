@@ -1,6 +1,5 @@
 const std = @import("std");
 const contract = @import("contract.zig");
-const metrics = @import("metrics.zig");
 const special_glyphs = @import("special_glyphs.zig");
 const PixelIndex = @TypeOf(@as([]const u8, &.{}).len);
 
@@ -64,7 +63,12 @@ pub fn rasterizeGeneratedSpecialAlphaWithMetrics(pixels: []u8, width_px: u16, he
 
 fn generatedSpecialMetrics(width_px: u16, height_px: u16) contract.BoxDrawingRasterMetrics {
     const baseline: i16 = @intCast(@min(height_px, @as(u16, @intCast(std.math.maxInt(i16)))));
-    return metrics.boxDrawingRasterMetrics(.{ .cell_w_px = width_px, .cell_h_px = height_px, .baseline_px = baseline });
+    return boxDrawingRasterMetrics(.{ .cell_w_px = width_px, .cell_h_px = height_px, .baseline_px = baseline });
+}
+
+fn boxDrawingRasterMetrics(cell_metrics: contract.CellMetrics) contract.BoxDrawingRasterMetrics {
+    const light = if (cell_metrics.box_thickness_px == 0) @as(u16, 2) else cell_metrics.box_thickness_px;
+    return .{ .light_stroke_px = light, .heavy_stroke_px = @intCast(@min(@as(u32, light) * 2, std.math.maxInt(u16))) };
 }
 
 fn rasterizeSupportedGeneratedSpecialAlpha(pixels: []u8, width: u16, height: u16, codepoint: u32, box_drawing: contract.BoxDrawingRasterMetrics) void {

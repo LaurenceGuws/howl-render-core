@@ -4,7 +4,6 @@ const ffi = @import("ffi.zig");
 comptime {
     @export(&ffi.deriveGridSize, .{ .name = "howl_render_derive_grid_size" });
     @export(&ffi.deriveFrameGridSize, .{ .name = "howl_render_derive_frame_grid_size" });
-    @export(&ffi.rendererDeriveFrameLayout, .{ .name = "howl_render_renderer_derive_frame_layout" });
     @export(&ffi.snapshotInit, .{ .name = "howl_render_snapshot_init" });
     @export(&ffi.snapshotDeinit, .{ .name = "howl_render_snapshot_deinit" });
     @export(&ffi.snapshotResize, .{ .name = "howl_render_snapshot_resize" });
@@ -22,11 +21,18 @@ comptime {
     @export(&ffi.runtimeSurfaceQuery, .{ .name = "howl_render_runtime_surface_query" });
     @export(&ffi.runtimeTakeMetrics, .{ .name = "howl_render_runtime_take_metrics" });
     @export(&ffi.runtimeResetMetrics, .{ .name = "howl_render_runtime_reset_metrics" });
-    @export(&ffi.rendererInit, .{ .name = "howl_render_renderer_init" });
-    @export(&ffi.rendererDeinit, .{ .name = "howl_render_renderer_deinit" });
-    @export(&ffi.rendererSetFontSizePx, .{ .name = "howl_render_renderer_set_font_size_px" });
-    @export(&ffi.rendererSetFontPath, .{ .name = "howl_render_renderer_set_font_path" });
-    @export(&ffi.rendererSetFallbackFontPaths, .{ .name = "howl_render_renderer_set_fallback_font_paths" });
-    @export(&ffi.rendererPrepare, .{ .name = "howl_render_renderer_prepare" });
-    @export(&ffi.rendererSubmit, .{ .name = "howl_render_renderer_submit" });
+    @export(&ffi.surfaceSessionDeriveFrameLayout, .{ .name = "howl_render_surface_session_derive_frame_layout" });
+    @export(&ffi.surfaceSessionInit, .{ .name = "howl_render_surface_session_init" });
+    @export(&ffi.surfaceSessionDeinit, .{ .name = "howl_render_surface_session_deinit" });
+    @export(&ffi.surfaceSessionSetFontSizePx, .{ .name = "howl_render_surface_session_set_font_size_px" });
+    @export(&ffi.surfaceSessionSetFontPath, .{ .name = "howl_render_surface_session_set_font_path" });
+    @export(&ffi.surfaceSessionSetFallbackFontPaths, .{ .name = "howl_render_surface_session_set_fallback_font_paths" });
+    @export(&ffi.surfacePrepareHandle, .{ .name = "howl_render_surface_prepare_handle" });
+    @export(&ffi.preparedSurfaceRelease, .{ .name = "howl_render_prepared_surface_release" });
+    @export(&ffi.preparedSurfaceDescribe, .{ .name = "howl_render_prepared_surface_describe" });
+    @export(&ffi.preparedSurfaceDamagePlan, .{ .name = "howl_render_prepared_surface_damage_plan" });
+    @export(&ffi.preparedSurfaceUploadPlan, .{ .name = "howl_render_prepared_surface_upload_plan" });
+    @export(&ffi.preparedSurfaceDrawPlan, .{ .name = "howl_render_prepared_surface_draw_plan" });
+    @export(&ffi.preparedSurfaceDiagnostics, .{ .name = "howl_render_prepared_surface_diagnostics" });
+    @export(&ffi.surfaceSubmit, .{ .name = "howl_render_surface_submit" });
 }

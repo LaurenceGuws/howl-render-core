@@ -119,7 +119,7 @@ pub const RenderResult = union(enum) {
     presentable: SubmittedFrame,
     stale: SnapshotToken,
     needs_full_prepare: FullPrepareReason,
-    backend_lost: BackendLostReason,
+    surface_lost: SurfaceLostReason,
 };
 
 pub const FullPrepareReason = enum {
@@ -129,10 +129,10 @@ pub const FullPrepareReason = enum {
     geometry_changed,
 };
 
-pub const BackendLostReason = enum {
-    target_lost,
-    context_lost,
-    backend_closed,
+pub const SurfaceLostReason = enum {
+    surface_invalidated,
+    execution_state_lost,
+    surface_closed,
 };
 
 pub fn LatestMailbox(comptime T: type) type {

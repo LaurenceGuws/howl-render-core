@@ -2,7 +2,6 @@
 const std = @import("std");
 const contract = @import("contract.zig");
 const font_resolver = @import("font_resolver.zig");
-const metrics = @import("metrics.zig");
 const shape_run = @import("shape_run.zig");
 const sprite_key = @import("sprite_key.zig");
 const symbol_map = @import("symbol_map.zig");
@@ -66,7 +65,7 @@ pub fn groupShapedRunsWithPolicy(
                 .first_cp = cluster.first_cp,
                 .cell_span = inferred_cell_span,
                 .glyphs = glyph_slice,
-                .placement = metrics.groupPlacement(glyph_slice, cell_metrics, inferred_cell_span),
+                .placement = groupPlacement(glyph_slice, cell_metrics, inferred_cell_span),
                 .sprite_key = sprite_key.hashGlyphSequence(run.run.run.font.face_id, glyph_slice, inferred_cell_span, cell_metrics),
                 .kind = classifyFontGroup(cluster, glyph_slice, inferred_cell_span),
             };
@@ -87,6 +86,13 @@ fn applyGroupingPolicy(cell_span: u8, first_cell: u32, policy: GroupingPolicy) u
     return @intCast(@max(cursor_cell - first_cell, 1));
 }
 
+fn groupPlacement(glyphs: []const contract.GlyphInstance, cell_metrics: contract.CellMetrics, cell_span: u8) contract.GlyphPlacement {
+    var advance_px: f32 = 0;
+    for (glyphs) |glyph| advance_px += glyph.x_advance_px;
+    const min_advance: f32 = @floatFromInt(@as(u32, @max(cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
+    return .{ .advance_px = @max(advance_px, min_advance) };
+}
+
 pub fn groupSpriteRoutes(
     allocator: std.mem.Allocator,
     routes: []const font_resolver.SpriteRouteHit,
@@ -105,7 +111,7 @@ pub fn groupSpriteRoutes(
             .first_cp = cluster.first_cp,
             .cell_span = cell_span,
             .glyphs = &.{},
-            .placement = metrics.groupPlacement(&.{}, cell_metrics, cell_span),
+            .placement = groupPlacement(&.{}, cell_metrics, cell_span),
             .sprite_key = routeSpriteKey(route.route, cluster, cell_span, cell_metrics),
             .kind = classifySpriteRoute(route.route),
         };
@@ -168,7 +174,7 @@ fn routeSpriteKey(route: contract.SpecialSpriteRoute, cluster: contract.CellClus
     h.update(std.mem.asBytes(&cell_metrics.cell_w_px));
     h.update(std.mem.asBytes(&cell_metrics.cell_h_px));
     h.update(std.mem.asBytes(&cell_metrics.baseline_px));
-    const box = metrics.boxDrawingRasterMetrics(cell_metrics);
+    const box = boxDrawingRasterMetrics(cell_metrics);
     h.update(std.mem.asBytes(&box.light_stroke_px));
     h.update(std.mem.asBytes(&box.heavy_stroke_px));
     return .{ .value = h.final() };
@@ -187,6 +193,11 @@ fn spriteRouteCellSpan(route: contract.SpecialSpriteRoute, clusters: []const con
     }
     const span = @max(end_cell - cluster.first_cell, 1);
     return @intCast(@min(span, std.math.maxInt(u8)));
+}
+
+fn boxDrawingRasterMetrics(cell_metrics: contract.CellMetrics) contract.BoxDrawingRasterMetrics {
+    const light = if (cell_metrics.box_thickness_px == 0) @as(u16, 2) else cell_metrics.box_thickness_px;
+    return .{ .light_stroke_px = light, .heavy_stroke_px = @intCast(@min(@as(u32, light) * 2, std.math.maxInt(u16))) };
 }
 
 fn isPowerlineFollower(cluster: contract.CellCluster) bool {

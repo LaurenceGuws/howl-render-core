@@ -40,6 +40,27 @@ pub const FontMetrics = struct {
     strikethrough_thickness_px: f32,
 };
 
+pub const FaceMetrics26Dot6 = struct {
+    ascender: i32,
+    descender: i32,
+    height: i32,
+    max_advance: i32,
+    fallback_font_px: u16,
+};
+
+pub const DecorationGeometry = struct {
+    underline_y_px: i32,
+    underline_h_px: u16,
+    strikethrough_y_px: i32,
+    strikethrough_h_px: u16,
+};
+
+pub const CursorGeometry = struct {
+    beam_w_px: u16,
+    underline_h_px: u16,
+    hollow_stroke_px: u16,
+};
+
 pub const CellMetrics = struct {
     cell_w_px: u16,
     cell_h_px: u16,

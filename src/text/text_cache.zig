@@ -1,6 +1,5 @@
-
 const std = @import("std");
-const render = @import("../../render.zig").Render;
+const render = @import("../howl_render.zig");
 
 pub const FaceTextKey = struct {
     face_id: u32,

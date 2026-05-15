@@ -5,7 +5,6 @@ pub const PrepareTimings = @import("frame_preparer.zig").PrepareTimings;
 pub const OwnedPreparedTextFrame = @import("frame_preparer.zig").OwnedPreparedTextFrame;
 /// Font session/group vocabulary.
 pub const FontSession = @import("font_session.zig");
-/// Backend-independent font resolver vocabulary.
 pub const FontResolver = @import("font_resolver.zig");
 /// Cell text and grapheme cluster extraction.
 pub const Cluster = @import("cluster.zig");
@@ -19,17 +18,14 @@ pub const SpriteKey = @import("sprite_key.zig");
 pub const Rasterizer = @import("rasterizer.zig");
 /// Renderer-neutral text scene vocabulary and scene-build entrypoints.
 pub const Scene = @import("scene.zig");
-/// Backend-neutral atlas residency vocabulary.
 pub const AtlasCache = @import("atlas_cache.zig");
 /// Explicit symbol/icon route classification.
 pub const SymbolMap = @import("symbol_map.zig");
-/// Shared font/cell metrics policy.
-pub const Metrics = @import("metrics.zig");
 /// Locked normal-vs-complex lane classifier.
 pub const Lane = @import("lane.zig");
 /// Unified provider boundary for FT/HB integrations.
 pub const Provider = @import("provider.zig");
-/// FreeType/HarfBuzz callback source for backend-owned providers.
+/// FreeType/HarfBuzz callback source for surface-session text providers.
 pub const FtHbProvider = @import("ft_hb_provider.zig");
 /// Shared atlas placement math.
 pub const Atlas = @import("atlas.zig");
@@ -55,7 +51,6 @@ test "text module surface imports" {
     _ = Scene;
     _ = AtlasCache;
     _ = SymbolMap;
-    _ = Metrics;
     _ = Lane;
     _ = Provider;
     _ = FtHbProvider;
