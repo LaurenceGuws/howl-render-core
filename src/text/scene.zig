@@ -219,6 +219,24 @@ const SceneAssembly = struct {
             .cell_span = cell.cell_span,
         });
     }
+
+    fn appendCursorDraws(self: *SceneAssembly, cursor: CursorInput, cell_metrics: contract.CellMetrics) !void {
+        const base_x: i32 = @as(i32, @intCast(cursor.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
+        const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
+        const geom = metrics.cursorGeometry(cell_metrics);
+        switch (cursor.shape) {
+            .block => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
+            .beam => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
+            .underline => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y + @as(i32, @intCast(cell_metrics.cell_h_px - geom.underline_h_px)), .width_px = cell_metrics.cell_w_px, .height_px = geom.underline_h_px, .color = cursor.color }),
+            .hollow_block => {
+                const stroke = geom.hollow_stroke_px;
+                try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = stroke, .color = cursor.color });
+                try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y + @as(i32, @intCast(cell_metrics.cell_h_px - stroke)), .width_px = cell_metrics.cell_w_px, .height_px = stroke, .color = cursor.color });
+                try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = stroke, .height_px = cell_metrics.cell_h_px, .color = cursor.color });
+                try self.cursor_draws.append(self.allocator, .{ .x_px = base_x + @as(i32, @intCast(cell_metrics.cell_w_px - stroke)), .y_px = base_y, .width_px = stroke, .height_px = cell_metrics.cell_h_px, .color = cursor.color });
+            },
+        }
+    }
 };
 
 fn appendSceneCursorDraws(
@@ -229,9 +247,7 @@ fn appendSceneCursorDraws(
 ) !void {
     const cursor_value = cursor orelse return;
     if (!damage.full and !rowDirty(damage, cursor_value.cell_row)) return;
-    const draws = try cursorDraws(assembly.allocator, cursor_value, cell_metrics);
-    defer assembly.allocator.free(draws);
-    try assembly.cursor_draws.appendSlice(assembly.allocator, draws);
+    try assembly.appendCursorDraws(cursor_value, cell_metrics);
 }
 
 const SpriteDrawInput = struct {
