@@ -161,6 +161,11 @@ typedef struct {
 } HowlRenderByteSpan;
 
 typedef struct {
+  const uint16_t *ptr;
+  size_t len;
+} HowlRenderU16Span;
+
+typedef struct {
   int status;
   HowlRenderGridSize grid;
 } HowlRenderFrameGridResult;
@@ -416,6 +421,9 @@ typedef struct {
   uint8_t is_alternate_screen;
   uint8_t full_damage;
   uint16_t scroll_up_rows;
+  HowlRenderByteSpan dirty_rows;
+  HowlRenderU16Span dirty_cols_start;
+  HowlRenderU16Span dirty_cols_end;
   HowlRenderCursor cursor;
 } HowlRenderSurfaceSource;
 

@@ -109,10 +109,16 @@ const PreparedSurfaceOwner = struct {
 const OwnedSurfaceSource = struct {
     allocator: std.mem.Allocator,
     cells: []Render.SurfaceCell,
+    dirty_rows: []bool = &.{},
+    dirty_cols_start: []u16 = &.{},
+    dirty_cols_end: []u16 = &.{},
     frame: Render.SurfaceFrameData,
 
     fn deinit(self: *OwnedSurfaceSource) void {
         self.allocator.free(self.cells);
+        if (self.dirty_rows.len > 0) self.allocator.free(self.dirty_rows);
+        if (self.dirty_cols_start.len > 0) self.allocator.free(self.dirty_cols_start);
+        if (self.dirty_cols_end.len > 0) self.allocator.free(self.dirty_cols_end);
         self.* = undefined;
     }
 };
@@ -248,6 +254,11 @@ pub const FfiRectSpan = extern struct {
 
 pub const FfiByteSpan = extern struct {
     ptr: [*c]const u8,
+    len: usize,
+};
+
+pub const FfiU16Span = extern struct {
+    ptr: [*c]const u16,
     len: usize,
 };
 
@@ -502,6 +513,9 @@ pub const FfiSurfaceSource = extern struct {
     is_alternate_screen: u8,
     full_damage: u8,
     scroll_up_rows: u16,
+    dirty_rows: FfiByteSpan,
+    dirty_cols_start: FfiU16Span,
+    dirty_cols_end: FfiU16Span,
     cursor: FfiCursor,
 };
 
@@ -654,9 +668,18 @@ fn surfaceSourceIn(allocator: std.mem.Allocator, value: FfiSurfaceSource) !Owned
     const cells = try allocator.alloc(Render.SurfaceCell, cell_count);
     errdefer allocator.free(cells);
     for (cells, 0..) |*dst, idx| dst.* = cellValueIn(value.cells.ptr[idx]);
+    const dirty_rows = try dirtyRowsIn(allocator, value.rows, value.dirty_rows);
+    errdefer if (dirty_rows.len > 0) allocator.free(dirty_rows);
+    const dirty_cols_start = try dirtyColsIn(allocator, value.rows, value.dirty_cols_start);
+    errdefer if (dirty_cols_start.len > 0) allocator.free(dirty_cols_start);
+    const dirty_cols_end = try dirtyColsIn(allocator, value.rows, value.dirty_cols_end);
+    errdefer if (dirty_cols_end.len > 0) allocator.free(dirty_cols_end);
     return .{
         .allocator = allocator,
         .cells = cells,
+        .dirty_rows = dirty_rows,
+        .dirty_cols_start = dirty_cols_start,
+        .dirty_cols_end = dirty_cols_end,
         .frame = .{
             .viewport = .{
                 .cols = value.cols,
@@ -669,9 +692,26 @@ fn surfaceSourceIn(allocator: std.mem.Allocator, value: FfiSurfaceSource) !Owned
             .damage = .{
                 .full = value.full_damage != 0,
                 .scroll_up_rows = value.scroll_up_rows,
+                .dirty_rows = dirty_rows,
+                .dirty_cols_start = dirty_cols_start,
+                .dirty_cols_end = dirty_cols_end,
             },
         },
     };
+}
+
+fn dirtyRowsIn(allocator: std.mem.Allocator, rows: u16, span: FfiByteSpan) ![]bool {
+    if (span.len == 0) return &.{};
+    if (span.ptr == null or span.len != rows) return error.InvalidSurfaceSource;
+    const out = try allocator.alloc(bool, rows);
+    for (out, 0..) |*dst, idx| dst.* = span.ptr[idx] != 0;
+    return out;
+}
+
+fn dirtyColsIn(allocator: std.mem.Allocator, rows: u16, span: FfiU16Span) ![]u16 {
+    if (span.len == 0) return &.{};
+    if (span.ptr == null or span.len != rows) return error.InvalidSurfaceSource;
+    return try allocator.dupe(u16, span.ptr[0..rows]);
 }
 
 fn surfaceMetricsOut(value: Render.RenderMetrics) FfiSurfaceMetrics {
@@ -721,6 +761,10 @@ fn rectSpanOut(items: []const FfiRect) FfiRectSpan {
 }
 
 fn byteSpanOut(items: []const u8) FfiByteSpan {
+    return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
+}
+
+fn u16SpanOut(items: []const u16) FfiU16Span {
     return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
 }
 
