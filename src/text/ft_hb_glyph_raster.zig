@@ -12,10 +12,35 @@ const HbFont = c_api.HbFont;
 const PixelIndex = @TypeOf(@as([]const u8, &.{}).len);
 
 fn lockFt(self: anytype) void {
-    self.text_state.ft_mutex.lock();
+    const T = @TypeOf(self.*);
+    if (@hasField(T, "text_state")) {
+        self.text_state.ft_mutex.lock();
+        return;
+    }
+    if (@hasField(T, "session")) {
+        self.session.text_state.ft_mutex.lock();
+        return;
+    }
+    @compileError("text state owner missing text_state field");
 }
 fn unlockFt(self: anytype) void {
-    self.text_state.ft_mutex.unlock();
+    const T = @TypeOf(self.*);
+    if (@hasField(T, "text_state")) {
+        self.text_state.ft_mutex.unlock();
+        return;
+    }
+    if (@hasField(T, "session")) {
+        self.session.text_state.ft_mutex.unlock();
+        return;
+    }
+    @compileError("text state owner missing text_state field");
+}
+
+fn configView(self: anytype) render.SurfaceTextConfig {
+    const T = @TypeOf(self.*);
+    if (@hasField(T, "config")) return self.config;
+    if (@hasField(T, "session_config")) return self.session_config;
+    @compileError("text config owner missing session config");
 }
 
 pub fn providerRasterizeSprite(comptime ContextType: type, ctx: *anyopaque, allocator: std.mem.Allocator, req: render.SpriteRasterRequest) anyerror!render.Text.Rasterizer.RasterSpriteOutput {
@@ -87,7 +112,7 @@ fn rasterizeProviderGlyphFromFace(_: anytype, dst: []u8, width: u16, height: u16
     return true;
 }
 fn setFacePixelHeight(self: anytype, face: FtFace) bool {
-    return c.FT_Set_Pixel_Sizes(face, 0, @max(self.config.font_size_px, 1)) == 0;
+    return c.FT_Set_Pixel_Sizes(face, 0, @max(configView(self).font_size_px, 1)) == 0;
 }
 fn faceMetricsInput(face: FtFace, font_size_px: u16) contract.FaceMetrics26Dot6 {
     const metrics = face.*.size.*.metrics;
@@ -194,5 +219,9 @@ fn cellBitmapOrigin(cell_width: u16, baseline: i32, bitmap_left: i32, bitmap_top
     return .{ .x_px = x_px, .y_px = y_px };
 }
 fn useDeterministicTestTextFallback(context: anytype) bool {
-    return builtin.is_test and context.config.font_path == null and context.text_state.fallback_font_paths_len == 0;
+    return builtin.is_test and configView(context).font_path == null and blk: {
+        const T = @TypeOf(context.*);
+        if (@hasField(T, "text_state")) break :blk context.text_state.fallback_font_paths_len == 0;
+        break :blk context.session.text_state.fallback_font_paths_len == 0;
+    };
 }

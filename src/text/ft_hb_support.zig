@@ -59,7 +59,17 @@ pub const State = struct {
 };
 
 fn textState(self: anytype) *State {
-    return &self.text_state;
+    const T = @TypeOf(self.*);
+    if (@hasField(T, "text_state")) return &self.text_state;
+    if (@hasField(T, "session")) return &self.session.text_state;
+    @compileError("text state owner missing text_state field");
+}
+
+fn configView(self: anytype) render.SurfaceTextConfig {
+    const T = @TypeOf(self.*);
+    if (@hasField(T, "config")) return self.config;
+    if (@hasField(T, "session_config")) return self.session_config;
+    @compileError("text config owner missing session config");
 }
 
 fn lockFt(self: anytype) void {
@@ -279,10 +289,11 @@ pub fn ensurePrimaryFont(self: anytype) bool {
     defer unlockFt(self);
     if (state.ft_face != null) return true;
     if (!ensureFreeTypeLibraryLocked(self)) return false;
-    if (self.config.font_path == null) return false;
+    const config = configView(self);
+    if (config.font_path == null) return false;
     var face: FtFace = undefined;
     const lib = state.ft_lib.?;
-    const font_path = self.config.font_path.?;
+    const font_path = config.font_path.?;
     if (c.FT_New_Face(lib, font_path, 0, &face) != 0) return false;
     if (!setFacePixelHeight(self, face)) {
         _ = c.FT_Done_Face(face);
@@ -369,7 +380,7 @@ pub fn deriveCellMetrics(self: anytype) render.CellMetrics {
     if (ensurePrimaryFont(self)) {
         lockFt(self);
         defer unlockFt(self);
-        return cellMetricsFromFace(state.ft_face.?, self.config.font_size_px);
+        return cellMetricsFromFace(state.ft_face.?, configView(self).font_size_px);
     }
     lockFt(self);
     defer unlockFt(self);
@@ -382,16 +393,17 @@ pub fn deriveCellMetrics(self: anytype) render.CellMetrics {
             if (c.FT_New_Face(lib, font_path.ptr, 0, &face) != 0) continue;
             defer _ = c.FT_Done_Face(face);
             if (!setFacePixelHeight(self, face)) continue;
-            return cellMetricsFromFace(face, self.config.font_size_px);
+            return cellMetricsFromFace(face, configView(self).font_size_px);
         }
     }
-    return defaultCellMetrics(self.config.font_size_px);
+    return defaultCellMetrics(configView(self).font_size_px);
 }
 
 pub fn configuredCellMetrics(self: anytype) render.CellMetrics {
     const state = textState(self);
-    const cell_w = @max(self.config.cell_px.width, 1);
-    const cell_h = @max(self.config.cell_px.height, 1);
+    const config = configView(self);
+    const cell_w = @max(config.cell_px.width, 1);
+    const cell_h = @max(config.cell_px.height, 1);
     var baseline = @as(i32, @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)));
     if (ensurePrimaryFont(self)) {
         lockFt(self);
@@ -501,7 +513,7 @@ fn glyphAdvanceFromFace(self: anytype, face: FtFace, glyph_id: u32, cell_metrics
 }
 
 fn setFacePixelHeight(self: anytype, face: FtFace) bool {
-    return c.FT_Set_Pixel_Sizes(face, 0, @max(self.config.font_size_px, 1)) == 0;
+    return c.FT_Set_Pixel_Sizes(face, 0, @max(configView(self).font_size_px, 1)) == 0;
 }
 
 fn cellMetricsFromFace(face: FtFace, font_size_px: u16) render.CellMetrics {
@@ -585,7 +597,7 @@ fn fallbackSlot(self: anytype, fallback_index: u32) ?usize {
 }
 
 fn useDeterministicTestTextFallback(self: anytype) bool {
-    return builtin.is_test and self.config.font_path == null and textState(self).fallback_font_paths_len == 0;
+    return builtin.is_test and configView(self).font_path == null and textState(self).fallback_font_paths_len == 0;
 }
 
 fn defaultCellMetrics(font_px: u16) render.CellMetrics {

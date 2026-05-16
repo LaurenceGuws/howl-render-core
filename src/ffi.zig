@@ -1,56 +1,19 @@
 
 const std = @import("std");
 const Render = @import("howl_render.zig");
-const SurfaceSession = Render.SurfaceSession;
-const snapshot_mod = @import("frame/snapshot.zig");
+const SurfaceText = Render.SurfaceText;
 const surface = @import("frame/surface.zig");
+const text_support = @import("text/ft_hb_support.zig");
 
-pub const HowlRenderSnapshot = opaque {};
-pub const HowlRenderRuntime = opaque {};
-pub const HowlRenderSurfaceSession = opaque {};
+pub const HowlRenderSurfaceText = opaque {};
 pub const HowlRenderPreparedSurfaceObject = opaque {};
 
-pub const SnapshotHandle = ?*HowlRenderSnapshot;
-pub const RuntimeHandle = ?*HowlRenderRuntime;
-pub const SurfaceSessionHandle = ?*HowlRenderSurfaceSession;
+pub const SurfaceTextHandle = ?*HowlRenderSurfaceText;
 pub const PreparedSurfaceHandle = ?*HowlRenderPreparedSurfaceObject;
 
-const SnapshotOwner = struct {
-    snapshot: Render.FrameSnapshot,
-
-    fn create(rows: u16, cols: u16) ?*SnapshotOwner {
-        if (rows == 0 or cols == 0) return null;
-        const owner = std.heap.c_allocator.create(SnapshotOwner) catch return null;
-        owner.snapshot = Render.FrameSnapshot.init(std.heap.c_allocator, rows, cols) catch {
-            std.heap.c_allocator.destroy(owner);
-            return null;
-        };
-        return owner;
-    }
-
-    fn destroy(self: *SnapshotOwner) void {
-        self.snapshot.deinit(std.heap.c_allocator);
-        std.heap.c_allocator.destroy(self);
-    }
-};
-
-const RuntimeOwner = struct {
-    runtime: Render.RenderRuntime,
-
-    fn create() ?*RuntimeOwner {
-        const owner = std.heap.c_allocator.create(RuntimeOwner) catch return null;
-        owner.runtime = Render.RenderRuntime.init(std.heap.c_allocator);
-        return owner;
-    }
-
-    fn destroy(self: *RuntimeOwner) void {
-        self.runtime.deinit();
-        std.heap.c_allocator.destroy(self);
-    }
-};
-
-const SurfaceSessionOwner = struct {
-    session: SurfaceSession,
+const SurfaceTextOwner = struct {
+    session: SurfaceText,
+    config: Render.SurfaceTextConfig,
     font_path: ?[:0]u8 = null,
     fallback_font_paths: std.ArrayList([:0]u8) = .empty,
     clear_draws: std.ArrayList(FfiColorDraw) = .empty,
@@ -60,13 +23,13 @@ const SurfaceSessionOwner = struct {
     cursor_draws: std.ArrayList(FfiColorDraw) = .empty,
     raster_uploads: std.ArrayList(FfiRasterUpload) = .empty,
 
-    fn create(config: Render.SurfaceSessionConfig) ?*SurfaceSessionOwner {
-        const owner = std.heap.c_allocator.create(SurfaceSessionOwner) catch return null;
-        owner.* = .{ .session = SurfaceSession.init(config) };
+    fn create(config: Render.SurfaceTextConfig) ?*SurfaceTextOwner {
+        const owner = std.heap.c_allocator.create(SurfaceTextOwner) catch return null;
+        owner.* = .{ .session = SurfaceText.init(), .config = config };
         return owner;
     }
 
-    fn destroy(self: *SurfaceSessionOwner) void {
+    fn destroy(self: *SurfaceTextOwner) void {
         if (self.font_path) |path| std.heap.c_allocator.free(path);
         self.font_path = null;
         for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
@@ -81,7 +44,7 @@ const SurfaceSessionOwner = struct {
         std.heap.c_allocator.destroy(self);
     }
 
-    fn resetPreparedViews(self: *SurfaceSessionOwner) void {
+    fn resetPreparedViews(self: *SurfaceTextOwner) void {
         self.clear_draws.clearRetainingCapacity();
         self.background_draws.clearRetainingCapacity();
         self.sprite_draws.clearRetainingCapacity();
@@ -92,10 +55,12 @@ const SurfaceSessionOwner = struct {
 };
 
 const PreparedSurfaceOwner = struct {
-    session_owner: *SurfaceSessionOwner,
+    session_owner: *SurfaceTextOwner,
+    prepared: Render.PreparedSurface,
     snapshot_seq: u64,
     dirty_epoch: u64,
     geometry_epoch: u64,
+    required_base_seq: u64,
     required_surface_epoch: u64,
     render_px: FfiPixelSize,
     cell_px: FfiCellSize,
@@ -118,6 +83,7 @@ const PreparedSurfaceOwner = struct {
     resolve_metrics: FfiSurfaceMetrics,
 
     fn destroy(self: *PreparedSurfaceOwner) void {
+        self.prepared.deinit();
         freeOwnedSlice(FfiColorDraw, &self.clear_draws);
         freeOwnedSlice(FfiColorDraw, &self.background_draws);
         freeOwnedSlice(FfiSpriteBatch, &self.sprite_batches);
@@ -129,6 +95,17 @@ const PreparedSurfaceOwner = struct {
         freeOwnedSlice(FfiUploadOp, &self.uploads);
         freeOwnedSlice(u8, &self.pixel_blob);
         std.heap.c_allocator.destroy(self);
+    }
+};
+
+const OwnedSurfaceSource = struct {
+    allocator: std.mem.Allocator,
+    cells: []Render.SurfaceCell,
+    frame: Render.SurfaceFrameData,
+
+    fn deinit(self: *OwnedSurfaceSource) void {
+        self.allocator.free(self.cells);
+        self.* = undefined;
     }
 };
 
@@ -226,6 +203,11 @@ pub const FfiRasterUpload = extern struct {
 
 pub const FfiColorDrawSpan = extern struct {
     ptr: [*c]const FfiColorDraw,
+    len: usize,
+};
+
+pub const FfiCellSpan = extern struct {
+    ptr: [*c]const FfiCell,
     len: usize,
 };
 
@@ -336,41 +318,6 @@ pub const FfiGeometryResponse = extern struct {
     geometry_epoch: u64,
 };
 
-pub const FfiSourceView = extern struct {
-    snapshot_handle: SnapshotHandle,
-    cols: u16,
-    rows: u16,
-    scrollback_count: u64,
-    scrollback_offset: u64,
-    selection_anchor_valid: u8,
-    selection_current_valid: u8,
-    focused: u8,
-    hover_underline_style: u8,
-    selection_anchor_depth: u64,
-    selection_anchor_col: u16,
-    reserved0: u16 = 0,
-    selection_current_depth: u64,
-    selection_current_col: u16,
-    reserved1: u16 = 0,
-    hover_link_id: u32,
-    snapshot_seq: u64,
-    vt_epoch: u64,
-    last_alt_screen: u8,
-    reserved2: u8 = 0,
-    reserved3: u8 = 0,
-    reserved4: u8 = 0,
-};
-
-pub const FfiSourceResponse = extern struct {
-    status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
-    published: u8,
-    queued: u8,
-    damage_kind: u8,
-    reserved0: u8 = 0,
-    source_seq: u64,
-    geometry_epoch: u64,
-};
-
 pub const FfiSurfaceQuery = extern struct {
     status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
     render_px: FfiPixelSize,
@@ -381,24 +328,27 @@ pub const FfiSurfaceQuery = extern struct {
     epoch: u64,
 };
 
-pub const FfiRuntimeMetrics = extern struct {
-    status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
-    snapshot_publishes: u64,
-    snapshot_hidden_drops: u64,
-    snapshot_clean_drops: u64,
-    prepare_requests: u64,
-    prepare_coalesces: u64,
-    prepare_forced_full: u64,
-    prepare_takes: u64,
-    prepared_publishes: u64,
-    prepared_coalesces: u64,
-    submit_takes: u64,
-    submit_valid: u64,
-    submit_rejected: u64,
-    full_prepare_requests: u64,
-    submitted_accepts: u64,
-    presents: u64,
-    target_invalidations: u64,
+pub const FfiPrepareRequest = extern struct {
+    snapshot_seq: u64,
+    dirty_epoch: u64,
+    geometry_epoch: u64,
+    damage_base_seq: u64,
+    known_target_epoch: u64,
+    target_valid: u8,
+    damage_kind: u8,
+    reserved0: u16 = 0,
+};
+
+pub const FfiPreparedFrame = extern struct {
+    snapshot_seq: u64,
+    dirty_epoch: u64,
+    geometry_epoch: u64,
+    damage_base_seq: u64,
+    required_base_seq: u64,
+    required_target_epoch: u64,
+    damage_kind: u8,
+    reserved0: u8 = 0,
+    reserved1: u16 = 0,
 };
 
 pub const FfiSurfaceMetrics = extern struct {
@@ -433,6 +383,7 @@ pub const FfiPreparedSurfaceInfo = extern struct {
     snapshot_seq: u64,
     dirty_epoch: u64,
     geometry_epoch: u64,
+    required_base_seq: u64,
     required_surface_epoch: u64,
     render_px: FfiPixelSize,
     cell_px: FfiCellSize,
@@ -535,6 +486,17 @@ pub const FfiSurfaceExecutionInput = extern struct {
     reserved0: u16 = 0,
 };
 
+pub const FfiSurfaceSource = extern struct {
+    cells: FfiCellSpan,
+    cols: u16,
+    rows: u16,
+    scroll_row: u64,
+    is_alternate_screen: u8,
+    full_damage: u8,
+    scroll_up_rows: u16,
+    cursor: FfiCursor,
+};
+
 pub const FfiSurfaceFeedback = extern struct {
     status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
     damage_kind: u8,
@@ -544,7 +506,7 @@ pub const FfiSurfaceFeedback = extern struct {
     metrics: FfiSurfaceMetrics,
 };
 
-pub const FfiSurfaceSessionConfig = extern struct {
+pub const FfiSurfaceTextConfig = extern struct {
     surface_px: FfiPixelSize,
     cell_px: FfiCellSize,
     font_size_px: u16,
@@ -658,38 +620,6 @@ fn geometryOut(value: surface.GeometryResponse) FfiGeometryResponse {
     };
 }
 
-fn sourceViewIn(value: FfiSourceView) ?snapshot_mod.SourceView {
-    const owner = snapshotOwnerFromHandle(value.snapshot_handle) orelse return null;
-    return .{
-        .snapshot = &owner.snapshot,
-        .cols = value.cols,
-        .rows = value.rows,
-        .scrollback_count = value.scrollback_count,
-        .scrollback_offset = value.scrollback_offset,
-        .selection_anchor_depth = if (value.selection_anchor_valid != 0) value.selection_anchor_depth else null,
-        .selection_anchor_col = if (value.selection_anchor_valid != 0) value.selection_anchor_col else null,
-        .selection_current_depth = if (value.selection_current_valid != 0) value.selection_current_depth else null,
-        .selection_current_col = if (value.selection_current_valid != 0) value.selection_current_col else null,
-        .focused = value.focused != 0,
-        .hover_link_id = value.hover_link_id,
-        .hover_underline_style = underlineStyleIn(value.hover_underline_style),
-        .snapshot_seq = value.snapshot_seq,
-        .vt_epoch = value.vt_epoch,
-        .last_alt_screen = value.last_alt_screen != 0,
-    };
-}
-
-fn sourceResponseOut(value: snapshot_mod.SourceResponse) FfiSourceResponse {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .published = boolByte(value.published),
-        .queued = boolByte(value.queued),
-        .damage_kind = @intFromEnum(value.damage_kind),
-        .source_seq = value.source_seq,
-        .geometry_epoch = value.geometry_epoch,
-    };
-}
-
 fn surfaceQueryOut(value: Render.SurfaceQuery) FfiSurfaceQuery {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
@@ -701,25 +631,39 @@ fn surfaceQueryOut(value: Render.SurfaceQuery) FfiSurfaceQuery {
     };
 }
 
-fn metricsOut(value: Render.Metrics) FfiRuntimeMetrics {
+fn surfaceQueryIn(value: FfiSurfaceQuery) Render.SurfaceQuery {
     return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .snapshot_publishes = value.snapshot_publishes,
-        .snapshot_hidden_drops = value.snapshot_hidden_drops,
-        .snapshot_clean_drops = value.snapshot_clean_drops,
-        .prepare_requests = value.prepare_requests,
-        .prepare_coalesces = value.prepare_coalesces,
-        .prepare_forced_full = value.prepare_forced_full,
-        .prepare_takes = value.prepare_takes,
-        .prepared_publishes = value.prepared_publishes,
-        .prepared_coalesces = value.prepared_coalesces,
-        .submit_takes = value.submit_takes,
-        .submit_valid = value.submit_valid,
-        .submit_rejected = value.submit_rejected,
-        .full_prepare_requests = value.full_prepare_requests,
-        .submitted_accepts = value.submitted_accepts,
-        .presents = value.presents,
-        .target_invalidations = value.target_invalidations,
+        .render_px = .{ .width = value.render_px.width, .height = value.render_px.height },
+        .grid_px = .{ .width = value.grid_px.width, .height = value.grid_px.height },
+        .cell_px = .{ .width = value.cell_px.width, .height = value.cell_px.height },
+        .font_size_px = value.font_size_px,
+        .epoch = value.epoch,
+    };
+}
+
+fn surfaceSourceIn(allocator: std.mem.Allocator, value: FfiSurfaceSource) !OwnedSurfaceSource {
+    const cell_count = @as(usize, value.cols) * @as(usize, value.rows);
+    if (value.cells.len < cell_count) return error.InvalidSurfaceSource;
+    const cells = try allocator.alloc(Render.SurfaceCell, cell_count);
+    errdefer allocator.free(cells);
+    for (cells, 0..) |*dst, idx| dst.* = cellValueIn(value.cells.ptr[idx]);
+    return .{
+        .allocator = allocator,
+        .cells = cells,
+        .frame = .{
+            .viewport = .{
+                .cols = value.cols,
+                .rows = value.rows,
+                .scroll_row = @intCast(value.scroll_row),
+                .is_alternate_screen = value.is_alternate_screen != 0,
+            },
+            .grid = .{ .cells = cells, .cols = value.cols, .rows = value.rows },
+            .cursor = cursorIn(value.cursor),
+            .damage = .{
+                .full = value.full_damage != 0,
+                .scroll_up_rows = value.scroll_up_rows,
+            },
+        },
     };
 }
 
@@ -785,7 +729,7 @@ fn spriteInstanceSpanOut(items: []const FfiSpriteInstance) FfiSpriteInstanceSpan
     return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
 }
 
-fn preparePreparedViews(owner: *SurfaceSessionOwner, value: Render.PreparedSurface) !void {
+fn preparePreparedViews(owner: *SurfaceTextOwner, value: Render.PreparedSurface) !void {
     owner.resetPreparedViews();
     try owner.clear_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.clear_draws.len);
     try owner.background_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.background_draws.len);
@@ -888,6 +832,7 @@ fn prepareInfoOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceInfo {
         .snapshot_seq = owner.snapshot_seq,
         .dirty_epoch = owner.dirty_epoch,
         .geometry_epoch = owner.geometry_epoch,
+        .required_base_seq = owner.required_base_seq,
         .required_surface_epoch = owner.required_surface_epoch,
         .render_px = owner.render_px,
         .cell_px = owner.cell_px,
@@ -935,7 +880,7 @@ fn prepareDiagnosticsOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceDiagnos
     };
 }
 
-fn executionInputIn(value: FfiSurfaceExecutionInput) SurfaceSession.SurfaceExecutionInput {
+fn executionInputIn(value: FfiSurfaceExecutionInput) SurfaceText.SurfaceExecutionInput {
     return .{
         .surface = .{
             .texture_id = value.surface.texture_id,
@@ -949,19 +894,56 @@ fn executionInputIn(value: FfiSurfaceExecutionInput) SurfaceSession.SurfaceExecu
     };
 }
 
+fn prepareRequestIn(value: FfiPrepareRequest) SurfaceText.PrepareInput {
+    return .{
+        .config = undefined,
+        .request = .{
+            .token = .{
+                .snapshot_seq = value.snapshot_seq,
+                .dirty_epoch = value.dirty_epoch,
+                .geometry_epoch = value.geometry_epoch,
+                .damage_base_seq = value.damage_base_seq,
+                .damage_kind = @enumFromInt(value.damage_kind),
+            },
+            .known_target_epoch = value.known_target_epoch,
+            .allow_retained_reuse = true,
+            .priority = .opportunistic,
+        },
+        .query = undefined,
+        .state = undefined,
+        .target_valid = value.target_valid != 0,
+    };
+}
+
+fn preparedFrameIn(value: FfiPreparedFrame) Render.FramePipeline.PreparedFrame {
+    return .{
+        .token = .{
+            .snapshot_seq = value.snapshot_seq,
+            .dirty_epoch = value.dirty_epoch,
+            .geometry_epoch = value.geometry_epoch,
+            .damage_base_seq = value.damage_base_seq,
+            .damage_kind = @enumFromInt(value.damage_kind),
+        },
+        .required_base_seq = value.required_base_seq,
+        .required_target_epoch = value.required_target_epoch,
+    };
+}
+
 fn atlasPageForPrepared(slot: u32, atlas_page_slots: u32) u16 {
     if (atlas_page_slots == 0) return 0;
     return @intCast(slot / atlas_page_slots);
 }
 
-fn preparedSurfaceOwnerCreate(session_owner: *SurfaceSessionOwner, value: Render.PreparedSurface) !*PreparedSurfaceOwner {
+fn preparedSurfaceOwnerCreate(session_owner: *SurfaceTextOwner, value: Render.PreparedSurface) !*PreparedSurfaceOwner {
     var owner = try std.heap.c_allocator.create(PreparedSurfaceOwner);
     errdefer std.heap.c_allocator.destroy(owner);
     owner.* = .{
         .session_owner = session_owner,
+        .prepared = value,
         .snapshot_seq = value.request.token.snapshot_seq,
         .dirty_epoch = value.request.token.dirty_epoch,
         .geometry_epoch = value.geometry_epoch,
+        .required_base_seq = value.pipelineFrame().required_base_seq,
         .required_surface_epoch = value.required_surface_epoch,
         .render_px = .{ .width = value.render_px.width, .height = value.render_px.height },
         .cell_px = .{ .width = value.cell_px.width, .height = value.cell_px.height },
@@ -1104,17 +1086,7 @@ fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     };
 }
 
-fn snapshotOwnerFromHandle(handle: SnapshotHandle) ?*SnapshotOwner {
-    const owned = handle orelse return null;
-    return @ptrCast(@alignCast(owned));
-}
-
-fn runtimeOwnerFromHandle(handle: RuntimeHandle) ?*RuntimeOwner {
-    const owned = handle orelse return null;
-    return @ptrCast(@alignCast(owned));
-}
-
-fn surfaceSessionOwnerFromHandle(handle: SurfaceSessionHandle) ?*SurfaceSessionOwner {
+fn surfaceTextOwnerFromHandle(handle: SurfaceTextHandle) ?*SurfaceTextOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
@@ -1141,138 +1113,18 @@ pub fn deriveFrameGridSize(render_px: FfiPixelSize, grid_px: FfiPixelSize, cell_
     return .{ .status = 0, .grid = gridOut(grid) };
 }
 
-pub fn surfaceSessionDeriveFrameLayout(handle: SurfaceSessionHandle, render_px: FfiPixelSize, grid_px: FfiPixelSize) callconv(.c) FfiFrameLayoutResult {
-    const owner = surfaceSessionOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .cell_px = .{ .width = 0, .height = 0 }, .grid = .{ .cols = 0, .rows = 0 } };
-    const layout = owner.session.deriveFrameLayout(pixelIn(render_px), pixelIn(grid_px)) catch {
+pub fn surfaceTextDeriveFrameLayout(handle: SurfaceTextHandle, render_px: FfiPixelSize, grid_px: FfiPixelSize) callconv(.c) FfiFrameLayoutResult {
+    const owner = surfaceTextOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .cell_px = .{ .width = 0, .height = 0 }, .grid = .{ .cols = 0, .rows = 0 } };
+    const layout = owner.session.deriveFrameLayout(owner.config, pixelIn(render_px), pixelIn(grid_px)) catch {
         return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .cell_px = .{ .width = 0, .height = 0 }, .grid = .{ .cols = 0, .rows = 0 } };
     };
     return .{ .status = 0, .cell_px = .{ .width = layout.cell_px.width, .height = layout.cell_px.height }, .grid = gridOut(layout.grid) };
 }
 
-pub fn snapshotInit(rows: u16, cols: u16) callconv(.c) SnapshotHandle {
-    const owner = SnapshotOwner.create(rows, cols) orelse return null;
-    return @ptrCast(owner);
-}
-
-pub fn snapshotDeinit(handle: SnapshotHandle) callconv(.c) void {
-    const owner = snapshotOwnerFromHandle(handle) orelse return;
-    owner.destroy();
-}
-
-pub fn snapshotResize(handle: SnapshotHandle, rows: u16, cols: u16) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    if (rows == 0 or cols == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    owner.snapshot.resize(std.heap.c_allocator, rows, cols) catch return @intFromEnum(HowlRenderCallStatus.failed);
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn snapshotMarkFullDirty(handle: SnapshotHandle) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    owner.snapshot.markFullDirty();
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn snapshotClearDirty(handle: SnapshotHandle) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    owner.snapshot.clearDirty();
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn snapshotSetViewport(handle: SnapshotHandle, scroll_row: u64, is_alternate_screen: c_int) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    owner.snapshot.scroll_row = @intCast(scroll_row);
-    owner.snapshot.is_alternate_screen = is_alternate_screen != 0;
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn snapshotSetCursor(handle: SnapshotHandle, cursor: FfiCursor) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    owner.snapshot.cursor = cursorIn(cursor);
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn snapshotWriteCell(handle: SnapshotHandle, row: u16, col: u16, cell: FfiCell) callconv(.c) c_int {
-    const owner = snapshotOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    if (row >= owner.snapshot.rows or col >= owner.snapshot.cols) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    const idx = @as(usize, row) * @as(usize, owner.snapshot.cols) + @as(usize, col);
-    owner.snapshot.cells.items[idx] = cellValueIn(cell);
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn runtimeInit() callconv(.c) RuntimeHandle {
-    const owner = RuntimeOwner.create() orelse return null;
-    return @ptrCast(owner);
-}
-
-pub fn runtimeDeinit(handle: RuntimeHandle) callconv(.c) void {
-    const owner = runtimeOwnerFromHandle(handle) orelse return;
-    owner.destroy();
-}
-
-pub fn runtimeSetFontSizePx(handle: RuntimeHandle, font_size_px: u16) callconv(.c) c_int {
-    const owner = runtimeOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    if (font_size_px == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    owner.runtime.setFontSizePx(font_size_px);
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn runtimeSyncGeometry(handle: RuntimeHandle, geometry: FfiGeometry) callconv(.c) FfiGeometryResponse {
-    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
-    if (geometry.render_px.width == 0 or geometry.render_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
-    if (geometry.grid_px.width == 0 or geometry.grid_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
-    if (geometry.cell_px.width == 0 or geometry.cell_px.height == 0) return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .changed = 0, .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .geometry_epoch = 0 };
-    return geometryOut(owner.runtime.syncGeometry(geometryIn(geometry)));
-}
-
-pub fn runtimePublishSnapshot(handle: RuntimeHandle, source: FfiSourceView) callconv(.c) FfiSourceResponse {
-    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
-    const typed = sourceViewIn(source) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.invalid_argument), .published = 0, .queued = 0, .damage_kind = 0, .source_seq = 0, .geometry_epoch = 0 };
-    return sourceResponseOut(owner.runtime.acceptSource(typed));
-}
-
-pub fn runtimeMarkPresented(handle: RuntimeHandle) callconv(.c) void {
-    const owner = runtimeOwnerFromHandle(handle) orelse return;
-    owner.runtime.markPresented();
-}
-
-pub fn runtimeSurfaceQuery(handle: RuntimeHandle) callconv(.c) FfiSurfaceQuery {
-    const owner = runtimeOwnerFromHandle(handle) orelse return .{ .status = @intFromEnum(HowlRenderCallStatus.missing_handle), .render_px = .{ .width = 0, .height = 0 }, .grid_px = .{ .width = 0, .height = 0 }, .cell_px = .{ .width = 0, .height = 0 }, .font_size_px = 0, .epoch = 0 };
-    return surfaceQueryOut(owner.runtime.surfaceQuery());
-}
-
-pub fn runtimeTakeMetrics(handle: RuntimeHandle) callconv(.c) FfiRuntimeMetrics {
-    const owner = runtimeOwnerFromHandle(handle) orelse return .{
-        .status = @intFromEnum(HowlRenderCallStatus.missing_handle),
-        .snapshot_publishes = 0,
-        .snapshot_hidden_drops = 0,
-        .snapshot_clean_drops = 0,
-        .prepare_requests = 0,
-        .prepare_coalesces = 0,
-        .prepare_forced_full = 0,
-        .prepare_takes = 0,
-        .prepared_publishes = 0,
-        .prepared_coalesces = 0,
-        .submit_takes = 0,
-        .submit_valid = 0,
-        .submit_rejected = 0,
-        .full_prepare_requests = 0,
-        .submitted_accepts = 0,
-        .presents = 0,
-        .target_invalidations = 0,
-    };
-    return metricsOut(owner.runtime.takeMetrics());
-}
-
-pub fn runtimeResetMetrics(handle: RuntimeHandle) callconv(.c) c_int {
-    const owner = runtimeOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    owner.runtime.resetMetrics();
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn surfaceSessionInit(config: FfiSurfaceSessionConfig) callconv(.c) SurfaceSessionHandle {
+pub fn surfaceTextInit(config: FfiSurfaceTextConfig) callconv(.c) SurfaceTextHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return null;
     if (config.cell_px.width == 0 or config.cell_px.height == 0) return null;
-    const owner = SurfaceSessionOwner.create(.{
+    const owner = SurfaceTextOwner.create(.{
         .surface_px = pixelIn(config.surface_px),
         .cell_px = cellInSize(config.cell_px),
         .font_size_px = if (config.font_size_px == 0) config.cell_px.height else config.font_size_px,
@@ -1280,41 +1132,46 @@ pub fn surfaceSessionInit(config: FfiSurfaceSessionConfig) callconv(.c) SurfaceS
     return @ptrCast(owner);
 }
 
-pub fn surfaceSessionDeinit(handle: SurfaceSessionHandle) callconv(.c) void {
-    const owner = surfaceSessionOwnerFromHandle(handle) orelse return;
+pub fn surfaceTextDeinit(handle: SurfaceTextHandle) callconv(.c) void {
+    const owner = surfaceTextOwnerFromHandle(handle) orelse return;
     owner.destroy();
 }
 
-pub fn surfaceSessionSetFontSizePx(handle: SurfaceSessionHandle, font_size_px: u16) callconv(.c) c_int {
-    const owner = surfaceSessionOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+pub fn surfaceTextSetFontSizePx(handle: SurfaceTextHandle, font_size_px: u16) callconv(.c) c_int {
+    const owner = surfaceTextOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (font_size_px == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    owner.session.setFontSizePx(font_size_px);
+    owner.config.font_size_px = @max(font_size_px, 1);
+    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
-pub fn surfaceSessionSetFontPath(handle: SurfaceSessionHandle, ptr: ?[*]const u8, len: usize) callconv(.c) c_int {
-    const owner = surfaceSessionOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+pub fn surfaceTextSetFontPath(handle: SurfaceTextHandle, ptr: ?[*]const u8, len: usize) callconv(.c) c_int {
+    const owner = surfaceTextOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (len > 0 and ptr == null) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
     if (owner.font_path) |path| {
         std.heap.c_allocator.free(path);
         owner.font_path = null;
     }
     if (len == 0 or ptr == null) {
-        owner.session.setFontPath(null);
+        owner.config.font_path = null;
+        if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
         return @intFromEnum(HowlRenderCallStatus.ok);
     }
     const owned = std.heap.c_allocator.dupeZ(u8, ptr.?[0..len]) catch return @intFromEnum(HowlRenderCallStatus.failed);
     owner.font_path = owned;
-    owner.session.setFontPath(owned);
+    owner.config.font_path = owned;
+    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
-pub fn surfaceSessionSetFallbackFontPaths(handle: SurfaceSessionHandle, ptrs: ?[*]const ?[*]const u8, count: usize) callconv(.c) c_int {
-    const owner = surfaceSessionOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+pub fn surfaceTextSetFallbackFontPaths(handle: SurfaceTextHandle, ptrs: ?[*]const ?[*]const u8, count: usize) callconv(.c) c_int {
+    const owner = surfaceTextOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     for (owner.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
     owner.fallback_font_paths.clearRetainingCapacity();
     if (count == 0) {
-        owner.session.setFallbackFontPaths(&.{});
+        owner.session.text_state.fallback_font_paths_len = 0;
+        for (0..text_support.max_fallback_fonts) |i| owner.session.text_state.fallback_font_paths[i] = null;
+        if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
         return @intFromEnum(HowlRenderCallStatus.ok);
     }
     const raw_paths = ptrs orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
@@ -1324,26 +1181,33 @@ pub fn surfaceSessionSetFallbackFontPaths(handle: SurfaceSessionHandle, ptrs: ?[
         const owned = std.heap.c_allocator.dupeZ(u8, std.mem.sliceTo(raw, 0)) catch return @intFromEnum(HowlRenderCallStatus.failed);
         owner.fallback_font_paths.append(std.heap.c_allocator, owned) catch return @intFromEnum(HowlRenderCallStatus.failed);
     }
-    owner.session.setFallbackFontPaths(owner.fallback_font_paths.items);
+    const n: u8 = @intCast(@min(owner.fallback_font_paths.items.len, text_support.max_fallback_fonts));
+    owner.session.text_state.fallback_font_paths_len = n;
+    for (0..n) |slot| owner.session.text_state.fallback_font_paths[slot] = owner.fallback_font_paths.items[slot];
+    for (@as(usize, n)..text_support.max_fallback_fonts) |slot| owner.session.text_state.fallback_font_paths[slot] = null;
+    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
-pub fn surfacePrepareHandle(surface_session_handle: SurfaceSessionHandle, runtime_handle: RuntimeHandle, snapshot_handle: SnapshotHandle, prepared_handle_out: ?*PreparedSurfaceHandle) callconv(.c) HowlRenderPrepareStatus {
-    const owner = surfaceSessionOwnerFromHandle(surface_session_handle) orelse return .failed;
-    const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return .failed;
-    const snapshot = snapshotOwnerFromHandle(snapshot_handle) orelse return .failed;
-    return switch (owner.session.prepareSurface(std.heap.c_allocator, &runtime.runtime, snapshot.snapshot.frameData()) catch return .failed) {
-        .idle => .idle,
-        .prepared => blk: {
-            if (prepared_handle_out) |out| {
-                const prepared = owner.session.prepared orelse return .failed;
-                preparePreparedViews(owner, prepared.prepared) catch return .failed;
-                const prepared_owner = preparedSurfaceOwnerCreate(owner, prepared.prepared) catch return .failed;
-                out.* = @ptrCast(prepared_owner);
-            }
-            break :blk .ready;
-        },
-    };
+pub fn surfaceTextPrepareHandle(surface_text_handle: SurfaceTextHandle, surface_source_in: ?*const FfiSurfaceSource, prepare_request: FfiPrepareRequest, query: FfiSurfaceQuery, prepared_handle_out: ?*PreparedSurfaceHandle) callconv(.c) HowlRenderPrepareStatus {
+    const owner = surfaceTextOwnerFromHandle(surface_text_handle) orelse return .failed;
+    const surface_source_value = surface_source_in orelse return .failed;
+    var prepare = prepareRequestIn(prepare_request);
+    prepare.config = owner.config;
+    prepare.query = surfaceQueryIn(query);
+    var surface_source = surfaceSourceIn(std.heap.c_allocator, surface_source_value.*) catch return .failed;
+    defer surface_source.deinit();
+    prepare.state = surface_source.frame;
+    const prepared = owner.session.prepareSurface(std.heap.c_allocator, prepare) catch return .failed;
+    if (prepared_handle_out) |out| {
+        var prepared_owner = preparedSurfaceOwnerCreate(owner, prepared) catch return .failed;
+        preparePreparedViews(owner, prepared_owner.prepared) catch {
+            prepared_owner.destroy();
+            return .failed;
+        };
+        out.* = @ptrCast(prepared_owner);
+    }
+    return .ready;
 }
 
 pub fn preparedSurfaceRelease(prepared_surface_handle: PreparedSurfaceHandle) callconv(.c) void {
@@ -1386,294 +1250,39 @@ pub fn preparedSurfaceDiagnostics(prepared_surface_handle: PreparedSurfaceHandle
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
-pub fn surfaceSubmit(surface_session_handle: SurfaceSessionHandle, runtime_handle: RuntimeHandle, prepared_surface_handle: PreparedSurfaceHandle, execution_in: ?*const FfiSurfaceExecutionInput, feedback_out: ?*FfiSurfaceFeedback) callconv(.c) HowlRenderSubmitStatus {
-    const owner = surfaceSessionOwnerFromHandle(surface_session_handle) orelse return .failed;
-    const runtime = runtimeOwnerFromHandle(runtime_handle) orelse return .failed;
+pub fn surfaceTextSubmit(surface_text_handle: SurfaceTextHandle, prepared_surface_handle: PreparedSurfaceHandle, prepared_frame_in: FfiPreparedFrame, execution_in: ?*const FfiSurfaceExecutionInput, feedback_out: ?*FfiSurfaceFeedback) callconv(.c) HowlRenderSubmitStatus {
+    const owner = surfaceTextOwnerFromHandle(surface_text_handle) orelse return .failed;
     const prepared_owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return .failed;
     if (prepared_owner.session_owner != owner) return .failed;
     const execution = execution_in orelse return .failed;
-    return switch (owner.session.submitSurface(&runtime.runtime, executionInputIn(execution.*)) catch return .failed) {
-        .idle => .idle,
-        .stale => .stale,
-        .needs_full_prepare => .needs_prepare,
-        .rendered => |submitted| blk: {
-            if (feedback_out) |out| out.* = surfaceFeedbackOut(submitted);
-            prepared_owner.destroy();
-            break :blk .rendered;
-        },
-    };
+    const prepared_frame = preparedFrameIn(prepared_frame_in);
+    if (!samePreparedFrame(prepared_owner.prepared.pipelineFrame(), prepared_frame)) return .needs_prepare;
+    const submitted = owner.session.submitSurface(&prepared_owner.prepared, executionInputIn(execution.*)) catch return .failed;
+    if (feedback_out) |out| out.* = surfaceFeedbackOut(submitted);
+    prepared_owner.destroy();
+    return .rendered;
 }
 
-test "ffi snapshot owner rejects missing handle" {
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.missing_handle), snapshotResize(null, 2, 2));
-}
-
-test "ffi snapshot owner writes cells" {
-    const handle = snapshotInit(2, 2);
-    defer snapshotDeinit(handle);
-    try std.testing.expect(handle != null);
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), snapshotWriteCell(handle, 1, 1, .{
-        .codepoint = 'Z',
-        .flags = .{ .continuation = 0 },
-        .fg_color = .{ .kind = 2, .value = 0x010203 },
-        .bg_color = .{ .kind = 2, .value = 0x040506 },
-        .underline_color = .{ .kind = 0, .value = 0 },
-        .underline_style = 0,
-        .attrs = .{ .bold = 1, .dim = 0, .italic = 0, .underline = 0, .underline_color_set = 0, .blink = 0, .inverse = 0, .invisible = 0, .strikethrough = 0 },
-        .link_id = 3,
-    }));
-    const owner = snapshotOwnerFromHandle(handle).?;
-    const idx = @as(usize, 1) * 2 + 1;
-    try std.testing.expectEqual(@as(u21, 'Z'), owner.snapshot.cells.items[idx].codepoint);
-}
-
-test "ffi runtime owner handles geometry and publication" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    try std.testing.expect(runtime_handle != null);
-    _ = snapshotMarkFullDirty(snapshot_handle);
-    const geometry = runtimeSyncGeometry(runtime_handle, .{
-        .render_px = .{ .width = 16, .height = 16 },
-        .grid_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-    });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), geometry.status);
-    try std.testing.expectEqual(@as(u8, 1), geometry.changed);
-    const publish_response = runtimePublishSnapshot(runtime_handle, .{
-        .snapshot_handle = snapshot_handle,
-        .cols = 2,
-        .rows = 2,
-        .scrollback_count = 0,
-        .scrollback_offset = 0,
-        .selection_anchor_valid = 0,
-        .selection_current_valid = 0,
-        .focused = 1,
-        .hover_underline_style = 0,
-        .selection_anchor_depth = 0,
-        .selection_anchor_col = 0,
-        .selection_current_depth = 0,
-        .selection_current_col = 0,
-        .hover_link_id = 0,
-        .snapshot_seq = 1,
-        .vt_epoch = 1,
-        .last_alt_screen = 0,
-    });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), publish_response.status);
-    try std.testing.expectEqual(@as(u8, 1), publish_response.published);
-}
-
-test "ffi runtime owner reports missing handle and invalid geometry" {
-    const missing_geometry = runtimeSyncGeometry(null, .{ .render_px = .{ .width = 1, .height = 1 }, .grid_px = .{ .width = 1, .height = 1 }, .cell_px = .{ .width = 1, .height = 1 } });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.missing_handle), missing_geometry.status);
-
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const invalid_geometry = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 0, .height = 1 }, .grid_px = .{ .width = 1, .height = 1 }, .cell_px = .{ .width = 1, .height = 1 } });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.invalid_argument), invalid_geometry.status);
-
-    const missing_source = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = null, .cols = 1, .rows = 1, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.invalid_argument), missing_source.status);
+fn samePreparedFrame(a: Render.FramePipeline.PreparedFrame, b: Render.FramePipeline.PreparedFrame) bool {
+    return a.token.snapshot_seq == b.token.snapshot_seq and
+        a.token.dirty_epoch == b.token.dirty_epoch and
+        a.token.geometry_epoch == b.token.geometry_epoch and
+        a.token.damage_base_seq == b.token.damage_base_seq and
+        a.token.damage_kind == b.token.damage_kind and
+        a.required_base_seq == b.required_base_seq and
+        a.required_target_epoch == b.required_target_epoch;
 }
 
 test "ffi surface session rejects missing handle" {
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.missing_handle), surfaceSessionSetFontSizePx(null, 12));
+    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.missing_handle), surfaceTextSetFontSizePx(null, 12));
 }
 
 test "ffi surface session initializes" {
-    const handle = surfaceSessionInit(.{
+    const handle = surfaceTextInit(.{
         .surface_px = .{ .width = 16, .height = 16 },
         .cell_px = .{ .width = 8, .height = 8 },
         .font_size_px = 8,
     });
-    defer surfaceSessionDeinit(handle);
+    defer surfaceTextDeinit(handle);
     try std.testing.expect(handle != null);
-}
-
-test "ffi surface session detects stale runtime submit transition" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const surface_session_handle = surfaceSessionInit(.{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-        .font_size_px = 8,
-    });
-    defer surfaceSessionDeinit(surface_session_handle);
-
-    _ = snapshotMarkFullDirty(snapshot_handle);
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 16, .height = 16 }, .grid_px = .{ .width = 16, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    const publish_response = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = snapshot_handle, .cols = 2, .rows = 2, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), publish_response.status);
-    var prepared_handle: PreparedSurfaceHandle = null;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderPrepareStatus.ready), surfacePrepareHandle(surface_session_handle, runtime_handle, snapshot_handle, &prepared_handle));
-    defer preparedSurfaceRelease(prepared_handle);
-
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 24, .height = 16 }, .grid_px = .{ .width = 24, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    const execution = FfiSurfaceExecutionInput{
-        .surface = .{ .texture_id = 1, .width = 16, .height = 16, .epoch = 1 },
-        .uploads_committed = 0,
-        .render_us = 0,
-        .scroll_reuse_applied = 0,
-        .content_valid = 1,
-    };
-    try std.testing.expectEqual(HowlRenderSubmitStatus.needs_prepare, surfaceSubmit(surface_session_handle, runtime_handle, prepared_handle, &execution, null));
-}
-
-test "ffi prepared surface handle exposes owned package views" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const surface_session_handle = surfaceSessionInit(.{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-        .font_size_px = 8,
-    });
-    defer surfaceSessionDeinit(surface_session_handle);
-
-    _ = snapshotMarkFullDirty(snapshot_handle);
-    _ = snapshotWriteCell(snapshot_handle, 0, 0, .{
-        .codepoint = 'A',
-        .flags = .{ .continuation = 0 },
-        .fg_color = .{ .kind = 2, .value = 0xFFFFFF },
-        .bg_color = .{ .kind = 2, .value = 0x000000 },
-        .underline_color = .{ .kind = 0, .value = 0 },
-        .underline_style = 0,
-        .attrs = .{ .bold = 0, .dim = 0, .italic = 0, .underline = 0, .underline_color_set = 0, .blink = 0, .inverse = 0, .invisible = 0, .strikethrough = 0 },
-        .link_id = 0,
-    });
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 16, .height = 16 }, .grid_px = .{ .width = 16, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    const publish_response = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = snapshot_handle, .cols = 2, .rows = 2, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), publish_response.status);
-
-    var prepared_handle: PreparedSurfaceHandle = null;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderPrepareStatus.ready), surfacePrepareHandle(surface_session_handle, runtime_handle, snapshot_handle, &prepared_handle));
-    defer preparedSurfaceRelease(prepared_handle);
-    try std.testing.expect(prepared_handle != null);
-
-    var info: FfiPreparedSurfaceInfo = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDescribe(prepared_handle, &info));
-    try std.testing.expectEqual(@as(u64, 1), info.snapshot_seq);
-    try std.testing.expectEqual(@as(u16, 8), info.cell_px.width);
-
-    var damage: FfiPreparedSurfaceDamagePlan = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDamagePlan(prepared_handle, &damage));
-    try std.testing.expect(damage.surface_damage_rects.len <= 1);
-
-    var upload: FfiPreparedSurfaceUploadPlan = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceUploadPlan(prepared_handle, &upload));
-    if (upload.pixel_blob.len > 0) try std.testing.expect(upload.pixel_blob.ptr != null);
-
-    var draw: FfiPreparedSurfaceDrawPlan = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDrawPlan(prepared_handle, &draw));
-    try std.testing.expect(draw.sprite_batches.len <= draw.sprite_instances.len + 1);
-
-    var diagnostics: FfiPreparedSurfaceDiagnostics = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDiagnostics(prepared_handle, &diagnostics));
-    try std.testing.expectEqual(info.snapshot_seq, preparedSurfaceOwnerFromHandle(prepared_handle).?.snapshot_seq);
-}
-
-test "ffi prepared surface handle submit accepts host execution consequence" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const surface_session_handle = surfaceSessionInit(.{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-        .font_size_px = 8,
-    });
-    defer surfaceSessionDeinit(surface_session_handle);
-
-    _ = snapshotMarkFullDirty(snapshot_handle);
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 16, .height = 16 }, .grid_px = .{ .width = 16, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    _ = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = snapshot_handle, .cols = 2, .rows = 2, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-
-    var prepared_handle: PreparedSurfaceHandle = null;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderPrepareStatus.ready), surfacePrepareHandle(surface_session_handle, runtime_handle, snapshot_handle, &prepared_handle));
-    try std.testing.expect(prepared_handle != null);
-
-    var feedback: FfiSurfaceFeedback = undefined;
-    try std.testing.expectEqual(HowlRenderSubmitStatus.rendered, surfaceSubmit(surface_session_handle, runtime_handle, prepared_handle, &.{
-        .surface = .{ .texture_id = 1, .width = 16, .height = 16, .epoch = 1 },
-        .uploads_committed = 0,
-        .render_us = 10,
-        .scroll_reuse_applied = 0,
-        .content_valid = 1,
-    }, &feedback));
-    try std.testing.expectEqual(@as(u32, 1), feedback.surface.texture_id);
-}
-
-test "ffi prepared surface handle reports row damage rect for partial dirty row" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const surface_session_handle = surfaceSessionInit(.{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-        .font_size_px = 8,
-    });
-    defer surfaceSessionDeinit(surface_session_handle);
-
-    const snapshot_owner = snapshotOwnerFromHandle(snapshot_handle).?;
-    snapshot_owner.snapshot.clearDirty();
-    snapshot_owner.snapshot.dirty = .partial;
-    snapshot_owner.snapshot.dirty_rows.items[1] = true;
-    snapshot_owner.snapshot.dirty_cols_start.items[1] = 0;
-    snapshot_owner.snapshot.dirty_cols_end.items[1] = 1;
-
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 16, .height = 16 }, .grid_px = .{ .width = 16, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    _ = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = snapshot_handle, .cols = 2, .rows = 2, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-
-    var prepared_handle: PreparedSurfaceHandle = null;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderPrepareStatus.ready), surfacePrepareHandle(surface_session_handle, runtime_handle, snapshot_handle, &prepared_handle));
-    defer preparedSurfaceRelease(prepared_handle);
-
-    var damage: FfiPreparedSurfaceDamagePlan = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDamagePlan(prepared_handle, &damage));
-    try std.testing.expectEqual(@as(usize, 1), damage.surface_damage_rects.len);
-    try std.testing.expectEqual(@as(i32, 0), damage.surface_damage_rects.ptr[0].x);
-    try std.testing.expectEqual(@as(i32, 8), damage.surface_damage_rects.ptr[0].y);
-    try std.testing.expectEqual(@as(i32, 16), damage.surface_damage_rects.ptr[0].width);
-    try std.testing.expectEqual(@as(i32, 8), damage.surface_damage_rects.ptr[0].height);
-}
-
-test "ffi prepared surface handle distinguishes surface and buffer damage on scroll" {
-    const snapshot_handle = snapshotInit(2, 2);
-    defer snapshotDeinit(snapshot_handle);
-    const runtime_handle = runtimeInit();
-    defer runtimeDeinit(runtime_handle);
-    const surface_session_handle = surfaceSessionInit(.{
-        .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
-        .font_size_px = 8,
-    });
-    defer surfaceSessionDeinit(surface_session_handle);
-
-    const snapshot_owner = snapshotOwnerFromHandle(snapshot_handle).?;
-    snapshot_owner.snapshot.clearDirty();
-    snapshot_owner.snapshot.dirty = .partial;
-    snapshot_owner.snapshot.scroll_up_rows = 1;
-    snapshot_owner.snapshot.dirty_rows.items[1] = true;
-    snapshot_owner.snapshot.dirty_cols_start.items[1] = 0;
-    snapshot_owner.snapshot.dirty_cols_end.items[1] = 1;
-
-    _ = runtimeSyncGeometry(runtime_handle, .{ .render_px = .{ .width = 16, .height = 16 }, .grid_px = .{ .width = 16, .height = 16 }, .cell_px = .{ .width = 8, .height = 8 } });
-    _ = runtimePublishSnapshot(runtime_handle, .{ .snapshot_handle = snapshot_handle, .cols = 2, .rows = 2, .scrollback_count = 0, .scrollback_offset = 0, .selection_anchor_valid = 0, .selection_current_valid = 0, .focused = 1, .hover_underline_style = 0, .selection_anchor_depth = 0, .selection_anchor_col = 0, .selection_current_depth = 0, .selection_current_col = 0, .hover_link_id = 0, .snapshot_seq = 1, .vt_epoch = 1, .last_alt_screen = 0 });
-
-    var prepared_handle: PreparedSurfaceHandle = null;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderPrepareStatus.ready), surfacePrepareHandle(surface_session_handle, runtime_handle, snapshot_handle, &prepared_handle));
-    defer preparedSurfaceRelease(prepared_handle);
-
-    var damage: FfiPreparedSurfaceDamagePlan = undefined;
-    try std.testing.expectEqual(@intFromEnum(HowlRenderCallStatus.ok), preparedSurfaceDamagePlan(prepared_handle, &damage));
-    try std.testing.expectEqual(@as(usize, 1), damage.surface_damage_rects.len);
-    try std.testing.expectEqual(@as(i32, 16), damage.surface_damage_rects.ptr[0].height);
-    try std.testing.expect(damage.buffer_damage_rects.len >= 1);
-    try std.testing.expectEqual(@as(i32, 8), damage.buffer_damage_rects.ptr[0].y);
-    try std.testing.expectEqual(@as(i32, 8), damage.buffer_damage_rects.ptr[0].height);
 }

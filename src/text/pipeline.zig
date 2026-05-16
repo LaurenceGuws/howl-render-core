@@ -53,6 +53,11 @@ pub const ResolveCounters = struct {
     shape_cache_hits: u64 = 0,
 };
 
+pub const ResolveObservability = struct {
+    counters: ResolveCounters = .{},
+    stage: ResolveStage = .style_policy,
+};
+
 pub const TextPrepareCounters = struct {
     cell_texts: u64 = 0,
     clusters: u64 = 0,

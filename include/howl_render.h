@@ -8,14 +8,10 @@
 extern "C" {
 #endif
 
-typedef struct HowlRenderSnapshot HowlRenderSnapshot;
-typedef struct HowlRenderRuntime HowlRenderRuntime;
-typedef struct HowlRenderSurfaceSession HowlRenderSurfaceSession;
+typedef struct HowlRenderSurfaceText HowlRenderSurfaceText;
 typedef struct HowlRenderPreparedSurfaceObject HowlRenderPreparedSurfaceObject;
 
-typedef HowlRenderSnapshot *HowlRenderSnapshotHandle;
-typedef HowlRenderRuntime *HowlRenderRuntimeHandle;
-typedef HowlRenderSurfaceSession *HowlRenderSurfaceSessionHandle;
+typedef HowlRenderSurfaceText *HowlRenderSurfaceTextHandle;
 typedef HowlRenderPreparedSurfaceObject *HowlRenderPreparedSurfaceHandle;
 
 typedef enum {
@@ -214,6 +210,11 @@ typedef struct {
 } HowlRenderCell;
 
 typedef struct {
+  const HowlRenderCell *ptr;
+  size_t len;
+} HowlRenderCellSpan;
+
+typedef struct {
   uint16_t row;
   uint16_t col;
   uint8_t visible;
@@ -240,41 +241,6 @@ typedef struct {
 } HowlRenderGeometryResponse;
 
 typedef struct {
-  HowlRenderSnapshotHandle snapshot_handle;
-  uint16_t cols;
-  uint16_t rows;
-  uint64_t scrollback_count;
-  uint64_t scrollback_offset;
-  uint8_t selection_anchor_valid;
-  uint8_t selection_current_valid;
-  uint8_t focused;
-  uint8_t hover_underline_style;
-  uint64_t selection_anchor_depth;
-  uint16_t selection_anchor_col;
-  uint16_t reserved0;
-  uint64_t selection_current_depth;
-  uint16_t selection_current_col;
-  uint16_t reserved1;
-  uint32_t hover_link_id;
-  uint64_t snapshot_seq;
-  uint64_t vt_epoch;
-  uint8_t last_alt_screen;
-  uint8_t reserved2;
-  uint8_t reserved3;
-  uint8_t reserved4;
-} HowlRenderSourceView;
-
-typedef struct {
-  int32_t status;
-  uint8_t published;
-  uint8_t queued;
-  uint8_t damage_kind;
-  uint8_t reserved0;
-  uint64_t source_seq;
-  uint64_t geometry_epoch;
-} HowlRenderSourceResponse;
-
-typedef struct {
   int32_t status;
   HowlRenderPixelSize render_px;
   HowlRenderPixelSize grid_px;
@@ -285,24 +251,27 @@ typedef struct {
 } HowlRenderSurfaceQuery;
 
 typedef struct {
-  int32_t status;
-  uint64_t snapshot_publishes;
-  uint64_t snapshot_hidden_drops;
-  uint64_t snapshot_clean_drops;
-  uint64_t prepare_requests;
-  uint64_t prepare_coalesces;
-  uint64_t prepare_forced_full;
-  uint64_t prepare_takes;
-  uint64_t prepared_publishes;
-  uint64_t prepared_coalesces;
-  uint64_t submit_takes;
-  uint64_t submit_valid;
-  uint64_t submit_rejected;
-  uint64_t full_prepare_requests;
-  uint64_t submitted_accepts;
-  uint64_t presents;
-  uint64_t target_invalidations;
-} HowlRenderRuntimeMetrics;
+  uint64_t snapshot_seq;
+  uint64_t dirty_epoch;
+  uint64_t geometry_epoch;
+  uint64_t damage_base_seq;
+  uint64_t known_target_epoch;
+  uint8_t target_valid;
+  uint8_t damage_kind;
+  uint16_t reserved0;
+} HowlRenderPrepareRequest;
+
+typedef struct {
+  uint64_t snapshot_seq;
+  uint64_t dirty_epoch;
+  uint64_t geometry_epoch;
+  uint64_t damage_base_seq;
+  uint64_t required_base_seq;
+  uint64_t required_target_epoch;
+  uint8_t damage_kind;
+  uint8_t reserved0;
+  uint16_t reserved1;
+} HowlRenderPreparedFrame;
 
 typedef struct {
   uint64_t sync_us;
@@ -336,6 +305,7 @@ typedef struct {
   uint64_t snapshot_seq;
   uint64_t dirty_epoch;
   uint64_t geometry_epoch;
+  uint64_t required_base_seq;
   uint64_t required_surface_epoch;
   HowlRenderPixelSize render_px;
   HowlRenderCellSize cell_px;
@@ -439,6 +409,17 @@ typedef struct {
 } HowlRenderSurfaceExecutionInput;
 
 typedef struct {
+  HowlRenderCellSpan cells;
+  uint16_t cols;
+  uint16_t rows;
+  uint64_t scroll_row;
+  uint8_t is_alternate_screen;
+  uint8_t full_damage;
+  uint16_t scroll_up_rows;
+  HowlRenderCursor cursor;
+} HowlRenderSurfaceSource;
+
+typedef struct {
   int32_t status;
   uint8_t damage_kind;
   uint8_t reserved0;
@@ -452,46 +433,27 @@ typedef struct {
   HowlRenderCellSize cell_px;
   uint16_t font_size_px;
   uint16_t reserved0;
-} HowlRenderSurfaceSessionConfig;
+} HowlRenderSurfaceTextConfig;
 
 HowlRenderGridSize howl_render_derive_grid_size(HowlRenderPixelSize grid_px, HowlRenderCellSize cell_px);
 HowlRenderFrameGridResult howl_render_derive_frame_grid_size(HowlRenderPixelSize render_px, HowlRenderPixelSize grid_px, HowlRenderCellSize cell_px);
-HowlRenderFrameLayoutResult howl_render_surface_session_derive_frame_layout(HowlRenderSurfaceSessionHandle handle, HowlRenderPixelSize render_px, HowlRenderPixelSize grid_px);
+HowlRenderFrameLayoutResult howl_render_surface_text_derive_frame_layout(HowlRenderSurfaceTextHandle handle, HowlRenderPixelSize render_px, HowlRenderPixelSize grid_px);
 
-HowlRenderSnapshotHandle howl_render_snapshot_init(uint16_t rows, uint16_t cols);
-void howl_render_snapshot_deinit(HowlRenderSnapshotHandle handle);
-int howl_render_snapshot_resize(HowlRenderSnapshotHandle handle, uint16_t rows, uint16_t cols);
-int howl_render_snapshot_mark_full_dirty(HowlRenderSnapshotHandle handle);
-int howl_render_snapshot_clear_dirty(HowlRenderSnapshotHandle handle);
-int howl_render_snapshot_set_viewport(HowlRenderSnapshotHandle handle, uint64_t scroll_row, int is_alternate_screen);
-int howl_render_snapshot_set_cursor(HowlRenderSnapshotHandle handle, HowlRenderCursor cursor);
-int howl_render_snapshot_write_cell(HowlRenderSnapshotHandle handle, uint16_t row, uint16_t col, HowlRenderCell cell);
-
-HowlRenderRuntimeHandle howl_render_runtime_init(void);
-void howl_render_runtime_deinit(HowlRenderRuntimeHandle handle);
-int howl_render_runtime_set_font_size_px(HowlRenderRuntimeHandle handle, uint16_t font_size_px);
-HowlRenderGeometryResponse howl_render_runtime_sync_geometry(HowlRenderRuntimeHandle handle, HowlRenderGeometry geometry);
-HowlRenderSourceResponse howl_render_runtime_publish_snapshot(HowlRenderRuntimeHandle handle, HowlRenderSourceView source);
-void howl_render_runtime_mark_presented(HowlRenderRuntimeHandle handle);
-HowlRenderSurfaceQuery howl_render_runtime_surface_query(HowlRenderRuntimeHandle handle);
-HowlRenderRuntimeMetrics howl_render_runtime_take_metrics(HowlRenderRuntimeHandle handle);
-int howl_render_runtime_reset_metrics(HowlRenderRuntimeHandle handle);
-
-HowlRenderSurfaceSessionHandle howl_render_surface_session_init(HowlRenderSurfaceSessionConfig config);
-void howl_render_surface_session_deinit(HowlRenderSurfaceSessionHandle handle);
-int howl_render_surface_session_set_font_size_px(HowlRenderSurfaceSessionHandle handle, uint16_t font_size_px);
-int howl_render_surface_session_set_font_path(HowlRenderSurfaceSessionHandle handle, const uint8_t *ptr, size_t len);
-int howl_render_surface_session_set_fallback_font_paths(HowlRenderSurfaceSessionHandle handle, const uint8_t *const *ptrs, size_t count);
+HowlRenderSurfaceTextHandle howl_render_surface_text_init(HowlRenderSurfaceTextConfig config);
+void howl_render_surface_text_deinit(HowlRenderSurfaceTextHandle handle);
+int howl_render_surface_text_set_font_size_px(HowlRenderSurfaceTextHandle handle, uint16_t font_size_px);
+int howl_render_surface_text_set_font_path(HowlRenderSurfaceTextHandle handle, const uint8_t *ptr, size_t len);
+int howl_render_surface_text_set_fallback_font_paths(HowlRenderSurfaceTextHandle handle, const uint8_t *const *ptrs, size_t count);
 
 /* Owned prepared-surface ABI target. */
-HowlRenderPrepareStatus howl_render_surface_prepare_handle(HowlRenderSurfaceSessionHandle surface_session_handle, HowlRenderRuntimeHandle runtime_handle, HowlRenderSnapshotHandle snapshot_handle, HowlRenderPreparedSurfaceHandle *prepared_handle_out);
+HowlRenderPrepareStatus howl_render_surface_text_prepare_handle(HowlRenderSurfaceTextHandle surface_text_handle, const HowlRenderSurfaceSource *surface_source, HowlRenderPrepareRequest prepare_request, HowlRenderSurfaceQuery query, HowlRenderPreparedSurfaceHandle *prepared_handle_out);
 void howl_render_prepared_surface_release(HowlRenderPreparedSurfaceHandle prepared_surface_handle);
 int howl_render_prepared_surface_describe(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceInfo *info_out);
 int howl_render_prepared_surface_damage_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDamagePlan *plan_out);
 int howl_render_prepared_surface_upload_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceUploadPlan *plan_out);
 int howl_render_prepared_surface_draw_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDrawPlan *plan_out);
 int howl_render_prepared_surface_diagnostics(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDiagnostics *diagnostics_out);
-HowlRenderSubmitStatus howl_render_surface_submit(HowlRenderSurfaceSessionHandle surface_session_handle, HowlRenderRuntimeHandle runtime_handle, HowlRenderPreparedSurfaceHandle prepared_surface_handle, const HowlRenderSurfaceExecutionInput *execution_in, HowlRenderSurfaceFeedback *feedback_out);
+HowlRenderSubmitStatus howl_render_surface_text_submit(HowlRenderSurfaceTextHandle surface_text_handle, HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedFrame prepared_frame, const HowlRenderSurfaceExecutionInput *execution_in, HowlRenderSurfaceFeedback *feedback_out);
 
 #ifdef __cplusplus
 }
