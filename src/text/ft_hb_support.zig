@@ -400,22 +400,7 @@ pub fn deriveCellMetrics(self: anytype) render.CellMetrics {
 }
 
 pub fn configuredCellMetrics(self: anytype) render.CellMetrics {
-    const state = textState(self);
-    const config = configView(self);
-    const cell_w = @max(config.cell_px.width, 1);
-    const cell_h = @max(config.cell_px.height, 1);
-    var baseline = @as(i32, @intCast(@max(cell_h - @divFloor(cell_h, 5), 1)));
-    if (ensurePrimaryFont(self)) {
-        lockFt(self);
-        defer unlockFt(self);
-        baseline = computeBaselineFromFace(state.ft_face.?, cell_h);
-    }
-    return .{
-        .cell_w_px = cell_w,
-        .cell_h_px = cell_h,
-        .baseline_px = @intCast(std.math.clamp(baseline, 1, @as(i32, @intCast(cell_h)))),
-        .box_thickness_px = defaultBoxThickness(cell_h),
-    };
+    return deriveCellMetrics(self);
 }
 
 pub fn deriveCellSize(self: anytype) surface.CellSize {

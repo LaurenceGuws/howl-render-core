@@ -430,7 +430,6 @@ typedef struct {
 
 typedef struct {
   HowlRenderPixelSize surface_px;
-  HowlRenderCellSize cell_px;
   uint16_t font_size_px;
   uint16_t reserved0;
 } HowlRenderSurfaceTextConfig;

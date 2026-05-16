@@ -88,7 +88,6 @@ pub const SurfaceQuery = struct {
 
 pub const SurfaceTextConfig = struct {
     surface_px: PixelSize,
-    cell_px: CellSize,
     font_size_px: u16 = 16,
     font_path: ?[:0]const u8 = null,
 };

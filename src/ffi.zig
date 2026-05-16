@@ -52,6 +52,14 @@ const SurfaceTextOwner = struct {
         self.cursor_draws.clearRetainingCapacity();
         self.raster_uploads.clearRetainingCapacity();
     }
+
+    fn invalidateTextState(self: *SurfaceTextOwner) void {
+        text_support.resetLoadedFace(&self.session);
+        self.session.text_state.face_text_cache.clear();
+        self.session.text_state.shape_run_cache.clear();
+        self.session.text_state.glyph_cell_cache.clear();
+        if (self.session.text_preparer) |*preparer| preparer.clearAtlas();
+    }
 };
 
 const PreparedSurfaceOwner = struct {
@@ -508,7 +516,6 @@ pub const FfiSurfaceFeedback = extern struct {
 
 pub const FfiSurfaceTextConfig = extern struct {
     surface_px: FfiPixelSize,
-    cell_px: FfiCellSize,
     font_size_px: u16,
     reserved0: u16 = 0,
 };
@@ -1014,7 +1021,7 @@ fn preparedSurfaceOwnerCreate(session_owner: *SurfaceTextOwner, value: Render.Pr
     var blob_offset: usize = 0;
     for (session_owner.raster_uploads.items, 0..) |upload, idx| {
         const pixels = if (upload.pixels_len == 0 or upload.pixels_ptr == null) &.{} else upload.pixels_ptr[0..upload.pixels_len];
-        if (pixels.len > 0) @memcpy(owner.pixel_blob[blob_offset .. blob_offset + pixels.len], pixels);
+        if (pixels.len > 0) std.mem.copyForwards(u8, owner.pixel_blob[blob_offset .. blob_offset + pixels.len], pixels);
         owner.uploads[idx] = .{
             .sprite_key = upload.key,
             .slot = upload.slot,
@@ -1034,6 +1041,8 @@ fn preparedSurfaceOwnerCreate(session_owner: *SurfaceTextOwner, value: Render.Pr
     owner.sprite_instances = try std.heap.c_allocator.alloc(FfiSpriteInstance, session_owner.sprite_draws.items.len);
     for (session_owner.sprite_draws.items, 0..) |draw, idx| {
         const upload = findUploadOp(owner.uploads, draw.key, draw.slot);
+        const src_width_px = if (upload) |op| op.visual_bounds.width_px else draw.width_px;
+        const src_height_px = if (upload) |op| op.visual_bounds.height_px else draw.height_px;
         owner.sprite_instances[idx] = .{
             .slot = draw.slot,
             .sprite_key = draw.key,
@@ -1043,8 +1052,8 @@ fn preparedSurfaceOwnerCreate(session_owner: *SurfaceTextOwner, value: Render.Pr
             .dst_height_px = draw.height_px,
             .src_x_px = if (upload) |op| op.visual_bounds.x_px else 0,
             .src_y_px = if (upload) |op| op.visual_bounds.y_px else 0,
-            .src_width_px = if (upload) |op| op.visual_bounds.width_px else draw.width_px,
-            .src_height_px = if (upload) |op| op.visual_bounds.height_px else draw.height_px,
+            .src_width_px = src_width_px,
+            .src_height_px = src_height_px,
             .color = draw.color,
         };
     }
@@ -1123,11 +1132,9 @@ pub fn surfaceTextDeriveFrameLayout(handle: SurfaceTextHandle, render_px: FfiPix
 
 pub fn surfaceTextInit(config: FfiSurfaceTextConfig) callconv(.c) SurfaceTextHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return null;
-    if (config.cell_px.width == 0 or config.cell_px.height == 0) return null;
     const owner = SurfaceTextOwner.create(.{
         .surface_px = pixelIn(config.surface_px),
-        .cell_px = cellInSize(config.cell_px),
-        .font_size_px = if (config.font_size_px == 0) config.cell_px.height else config.font_size_px,
+        .font_size_px = @max(config.font_size_px, 1),
     }) orelse return null;
     return @ptrCast(owner);
 }
@@ -1141,7 +1148,7 @@ pub fn surfaceTextSetFontSizePx(handle: SurfaceTextHandle, font_size_px: u16) ca
     const owner = surfaceTextOwnerFromHandle(handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     if (font_size_px == 0) return @intFromEnum(HowlRenderCallStatus.invalid_argument);
     owner.config.font_size_px = @max(font_size_px, 1);
-    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
+    owner.invalidateTextState();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
@@ -1154,13 +1161,13 @@ pub fn surfaceTextSetFontPath(handle: SurfaceTextHandle, ptr: ?[*]const u8, len:
     }
     if (len == 0 or ptr == null) {
         owner.config.font_path = null;
-        if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
+        owner.invalidateTextState();
         return @intFromEnum(HowlRenderCallStatus.ok);
     }
     const owned = std.heap.c_allocator.dupeZ(u8, ptr.?[0..len]) catch return @intFromEnum(HowlRenderCallStatus.failed);
     owner.font_path = owned;
     owner.config.font_path = owned;
-    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
+    owner.invalidateTextState();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
@@ -1171,7 +1178,7 @@ pub fn surfaceTextSetFallbackFontPaths(handle: SurfaceTextHandle, ptrs: ?[*]cons
     if (count == 0) {
         owner.session.text_state.fallback_font_paths_len = 0;
         for (0..text_support.max_fallback_fonts) |i| owner.session.text_state.fallback_font_paths[i] = null;
-        if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
+        owner.invalidateTextState();
         return @intFromEnum(HowlRenderCallStatus.ok);
     }
     const raw_paths = ptrs orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
@@ -1185,7 +1192,7 @@ pub fn surfaceTextSetFallbackFontPaths(handle: SurfaceTextHandle, ptrs: ?[*]cons
     owner.session.text_state.fallback_font_paths_len = n;
     for (0..n) |slot| owner.session.text_state.fallback_font_paths[slot] = owner.fallback_font_paths.items[slot];
     for (@as(usize, n)..text_support.max_fallback_fonts) |slot| owner.session.text_state.fallback_font_paths[slot] = null;
-    if (owner.session.text_preparer) |*preparer| preparer.clearAtlas();
+    owner.invalidateTextState();
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
@@ -1199,12 +1206,13 @@ pub fn surfaceTextPrepareHandle(surface_text_handle: SurfaceTextHandle, surface_
     defer surface_source.deinit();
     prepare.state = surface_source.frame;
     const prepared = owner.session.prepareSurface(std.heap.c_allocator, prepare) catch return .failed;
+    preparePreparedViews(owner, prepared) catch {
+        var failed_prepared = prepared;
+        failed_prepared.deinit();
+        return .failed;
+    };
     if (prepared_handle_out) |out| {
-        var prepared_owner = preparedSurfaceOwnerCreate(owner, prepared) catch return .failed;
-        preparePreparedViews(owner, prepared_owner.prepared) catch {
-            prepared_owner.destroy();
-            return .failed;
-        };
+        const prepared_owner = preparedSurfaceOwnerCreate(owner, prepared) catch return .failed;
         out.* = @ptrCast(prepared_owner);
     }
     return .ready;
@@ -1280,7 +1288,6 @@ test "ffi surface session rejects missing handle" {
 test "ffi surface session initializes" {
     const handle = surfaceTextInit(.{
         .surface_px = .{ .width = 16, .height = 16 },
-        .cell_px = .{ .width = 8, .height = 8 },
         .font_size_px = 8,
     });
     defer surfaceTextDeinit(handle);
