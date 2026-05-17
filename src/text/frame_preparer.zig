@@ -566,6 +566,11 @@ const DirectCursorRoute = enum(u2) {
     hollow_block,
 };
 
+const DirectDecorationLead = enum(u2) {
+    skip,
+    draw,
+};
+
 const DirectNormalSource = union(enum) {
     raw_cells: []const contract.CellInput,
     inputs: []const cluster.CellTextInput,
@@ -1128,8 +1133,7 @@ fn appendDirectDecorations(
     const deco = decorationGeometry(cell_metrics, font_metrics);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
-        if (!cell.underline and !cell.strikethrough) continue;
-        if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (classifyDirectDecorationLead(damage, grid_metrics, cell) != .draw) continue;
         const col = cell.first_cell % cols;
         const row = cell.first_cell / cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
@@ -1165,6 +1169,12 @@ fn appendDirectDecorations(
         }
         if (cell.strikethrough) appendDirectDecoration(out, .strikethrough, cell, base_x, base_y + deco.strikethrough_y_px, width_px, deco.strikethrough_h_px, cell.fg);
     }
+}
+
+fn classifyDirectDecorationLead(damage: DirectDamage, grid_metrics: contract.GridMetrics, cell: contract.RenderableCell) DirectDecorationLead {
+    if (!cell.underline and !cell.strikethrough) return .skip;
+    if (!includeDirectSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) return .skip;
+    return .draw;
 }
 
 fn appendDirectDecoration(
