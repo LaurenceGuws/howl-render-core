@@ -338,6 +338,11 @@ const DecorationLead = enum(u2) {
     draw,
 };
 
+const GroupLead = enum(u2) {
+    skip,
+    draw,
+};
+
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
     const valid = !damage.full and
         damage.dirty_rows.len == @as(usize, rows) and
@@ -383,6 +388,11 @@ fn includeSpan(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, fir
     return !(cell.end_col < dirty.start_col or cell.start_col > dirty.end_col);
 }
 
+fn classifyGroupLead(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, group: contract.GlyphGroup) GroupLead {
+    if (!includeSpan(damage, grid_metrics, group.first_cell, group.cell_span)) return .skip;
+    return .draw;
+}
+
 fn classifyBackgroundLead(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, cell: contract.RenderableCell) BackgroundLead {
     if (cell.continuation) return .skip;
     if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) return .skip;
@@ -419,7 +429,7 @@ fn appendGroupSpriteDraws(
     const cell_w = @as(i32, @intCast(cell_metrics.cell_w_px));
     const cell_h = @as(i32, @intCast(cell_metrics.cell_h_px));
     for (groups, 0..) |group, group_idx| {
-        if (!includeSpan(damage, grid_metrics, group.first_cell, group.cell_span)) continue;
+        if (classifyGroupLead(damage, grid_metrics, group) != .draw) continue;
         const next_group_cell = if (group_idx + 1 < groups.len) groups[group_idx + 1].first_cell else null;
         const scene_group = iconGroupWithAvailableSpace(group, cell_metrics, grid_metrics, next_group_cell);
         const first_cell = scene_group.first_cell;
