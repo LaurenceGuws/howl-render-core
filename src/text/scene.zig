@@ -217,7 +217,7 @@ const SceneAssembly = struct {
         const base_x: i32 = @as(i32, @intCast(cursor.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y: i32 = @as(i32, @intCast(cursor.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const geom = cursorGeometry(cell_metrics);
-        switch (cursor.shape) {
+        switch (cursorRoute(cursor.shape)) {
             .block => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
             .beam => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor.color }),
             .underline => try self.cursor_draws.append(self.allocator, .{ .x_px = base_x, .y_px = base_y + @as(i32, @intCast(cell_metrics.cell_h_px - geom.underline_h_px)), .width_px = cell_metrics.cell_w_px, .height_px = geom.underline_h_px, .color = cursor.color }),
@@ -262,6 +262,15 @@ fn appendSceneCursorDraws(
 fn classifyCursorLead(damage: NormalizedDamage, cursor: CursorInput) CursorLead {
     if (!damage.full and !rowDirty(damage, cursor.cell_row)) return .skip;
     return .draw;
+}
+
+fn cursorRoute(shape: CursorShape) CursorRoute {
+    return switch (shape) {
+        .block => .block,
+        .beam => .beam,
+        .underline => .underline,
+        .hollow_block => .hollow_block,
+    };
 }
 
 fn classifyDecorationAppend(last: contract.TextDecorationDraw, draw: contract.TextDecorationDraw) DecorationAppend {
@@ -360,6 +369,13 @@ const CursorLead = enum(u2) {
 const DecorationAppend = enum(u2) {
     append,
     merge,
+};
+
+const CursorRoute = enum(u2) {
+    block,
+    beam,
+    underline,
+    hollow_block,
 };
 
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
