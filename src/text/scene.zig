@@ -165,13 +165,7 @@ const SceneAssembly = struct {
     fn appendDecoration(self: *SceneAssembly, draw: contract.TextDecorationDraw) !void {
         if (self.decoration_draws.items.len > 0) {
             const last = &self.decoration_draws.items[self.decoration_draws.items.len - 1];
-            const last_end_x = last.x_px + @as(i32, @intCast(last.width_px));
-            if (last.kind == draw.kind and
-                last.y_px == draw.y_px and
-                last.height_px == draw.height_px and
-                sameRgba8(last.color, draw.color) and
-                last_end_x == draw.x_px)
-            {
+            if (classifyDecorationAppend(last.*, draw) == .merge) {
                 const merged_cell_span = @as(u32, last.cell_span) + @as(u32, draw.cell_span);
                 last.width_px +%= draw.width_px;
                 last.cell_span = @intCast(@min(merged_cell_span, @as(u32, std.math.maxInt(u8))));
@@ -270,6 +264,16 @@ fn classifyCursorLead(damage: NormalizedDamage, cursor: CursorInput) CursorLead 
     return .draw;
 }
 
+fn classifyDecorationAppend(last: contract.TextDecorationDraw, draw: contract.TextDecorationDraw) DecorationAppend {
+    const last_end_x = last.x_px + @as(i32, @intCast(last.width_px));
+    if (last.kind != draw.kind) return .append;
+    if (last.y_px != draw.y_px) return .append;
+    if (last.height_px != draw.height_px) return .append;
+    if (!sameRgba8(last.color, draw.color)) return .append;
+    if (last_end_x != draw.x_px) return .append;
+    return .merge;
+}
+
 const SpriteDrawInput = struct {
     x_px: i32,
     y_px: i32,
@@ -351,6 +355,11 @@ const GroupLead = enum(u2) {
 const CursorLead = enum(u2) {
     skip,
     draw,
+};
+
+const DecorationAppend = enum(u2) {
+    append,
+    merge,
 };
 
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
