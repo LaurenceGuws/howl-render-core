@@ -15,8 +15,7 @@ Input:
 - text/font configuration
 
 Output:
-- draw plans
-- raster upload plans
+- prepared RGBA surface buffer
 - surface damage plans
 - submit feedback requirements
 
@@ -32,9 +31,10 @@ Do not reopen these for cleanup theater.
 ## Owner Rules
 
 - `ffi.zig` translates contracts only.
-- `frame/*` owns frame-level geometry, input shaping into render input, surface execution, and submit-facing contracts.
+- `frame/*` owns frame-level geometry, input shaping into render input, prepared-surface composition, and submit-facing contracts.
 - `text/*` owns text translation from render input to scene, raster requests, and atlas consequences.
 - Generated special glyph raster logic stays owned by `text/special_raster.zig` unless a smaller true owner appears.
+- `howl-render` stays backend-agnostic. It owns prepared output and damage truth, not host graphics context execution.
 - Public roots curate exports only.
 
 ## Translation Stages
@@ -54,7 +54,7 @@ Stage 3: cluster and run extraction.
 
 Stage 4: scene assembly.
 - Owner: `text/scene.zig`
-- Job: convert classified cells and grouped glyph output into draw lists and raster requests.
+- Job: convert classified cells and grouped glyph output into scene-owned draws and raster requests.
 
 Stage 5: raster production.
 - Owner: `text/rasterizer.zig`, `text/special_raster.zig`
@@ -62,11 +62,11 @@ Stage 5: raster production.
 
 Stage 6: atlas and prepared surface assembly.
 - Owner: `text/frame_preparer.zig`, `frame/surface.zig`
-- Job: combine scene, raster uploads, and damage policy into prepared surface state.
+- Job: combine scene, raster outputs, composition, and damage policy into prepared surface state.
 
 Stage 7: FFI export and submit.
 - Owner: `ffi.zig`, `frame/surface.zig`
-- Job: translate prepared state to C ABI and accept submit feedback.
+- Job: translate prepared buffer and damage state to C ABI and accept submit feedback.
 
 ## First Checkpoint
 
