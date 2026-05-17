@@ -1,5 +1,6 @@
 
 const std = @import("std");
+const damage = @import("damage.zig");
 const geometry_mod = @import("geometry.zig");
 const input = @import("input.zig");
 const pipeline = @import("pipeline.zig");
@@ -486,35 +487,53 @@ pub const SurfaceText = struct {
             text_input.options,
         );
         errdefer prepared.deinit();
-        const prepare_metrics = prepareMetrics(prepared.timings);
-        const surface_damage_rects = try buildSurfaceDamageRects(
-            allocator,
-            prepare.query.render_px,
-            prepare.query.cell_px,
-            text_input.grid,
-            text_input.options.scene.damage,
-            prepared.scene.scene.scroll_up_px,
-            prepared.scene.scene.full_redraw,
-        );
+        const plans = try buildPreparedPlans(allocator, prepare, text_input.grid, prepared);
+        errdefer plans.deinit(allocator);
+        const owned = ownPreparedSurface(allocator, prepare, text_input.grid, prepared, resolve, plans);
+        self.mutex.unlock();
+        return owned;
+    }
+
+    const PreparedPlans = struct {
+        surface_damage_rects: []DamageRect,
+        buffer_damage_rects: []DamageRect,
+        sprite_batches: []SpriteBatch,
+
+        fn deinit(self: PreparedPlans, allocator: std.mem.Allocator) void {
+            if (self.surface_damage_rects.len > 0) allocator.free(self.surface_damage_rects);
+            if (self.buffer_damage_rects.len > 0) allocator.free(self.buffer_damage_rects);
+            if (self.sprite_batches.len > 0) allocator.free(self.sprite_batches);
+        }
+    };
+
+    fn buildPreparedPlans(
+        allocator: std.mem.Allocator,
+        prepare: PrepareInput,
+        grid: contract.GridMetrics,
+        prepared: text.OwnedPreparedTextFrame,
+    ) !PreparedPlans {
+        const surface_damage_rects = try damage.buildSurfaceRects(PixelSize, CellSize, contract.GridMetrics, DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
         errdefer if (surface_damage_rects.len > 0) allocator.free(surface_damage_rects);
-        const buffer_damage_rects = try buildBufferDamageRects(
-            allocator,
-            prepare.query.render_px,
-            prepare.query.cell_px,
-            text_input.grid,
-            text_input.options.scene.damage,
-            prepared.scene.scene.scroll_up_px,
-            prepared.scene.scene.full_redraw,
-        );
+        const buffer_damage_rects = try damage.buildBufferRects(PixelSize, CellSize, contract.GridMetrics, DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
         errdefer if (buffer_damage_rects.len > 0) allocator.free(buffer_damage_rects);
-        const sprite_batches = try buildSpriteBatches(
-            allocator,
-            2048,
-            prepared.scene.scene.sprite_draws,
-            prepared.raster_plan.outputs,
-        );
+        const sprite_batches = try buildSpriteBatches(allocator, 2048, prepared.scene.scene.sprite_draws, prepared.raster_plan.outputs);
         errdefer if (sprite_batches.len > 0) allocator.free(sprite_batches);
-        const owned = PreparedSurface{
+        return .{
+            .surface_damage_rects = surface_damage_rects,
+            .buffer_damage_rects = buffer_damage_rects,
+            .sprite_batches = sprite_batches,
+        };
+    }
+
+    fn ownPreparedSurface(
+        allocator: std.mem.Allocator,
+        prepare: PrepareInput,
+        grid: contract.GridMetrics,
+        prepared: text.OwnedPreparedTextFrame,
+        resolve: text_pipeline.ResolveObservability,
+        plans: PreparedPlans,
+    ) PreparedSurface {
+        return .{
             .allocator = allocator,
             .request = prepare.request,
             .required_surface_epoch = prepare.request.known_target_epoch,
@@ -522,16 +541,14 @@ pub const SurfaceText = struct {
             .atlas_page_slots = 2048,
             .render_px = prepare.query.render_px,
             .cell_px = prepare.query.cell_px,
-            .grid = .{ .cols = text_input.grid.cols, .rows = text_input.grid.rows },
-            .surface_damage_rects = surface_damage_rects,
-            .buffer_damage_rects = buffer_damage_rects,
-            .sprite_batches = sprite_batches,
+            .grid = .{ .cols = grid.cols, .rows = grid.rows },
+            .surface_damage_rects = plans.surface_damage_rects,
+            .buffer_damage_rects = plans.buffer_damage_rects,
+            .sprite_batches = plans.sprite_batches,
             .text_frame = prepared,
             .resolve = resolve,
-            .prepare_metrics = prepare_metrics,
+            .prepare_metrics = prepareMetrics(prepared.timings),
         };
-        self.mutex.unlock();
-        return owned;
     }
 
     pub fn submitSurface(self: *SurfaceText, prepared: *PreparedSurface, execution: SurfaceExecutionInput) !SurfaceFeedback {
@@ -690,85 +707,6 @@ pub const SurfaceText = struct {
             .fallback_misses = counters.fallback_misses,
             .missing_glyphs = counters.missing_glyphs,
         };
-    }
-
-    fn buildSurfaceDamageRects(
-        allocator: std.mem.Allocator,
-        render_px: PixelSize,
-        cell_px: CellSize,
-        grid: contract.GridMetrics,
-        damage: anytype,
-        scroll_up_px: u16,
-        full_redraw: bool,
-    ) ![]DamageRect {
-        if (render_px.width == 0 or render_px.height == 0) return &.{};
-        if (full_redraw or damage.full or scroll_up_px > 0) {
-            const out = try allocator.alloc(DamageRect, 1);
-            out[0] = .{ .x = 0, .y = 0, .width = render_px.width, .height = render_px.height };
-            return out;
-        }
-        return buildDirtyRowRects(allocator, cell_px, grid, damage);
-    }
-
-    fn buildBufferDamageRects(
-        allocator: std.mem.Allocator,
-        render_px: PixelSize,
-        cell_px: CellSize,
-        grid: contract.GridMetrics,
-        damage: anytype,
-        scroll_up_px: u16,
-        full_redraw: bool,
-    ) ![]DamageRect {
-        if (render_px.width == 0 or render_px.height == 0) return &.{};
-        if (full_redraw or damage.full) {
-            const out = try allocator.alloc(DamageRect, 1);
-            out[0] = .{ .x = 0, .y = 0, .width = render_px.width, .height = render_px.height };
-            return out;
-        }
-        if (scroll_up_px > 0) {
-            var rects = std.ArrayList(DamageRect).empty;
-            errdefer rects.deinit(allocator);
-            try rects.append(allocator, .{
-                .x = 0,
-                .y = render_px.height - scroll_up_px,
-                .width = render_px.width,
-                .height = scroll_up_px,
-            });
-            const dirty = try buildDirtyRowRects(allocator, cell_px, grid, damage);
-            defer if (dirty.len > 0) allocator.free(dirty);
-            try rects.appendSlice(allocator, dirty);
-            return try rects.toOwnedSlice(allocator);
-        }
-        return buildDirtyRowRects(allocator, cell_px, grid, damage);
-    }
-
-    fn buildDirtyRowRects(
-        allocator: std.mem.Allocator,
-        cell_px: CellSize,
-        grid: contract.GridMetrics,
-        damage: anytype,
-    ) ![]DamageRect {
-        const rows = @as(usize, grid.rows);
-        if (rows == 0 or damage.dirty_rows.len != rows or damage.dirty_cols_start.len != rows or damage.dirty_cols_end.len != rows) {
-            return &.{};
-        }
-        var rects = std.ArrayList(DamageRect).empty;
-        errdefer rects.deinit(allocator);
-        var row: usize = 0;
-        while (row < rows) : (row += 1) {
-            if (!damage.dirty_rows[row]) continue;
-            const start_col = @min(damage.dirty_cols_start[row], grid.cols -| 1);
-            const end_col = @min(damage.dirty_cols_end[row], grid.cols -| 1);
-            if (end_col < start_col) continue;
-            try rects.append(allocator, .{
-                .x = @as(i32, start_col) * @as(i32, cell_px.width),
-                .y = @as(i32, @intCast(row)) * @as(i32, cell_px.height),
-                .width = (@as(i32, end_col) - @as(i32, start_col) + 1) * @as(i32, cell_px.width),
-                .height = @as(i32, cell_px.height),
-            });
-        }
-        if (rects.items.len == 0) return &.{};
-        return try rects.toOwnedSlice(allocator);
     }
 
     fn buildSpriteBatches(
