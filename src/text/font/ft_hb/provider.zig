@@ -1,9 +1,9 @@
-const provider = @import("provider.zig");
-const font_session = @import("font_session.zig");
-const contract = @import("contract.zig");
-const pipeline = @import("pipeline.zig");
-const rasterizer = @import("rasterizer.zig");
-const shape_run = @import("shape_run.zig");
+const provider = @import("../provider.zig");
+const font_session = @import("../session.zig");
+const contract = @import("../../contract.zig");
+const pipeline = @import("../../pipeline.zig");
+const rasterizer = @import("../../raster/rasterizer.zig");
+const shape_run = @import("../../shape_run.zig");
 
 pub const FtHbSource = struct {
     ctx: *anyopaque,

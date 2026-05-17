@@ -1,10 +1,10 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const render = @import("../howl_render.zig");
-const contract = @import("contract.zig");
-const provider_mod = @import("ft_hb_support.zig");
-const special_sprite = @import("ft_hb_special_sprite.zig");
-const c_api = @import("ft_hb_c_api.zig");
+const render = @import("../../../howl_render.zig");
+const contract = @import("../../contract.zig");
+const provider_mod = @import("support.zig");
+const special_sprite = @import("special_sprite.zig");
+const c_api = @import("c_api.zig");
 const c = c_api.c;
 
 const FtFace = c_api.FtFace;

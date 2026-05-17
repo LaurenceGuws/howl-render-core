@@ -1,9 +1,9 @@
 
 const std = @import("std");
 const contract = @import("contract.zig");
-const atlas_cache = @import("atlas_cache.zig");
-const rasterizer = @import("rasterizer.zig");
-const sprite_key = @import("sprite_key.zig");
+const atlas_cache = @import("raster/cache.zig");
+const rasterizer = @import("raster/rasterizer.zig");
+const sprite_key = @import("raster/key.zig");
 
 pub const TextScene = contract.TextScene;
 pub const TextSpriteDraw = contract.TextSpriteDraw;

@@ -1,6 +1,6 @@
 const std = @import("std");
-const contract = @import("contract.zig");
-const special_glyphs = @import("special_glyphs.zig");
+const contract = @import("../contract.zig");
+const special_glyphs = @import("../classify/special_glyphs.zig");
 const PixelIndex = @TypeOf(@as([]const u8, &.{}).len);
 
 pub fn requestForUndercurl(key: contract.SpriteKey, width_px: u16, height_px: u16, decoration: contract.DecorationSpriteRaster) contract.SpriteRasterRequest {

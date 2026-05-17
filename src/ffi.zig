@@ -3,7 +3,7 @@ const std = @import("std");
 const Render = @import("howl_render.zig");
 const SurfaceText = Render.SurfaceText;
 const surface = @import("frame/surface.zig");
-const text_support = @import("text/ft_hb_support.zig");
+const text_support = @import("text/font/ft_hb/support.zig");
 const prepared_surface = @import("ffi_prepared_surface.zig");
 
 pub const HowlRenderSurfaceText = opaque {};

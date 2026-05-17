@@ -6,8 +6,8 @@ const pipeline = @import("pipeline.zig");
 const contract = @import("../text/contract.zig");
 const text_pipeline = @import("../text/pipeline.zig");
 const text = @import("../text/text.zig");
-const text_support = @import("../text/ft_hb_support.zig");
-const text_glyph_raster = @import("../text/ft_hb_glyph_raster.zig");
+const text_support = @import("../text/font/ft_hb/support.zig");
+const text_glyph_raster = @import("../text/font/ft_hb/glyph_raster.zig");
 
 const ThreadMutex = struct {
     state: std.Io.Mutex = .init,

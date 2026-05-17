@@ -1,5 +1,5 @@
 const std = @import("std");
-const render = @import("../howl_render.zig");
+const render = @import("../../../howl_render.zig");
 
 const AlphaSegment = enum { full, left, right, top, bottom };
 const AlphaCorner = enum { top_left, top_right, bottom_left, bottom_right };

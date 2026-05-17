@@ -1,10 +1,10 @@
 
 const std = @import("std");
 const contract = @import("contract.zig");
-const font_resolver = @import("font_resolver.zig");
+const font_resolver = @import("font/resolver.zig");
 const shape_run = @import("shape_run.zig");
-const sprite_key = @import("sprite_key.zig");
-const symbol_map = @import("symbol_map.zig");
+const sprite_key = @import("raster/key.zig");
+const symbol_map = @import("classify/symbol_map.zig");
 
 pub const OwnedGlyphGroups = struct {
     allocator: std.mem.Allocator,

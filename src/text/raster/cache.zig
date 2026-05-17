@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("contract.zig");
+const contract = @import("../contract.zig");
 
 pub const Entry = struct {
     key: contract.SpriteKey,

@@ -1,7 +1,7 @@
 
 const std = @import("std");
-const contract = @import("contract.zig");
-const special_raster = @import("special_raster.zig");
+const contract = @import("../contract.zig");
+const special_raster = @import("special.zig");
 
 pub const RasterSpriteRequest = struct {
     key: contract.SpriteKey,

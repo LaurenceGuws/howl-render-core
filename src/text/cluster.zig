@@ -2,7 +2,7 @@
 const std = @import("std");
 const contract = @import("contract.zig");
 const scene = @import("scene.zig");
-const lane = @import("lane.zig");
+const lane = @import("classify/lane.zig");
 
 const VS15: u32 = 0xfe0e;
 const VS16: u32 = 0xfe0f;

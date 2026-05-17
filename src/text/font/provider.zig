@@ -1,10 +1,10 @@
 
 const std = @import("std");
-const contract = @import("contract.zig");
-const pipeline = @import("pipeline.zig");
-const font_session = @import("font_session.zig");
-const rasterizer = @import("rasterizer.zig");
-const shape_run = @import("shape_run.zig");
+const contract = @import("../contract.zig");
+const pipeline = @import("../pipeline.zig");
+const font_session = @import("session.zig");
+const rasterizer = @import("../raster/rasterizer.zig");
+const shape_run = @import("../shape_run.zig");
 
 pub const LookupGlyphResult = struct {
     glyph_id: u32,
