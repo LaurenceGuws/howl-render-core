@@ -554,6 +554,18 @@ const DirectNormalPolicy = enum {
     skip_complex,
 };
 
+const DirectCursorLead = enum(u2) {
+    skip,
+    draw,
+};
+
+const DirectCursorRoute = enum(u2) {
+    block,
+    beam,
+    underline,
+    hollow_block,
+};
+
 const DirectNormalSource = union(enum) {
     raw_cells: []const contract.CellInput,
     inputs: []const cluster.CellTextInput,
@@ -1073,11 +1085,11 @@ fn appendDirectCursor(
     damage: DirectDamage,
 ) void {
     const cursor_value = cursor orelse return;
-    if (!damage.full and !directRowDirty(damage, cursor_value.cell_row)) return;
+    if (classifyDirectCursorLead(damage, cursor_value) != .draw) return;
     const base_x: i32 = @as(i32, @intCast(cursor_value.cell_col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
     const base_y: i32 = @as(i32, @intCast(cursor_value.cell_row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
     const geom = cursorGeometry(cell_metrics);
-    switch (cursor_value.shape) {
+    switch (directCursorRoute(cursor_value.shape)) {
         .block => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = cell_metrics.cell_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
         .beam => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y, .width_px = geom.beam_w_px, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color }),
         .underline => out.appendAssumeCapacity(.{ .x_px = base_x, .y_px = base_y + @as(i32, @intCast(cell_metrics.cell_h_px - geom.underline_h_px)), .width_px = cell_metrics.cell_w_px, .height_px = geom.underline_h_px, .color = cursor_value.color }),
@@ -1089,6 +1101,20 @@ fn appendDirectCursor(
             out.appendAssumeCapacity(.{ .x_px = base_x + @as(i32, @intCast(cell_metrics.cell_w_px - stroke)), .y_px = base_y, .width_px = stroke, .height_px = cell_metrics.cell_h_px, .color = cursor_value.color });
         },
     }
+}
+
+fn classifyDirectCursorLead(damage: DirectDamage, cursor: scene.CursorInput) DirectCursorLead {
+    if (!damage.full and !directRowDirty(damage, cursor.cell_row)) return .skip;
+    return .draw;
+}
+
+fn directCursorRoute(shape: scene.CursorShape) DirectCursorRoute {
+    return switch (shape) {
+        .block => .block,
+        .beam => .beam,
+        .underline => .underline,
+        .hollow_block => .hollow_block,
+    };
 }
 
 fn appendDirectDecorations(
