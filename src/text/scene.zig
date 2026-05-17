@@ -291,6 +291,11 @@ const CellSpan = struct {
             .end_col = @intCast(start_col_u32 + span_u32 - 1),
         };
     }
+
+    fn overlaps(self: CellSpan, other: CellSpan) bool {
+        if (self.row != other.row) return false;
+        return !(self.end_col < other.start_col or self.start_col > other.end_col);
+    }
 };
 
 const DirtyRowSpan = struct {
@@ -321,6 +326,11 @@ const BackgroundNext = enum(u3) {
     stop_color,
     stop_row,
     stop_gap,
+};
+
+const ClearColorCell = enum(u2) {
+    skip,
+    match,
 };
 
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
@@ -519,27 +529,32 @@ fn appendClearDraws(
             .y_px = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px)),
             .width_px = @intCast(span_cells * @as(u32, cell_metrics.cell_w_px)),
             .height_px = cell_metrics.cell_h_px,
-            .color = clearColorForSpan(cells, grid_metrics, first_cell, cell_span),
+            .color = clearColorForSpan(cells, grid_metrics, dirty),
             .first_cell = first_cell,
             .cell_span = cell_span,
         });
     }
 }
 
-fn clearColorForSpan(cells: []const contract.RenderableCell, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) contract.Rgba8 {
-    const cols = @max(@as(u32, grid_metrics.cols), 1);
-    const span_row = first_cell / cols;
-    const start_col = first_cell % cols;
-    const end_col = start_col + @as(u32, @max(cell_span, 1)) - 1;
+fn clearColorForSpan(cells: []const contract.RenderableCell, grid_metrics: contract.GridMetrics, dirty: DirtyRowSpan) contract.Rgba8 {
+    const dirty_span = CellSpan{
+        .row = dirty.row,
+        .start_col = dirty.start_col,
+        .end_col = dirty.end_col,
+    };
     for (cells) |cell| {
-        if (cell.continuation or cell.bg.a != 0) continue;
-        if (cell.first_cell / cols != span_row) continue;
-        const cell_start = cell.first_cell % cols;
-        const cell_end = cell_start + @as(u32, @max(cell.cell_span, 1)) - 1;
-        if (cell_end < start_col or cell_start > end_col) continue;
+        if (classifyClearColorCell(grid_metrics, dirty_span, cell) != .match) continue;
         return .{ .r = cell.bg.r, .g = cell.bg.g, .b = cell.bg.b, .a = 255 };
     }
     return .{ .r = 0, .g = 0, .b = 0, .a = 255 };
+}
+
+fn classifyClearColorCell(grid_metrics: contract.GridMetrics, dirty_span: CellSpan, cell: contract.RenderableCell) ClearColorCell {
+    if (cell.continuation) return .skip;
+    if (cell.bg.a != 0) return .skip;
+    const cell_span = CellSpan.init(grid_metrics, cell.first_cell, cell.cell_span);
+    if (!cell_span.overlaps(dirty_span)) return .skip;
+    return .match;
 }
 
 fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
