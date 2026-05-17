@@ -5,6 +5,7 @@ const geometry_mod = @import("geometry.zig");
 const input = @import("input.zig");
 const pipeline = @import("pipeline.zig");
 const sprite_batch = @import("sprite_batch.zig");
+const submit_feedback = @import("submit_feedback.zig");
 const contract = @import("../text/contract.zig");
 const text_pipeline = @import("../text/pipeline.zig");
 const text = @import("../text/text.zig");
@@ -555,19 +556,9 @@ pub const SurfaceText = struct {
     pub fn submitSurface(self: *SurfaceText, prepared: *PreparedSurface, execution: SurfaceExecutionInput) !SurfaceFeedback {
         lockMutex(&self.mutex);
         errdefer self.mutex.unlock();
-        markRenderedOutputs(&self.text_preparer.?.atlas, prepared.text_frame.raster_plan.outputs);
+        submit_feedback.markRendered(&self.text_preparer.?.atlas, prepared.text_frame.raster_plan.outputs);
         const submitted = SurfaceFeedback{
-            .report = .{
-                .texture_id = execution.surface.texture_id,
-                .raster_uploads_committed = execution.uploads_committed,
-                .full_redraw = prepared.text_frame.scene.scene.full_redraw,
-                .scroll_up_px = prepared.text_frame.scene.scene.scroll_up_px,
-                .clear_draws = prepared.text_frame.scene.scene.clear_draws.len,
-                .background_draws = prepared.text_frame.scene.scene.background_draws.len,
-                .sprite_draws = prepared.text_frame.scene.scene.sprite_draws.len,
-                .decoration_draws = prepared.text_frame.scene.scene.decoration_draws.len,
-                .cursor_draws = prepared.text_frame.scene.scene.cursor_draws.len,
-            },
+            .report = submit_feedback.buildReport(SurfaceExecutionReport, prepared, execution),
             .resolve = prepared.resolve,
             .surface = execution.surface,
             .metrics = undefined,
@@ -575,7 +566,7 @@ pub const SurfaceText = struct {
             .content_valid = execution.content_valid,
         };
         var final = submitted;
-        final.metrics = renderMetrics(prepared.prepare_metrics, final, final.render_us);
+        final.metrics = submit_feedback.renderMetrics(RenderMetrics, prepared.prepare_metrics, final.report, final.resolve.counters, final.render_us);
         self.mutex.unlock();
         return final;
     }
@@ -679,34 +670,6 @@ pub const SurfaceText = struct {
             .scene_us = timings.scene_us,
             .raster_us = timings.raster_us,
             .atlas_us = timings.atlas_us,
-        };
-    }
-
-    fn markRenderedOutputs(atlas: *text.AtlasCache.OwnedAtlasCache, outputs: []const text.Rasterizer.RasterSpriteOutput) void {
-        for (outputs) |output| _ = atlas.markRendered(output.key);
-    }
-
-    fn renderMetrics(prepare_metrics: PrepareMetrics, feedback: SurfaceFeedback, render_us: u64) RenderMetrics {
-        const report = feedback.report;
-        const counters = feedback.resolve.counters;
-        return .{
-            .sync_us = prepare_metrics.sync_us,
-            .copy_us = prepare_metrics.copy_us,
-            .render_us = render_us,
-            .glyphs = report.sprite_draws,
-            .fills = report.clear_draws + report.background_draws + report.decoration_draws + report.cursor_draws,
-            .clear_fills = report.clear_draws,
-            .background_fills = report.background_draws,
-            .decoration_fills = report.decoration_draws,
-            .cursor_fills = report.cursor_draws,
-            .uploads = report.raster_uploads_committed,
-            .face_checks = counters.face_checks,
-            .face_cache_hits = counters.face_cache_hits,
-            .shape_requests = counters.shape_requests,
-            .shape_cache_hits = counters.shape_cache_hits,
-            .fallback_hits = counters.fallback_hits,
-            .fallback_misses = counters.fallback_misses,
-            .missing_glyphs = counters.missing_glyphs,
         };
     }
 
