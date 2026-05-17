@@ -1,10 +1,25 @@
 
 const std = @import("std");
 const contract = @import("../contract.zig");
+const rasterizer = @import("rasterizer.zig");
+
+pub const StoredRaster = struct {
+    pixels: []u8 = &.{},
+    width_px: u16 = 0,
+    height_px: u16 = 0,
+    color_mode: contract.SpriteColorMode = .alpha,
+    visual_bounds: rasterizer.SpriteBounds = .{},
+
+    fn deinit(self: *StoredRaster, allocator: std.mem.Allocator) void {
+        if (self.pixels.len > 0) allocator.free(self.pixels);
+        self.* = .{};
+    }
+};
 
 pub const Entry = struct {
     key: contract.SpriteKey,
     position: contract.SpritePosition,
+    raster: StoredRaster = .{},
 };
 
 pub const ReserveResult = struct {
@@ -23,6 +38,7 @@ pub const OwnedAtlasCache = struct {
     }
 
     pub fn deinit(self: *OwnedAtlasCache) void {
+        for (self.entries[0..self.len]) |*entry| entry.raster.deinit(self.allocator);
         self.allocator.free(self.entries);
         self.* = undefined;
     }
@@ -40,6 +56,7 @@ pub const OwnedAtlasCache = struct {
         const idx = if (self.len < self.entries.len) self.len else @as(usize, @intCast(self.next_slot % @as(u32, @intCast(self.entries.len))));
         const slot: u32 = @intCast(idx);
         const pos = contract.SpritePosition{ .slot = slot, .key = key, .rendered = false, .colored = colored };
+        if (idx < self.len) self.entries[idx].raster.deinit(self.allocator);
         self.entries[idx] = .{ .key = key, .position = pos };
         if (self.len < self.entries.len) self.len += 1;
         self.next_slot = (slot + 1) % @as(u32, @intCast(self.entries.len));
@@ -57,6 +74,29 @@ pub const OwnedAtlasCache = struct {
             return true;
         }
         return false;
+    }
+
+    pub fn storeRendered(self: *OwnedAtlasCache, output: rasterizer.RasterSpriteOutput) !bool {
+        for (self.entries[0..self.len]) |*entry| {
+            if (entry.key.value != output.key.value) continue;
+            entry.raster.deinit(self.allocator);
+            entry.raster.pixels = try self.allocator.dupe(u8, output.pixels);
+            entry.raster.width_px = output.width_px;
+            entry.raster.height_px = output.height_px;
+            entry.raster.color_mode = output.color_mode;
+            entry.raster.visual_bounds = output.visualBounds();
+            entry.position.rendered = true;
+            entry.position.colored = output.color_mode == .color;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn rasterForKey(self: *const OwnedAtlasCache, key: contract.SpriteKey) ?StoredRaster {
+        for (self.entries[0..self.len]) |entry| {
+            if (entry.key.value == key.value) return entry.raster;
+        }
+        return null;
     }
 };
 
@@ -91,4 +131,24 @@ test "atlas cache requests pending sprites until marked rendered" {
     try std.testing.expect(cache.markRendered(.{ .value = 99 }));
     const committed = cache.reserve(.{ .value = 99 }, false);
     try std.testing.expect(!committed.pending);
+}
+
+test "atlas cache stores rendered raster payload" {
+    var cache = try OwnedAtlasCache.init(std.testing.allocator, 2);
+    defer cache.deinit();
+    _ = cache.reserve(.{ .value = 7 }, true);
+    var output = rasterizer.RasterSpriteOutput{
+        .allocator = std.testing.allocator,
+        .key = .{ .value = 7 },
+        .width_px = 2,
+        .height_px = 2,
+        .color_mode = .color,
+        .pixels = try std.testing.allocator.dupe(u8, &[_]u8{ 1, 2, 3, 4 }),
+    };
+    defer output.deinit();
+    try std.testing.expect(try cache.storeRendered(output));
+    const stored = cache.rasterForKey(.{ .value = 7 }).?;
+    try std.testing.expectEqual(@as(usize, 4), stored.pixels.len);
+    try std.testing.expect(cache.get(.{ .value = 7 }).?.rendered);
+    try std.testing.expect(cache.get(.{ .value = 7 }).?.colored);
 }

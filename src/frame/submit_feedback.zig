@@ -1,7 +1,12 @@
 const text = @import("../text/text.zig");
 
 pub fn markRendered(atlas: *text.AtlasCache.OwnedAtlasCache, outputs: []const text.Rasterizer.RasterSpriteOutput) void {
-    for (outputs) |output| _ = atlas.markRendered(output.key);
+    for (outputs) |output| {
+        _ = atlas.storeRendered(output) catch {
+            _ = atlas.markRendered(output.key);
+            continue;
+        };
+    }
 }
 
 pub fn buildReport(comptime Report: type, prepared: anytype, execution: anytype) Report {
