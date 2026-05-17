@@ -303,9 +303,9 @@ typedef struct {
   HowlRenderSurfaceHandle surface;
   uint64_t uploads_committed;
   uint64_t render_us;
-  uint8_t scroll_reuse_applied;
   uint8_t content_valid;
-  uint16_t reserved0;
+  uint8_t reserved0;
+  uint16_t reserved1;
 } HowlRenderSurfaceExecutionInput;
 
 typedef struct {

@@ -329,9 +329,9 @@ pub const FfiSurfaceExecutionInput = extern struct {
     surface: FfiSurfaceHandle,
     uploads_committed: u64,
     render_us: u64,
-    scroll_reuse_applied: u8,
     content_valid: u8,
-    reserved0: u16 = 0,
+    reserved0: u8 = 0,
+    reserved1: u16 = 0,
 };
 
 pub const FfiSurfaceSource = extern struct {
