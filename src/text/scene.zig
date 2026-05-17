@@ -378,6 +378,11 @@ const CursorRoute = enum(u2) {
     hollow_block,
 };
 
+const DecorationEffect = enum(u2) {
+    underline,
+    strikethrough,
+};
+
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
     const valid = !damage.full and
         damage.dirty_rows.len == @as(usize, rows) and
@@ -636,8 +641,25 @@ fn appendDecorationDraws(
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         const width_px: u16 = @intCast(@as(u32, @max(cell.cell_span, 1)) * @as(u32, cell_metrics.cell_w_px));
-        if (cell.underline) try appendUnderlineDraws(assembly, cache, cell, base_x, base_y, width_px, deco, cell_metrics);
-        if (cell.strikethrough) try assembly.appendDecoration(.{
+        if (cell.underline) try appendDecorationEffect(assembly, cache, .underline, cell, base_x, base_y, width_px, deco, cell_metrics);
+        if (cell.strikethrough) try appendDecorationEffect(assembly, cache, .strikethrough, cell, base_x, base_y, width_px, deco, cell_metrics);
+    }
+}
+
+fn appendDecorationEffect(
+    assembly: *SceneAssembly,
+    cache: *atlas_cache.OwnedAtlasCache,
+    effect: DecorationEffect,
+    cell: contract.RenderableCell,
+    base_x: i32,
+    base_y: i32,
+    width_px: u16,
+    deco: contract.DecorationGeometry,
+    cell_metrics: contract.CellMetrics,
+) !void {
+    switch (effect) {
+        .underline => try appendUnderlineDraws(assembly, cache, cell, base_x, base_y, width_px, deco, cell_metrics),
+        .strikethrough => try assembly.appendDecoration(.{
             .kind = .strikethrough,
             .x_px = base_x,
             .y_px = base_y + deco.strikethrough_y_px,
@@ -646,7 +668,7 @@ fn appendDecorationDraws(
             .color = cell.fg,
             .first_cell = cell.first_cell,
             .cell_span = cell.cell_span,
-        });
+        }),
     }
 }
 
