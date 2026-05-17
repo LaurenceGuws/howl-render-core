@@ -294,7 +294,6 @@ pub const PreparedSurface = struct {
 
 pub const SurfaceFeedback = struct {
     damage_kind: pipeline.DamageKind,
-    texture_id: u32,
     uploads_committed: u64,
     resolve: text_pipeline.ResolveObservability,
     surface: SurfaceHandle,

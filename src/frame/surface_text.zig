@@ -126,7 +126,6 @@ pub const SurfaceText = struct {
         submit_feedback.markRendered(&self.text_preparer.?.atlas, prepared.text_frame.raster_plan.outputs);
         const submitted = surface.SurfaceFeedback{
             .damage_kind = submit_feedback.damageKind(prepared),
-            .texture_id = execution.surface.texture_id,
             .uploads_committed = execution.uploads_committed,
             .resolve = prepared.resolve,
             .surface = execution.surface,
