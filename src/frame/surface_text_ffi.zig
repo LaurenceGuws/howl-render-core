@@ -130,7 +130,7 @@ pub fn submit(comptime Ffi: type, surface_text_handle: Ffi.SurfaceTextHandle, pr
 
 pub fn cachedSprite(comptime Ffi: type, handle: Ffi.SurfaceTextHandle, sprite_key: u64, out: ?*Ffi.FfiCachedSprite) c_int {
     const owner = ownerFromHandle(Ffi, handle) orelse return @intFromEnum(Ffi.HowlRenderCallStatus.missing_handle);
-    const cached = owner.session.atlasRaster(.{ .value = sprite_key }) orelse return @intFromEnum(Ffi.HowlRenderCallStatus.failed);
+    const cached = owner.session.atlasRaster(Render.SpriteKey{ .value = sprite_key }) orelse return @intFromEnum(Ffi.HowlRenderCallStatus.failed);
     const sprite_out = out orelse return @intFromEnum(Ffi.HowlRenderCallStatus.invalid_argument);
     sprite_out.* = .{
         .status = @intFromEnum(Ffi.HowlRenderCallStatus.ok),
