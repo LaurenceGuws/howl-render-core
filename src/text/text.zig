@@ -7,11 +7,11 @@ pub const OwnedPreparedTextFrame = @import("frame_preparer.zig").OwnedPreparedTe
 pub const FontSession = @import("font/session.zig");
 pub const FontResolver = @import("font/resolver.zig");
 /// Cell text and grapheme cluster extraction.
-pub const Cluster = @import("cluster.zig");
+pub const Cluster = @import("shape/cluster.zig");
 /// HarfBuzz run-shaping boundary and shaper contract surface.
-pub const ShapeRun = @import("shape_run.zig");
+pub const ShapeRun = @import("shape/run.zig");
 /// Shape-output to terminal-cell grouping policy.
-pub const Grouping = @import("grouping.zig");
+pub const Grouping = @import("shape/grouping.zig");
 /// Rendered sprite cache identity.
 pub const SpriteKey = @import("raster/key.zig");
 /// Glyph-group rasterization contracts.
@@ -30,7 +30,7 @@ pub const FtHbProvider = @import("font/ft_hb/provider.zig");
 /// Shared atlas placement math.
 pub const Atlas = @import("raster/atlas.zig");
 /// Shared shaping policy.
-pub const Shaping = @import("shaping.zig");
+pub const Shaping = @import("classify/symbol.zig");
 /// Shared fallback raster policy.
 pub const Fallback = @import("raster/fallback.zig");
 /// Shared special-glyph classification.

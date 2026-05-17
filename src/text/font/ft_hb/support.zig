@@ -3,7 +3,7 @@ const std = @import("std");
 const render = @import("../../../howl_render.zig");
 const contract = @import("../../contract.zig");
 const surface = @import("../../../frame/surface.zig");
-const text_cache = @import("../../text_cache.zig");
+const text_cache = @import("cache.zig");
 const c_api = @import("c_api.zig");
 
 pub const c = c_api.c;

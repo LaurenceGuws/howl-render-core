@@ -1,6 +1,6 @@
 
 const std = @import("std");
-const contract = @import("contract.zig");
+const contract = @import("../contract.zig");
 
 pub const ShapeRunRequest = struct {
     run: contract.ResolvedRun,

@@ -3,7 +3,7 @@ const font_session = @import("../session.zig");
 const contract = @import("../../contract.zig");
 const pipeline = @import("../../pipeline.zig");
 const rasterizer = @import("../../raster/rasterizer.zig");
-const shape_run = @import("../../shape_run.zig");
+const shape_run = @import("../../shape/run.zig");
 
 pub const FtHbSource = struct {
     ctx: *anyopaque,
