@@ -261,8 +261,13 @@ fn appendSceneCursorDraws(
     cell_metrics: contract.CellMetrics,
 ) !void {
     const cursor_value = cursor orelse return;
-    if (!damage.full and !rowDirty(damage, cursor_value.cell_row)) return;
+    if (classifyCursorLead(damage, cursor_value) != .draw) return;
     try assembly.appendCursorDraws(cursor_value, cell_metrics);
+}
+
+fn classifyCursorLead(damage: NormalizedDamage, cursor: CursorInput) CursorLead {
+    if (!damage.full and !rowDirty(damage, cursor.cell_row)) return .skip;
+    return .draw;
 }
 
 const SpriteDrawInput = struct {
@@ -339,6 +344,11 @@ const DecorationLead = enum(u2) {
 };
 
 const GroupLead = enum(u2) {
+    skip,
+    draw,
+};
+
+const CursorLead = enum(u2) {
     skip,
     draw,
 };
