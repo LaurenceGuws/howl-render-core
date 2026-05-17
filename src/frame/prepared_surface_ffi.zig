@@ -1,10 +1,10 @@
 const std = @import("std");
 const Render = @import("../howl_render.zig");
-const surface = @import("surface.zig");
+const surface_text = @import("surface_text.zig");
 
 pub fn Owner(comptime Ffi: type) type {
     return struct {
-        session_owner: *surface.SurfaceTextOwner,
+        session_owner: *surface_text.SurfaceTextOwner,
         prepared: Render.PreparedSurface,
         snapshot_seq: u64,
         dirty_epoch: u64,
@@ -48,7 +48,7 @@ pub fn Owner(comptime Ffi: type) type {
     };
 }
 
-pub fn create(comptime Ffi: type, session_owner: *surface.SurfaceTextOwner, value: Render.PreparedSurface) !*Owner(Ffi) {
+pub fn create(comptime Ffi: type, session_owner: *surface_text.SurfaceTextOwner, value: Render.PreparedSurface) !*Owner(Ffi) {
     var owner = try std.heap.c_allocator.create(Owner(Ffi));
     errdefer std.heap.c_allocator.destroy(owner);
     owner.* = ownerBase(Ffi, session_owner, value);
@@ -61,7 +61,7 @@ pub fn create(comptime Ffi: type, session_owner: *surface.SurfaceTextOwner, valu
     return owner;
 }
 
-fn ownerBase(comptime Ffi: type, session_owner: *surface.SurfaceTextOwner, value: Render.PreparedSurface) Owner(Ffi) {
+fn ownerBase(comptime Ffi: type, session_owner: *surface_text.SurfaceTextOwner, value: Render.PreparedSurface) Owner(Ffi) {
     return .{
         .session_owner = session_owner,
         .prepared = value,

@@ -3,6 +3,7 @@ const std = @import("std");
 const Render = @import("howl_render.zig");
 const SurfaceText = Render.SurfaceText;
 const surface = @import("frame/surface.zig");
+const surface_text = @import("frame/surface_text.zig");
 const text_support = @import("text/font/ft_hb/support.zig");
 const prepared_surface = @import("frame/prepared_surface_ffi.zig");
 
@@ -756,7 +757,7 @@ fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     };
 }
 
-fn surfaceTextOwnerFromHandle(handle: SurfaceTextHandle) ?*surface.SurfaceTextOwner {
+fn surfaceTextOwnerFromHandle(handle: SurfaceTextHandle) ?*surface_text.SurfaceTextOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
@@ -788,7 +789,7 @@ pub fn surfaceTextDeriveFrameLayout(handle: SurfaceTextHandle, render_px: FfiPix
 
 pub fn surfaceTextInit(config: FfiSurfaceTextConfig) callconv(.c) SurfaceTextHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return null;
-    const owner = surface.SurfaceTextOwner.create(.{
+    const owner = surface_text.SurfaceTextOwner.create(.{
         .surface_px = pixelIn(config.surface_px),
         .font_size_px = @max(config.font_size_px, 1),
     }) orelse return null;
