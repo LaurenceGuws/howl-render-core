@@ -3,7 +3,6 @@ const damage = @import("damage.zig");
 const geometry_mod = @import("geometry.zig");
 const input = @import("input.zig");
 const pipeline = @import("pipeline.zig");
-const sprite_batch = @import("sprite_batch.zig");
 const submit_feedback = @import("submit_feedback.zig");
 const surface = @import("surface.zig");
 const contract = @import("../text/contract.zig");
@@ -61,12 +60,10 @@ pub const SurfaceText = struct {
     const PreparedPlans = struct {
         surface_damage_rects: []surface.DamageRect,
         buffer_damage_rects: []surface.DamageRect,
-        sprite_batches: []surface.SpriteBatch,
 
         fn deinit(self: PreparedPlans, allocator: std.mem.Allocator) void {
             if (self.surface_damage_rects.len > 0) allocator.free(self.surface_damage_rects);
             if (self.buffer_damage_rects.len > 0) allocator.free(self.buffer_damage_rects);
-            if (self.sprite_batches.len > 0) allocator.free(self.sprite_batches);
         }
     };
 
@@ -128,7 +125,9 @@ pub const SurfaceText = struct {
         errdefer self.mutex.unlock();
         submit_feedback.markRendered(&self.text_preparer.?.atlas, prepared.text_frame.raster_plan.outputs);
         const submitted = surface.SurfaceFeedback{
-            .report = submit_feedback.buildReport(surface.SurfaceExecutionReport, prepared, execution),
+            .damage_kind = submit_feedback.damageKind(prepared),
+            .texture_id = execution.surface.texture_id,
+            .uploads_committed = execution.uploads_committed,
             .resolve = prepared.resolve,
             .surface = execution.surface,
             .metrics = undefined,
@@ -136,7 +135,14 @@ pub const SurfaceText = struct {
             .content_valid = execution.content_valid,
         };
         var final = submitted;
-        final.metrics = submit_feedback.renderMetrics(surface.RenderMetrics, prepared.prepare_metrics, final.report, final.resolve.counters, final.render_us);
+        final.metrics = submit_feedback.renderMetrics(
+            surface.RenderMetrics,
+            prepared.prepare_metrics,
+            prepared,
+            final.uploads_committed,
+            final.resolve.counters,
+            final.render_us,
+        );
         self.mutex.unlock();
         return final;
     }
@@ -158,9 +164,10 @@ pub const SurfaceText = struct {
         errdefer if (surface_damage_rects.len > 0) allocator.free(surface_damage_rects);
         const buffer_damage_rects = try damage.buildBufferRects(surface.PixelSize, surface.CellSize, contract.GridMetrics, surface.DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
         errdefer if (buffer_damage_rects.len > 0) allocator.free(buffer_damage_rects);
-        const sprite_batches = try sprite_batch.buildBatches(surface.SpriteBatch, surface.SpriteBatchPassKind, allocator, 2048, prepared.scene.scene.sprite_draws, prepared.raster_plan.outputs);
-        errdefer if (sprite_batches.len > 0) allocator.free(sprite_batches);
-        return .{ .surface_damage_rects = surface_damage_rects, .buffer_damage_rects = buffer_damage_rects, .sprite_batches = sprite_batches };
+        return .{
+            .surface_damage_rects = surface_damage_rects,
+            .buffer_damage_rects = buffer_damage_rects,
+        };
     }
 
     fn ownPreparedSurface(
@@ -176,13 +183,11 @@ pub const SurfaceText = struct {
             .request = prepare.request,
             .required_surface_epoch = prepare.request.known_target_epoch,
             .geometry_epoch = prepare.request.token.geometry_epoch,
-            .atlas_page_slots = 2048,
             .render_px = prepare.query.render_px,
             .cell_px = prepare.query.cell_px,
             .grid = .{ .cols = grid.cols, .rows = grid.rows },
             .surface_damage_rects = plans.surface_damage_rects,
             .buffer_damage_rects = plans.buffer_damage_rects,
-            .sprite_batches = plans.sprite_batches,
             .text_frame = prepared,
             .resolve = resolve,
             .prepare_metrics = prepareMetrics(prepared.timings),

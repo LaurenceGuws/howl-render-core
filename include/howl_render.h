@@ -42,16 +42,6 @@ typedef enum {
   HOWL_RENDER_SUBMIT_FAILED = -3,
 } HowlRenderSubmitStatus;
 
-typedef enum {
-  HOWL_RENDER_PIXEL_FORMAT_ALPHA8 = 0,
-  HOWL_RENDER_PIXEL_FORMAT_RGBA8 = 1,
-} HowlRenderPixelFormat;
-
-typedef enum {
-  HOWL_RENDER_SPRITE_PASS_ALPHA = 0,
-  HOWL_RENDER_SPRITE_PASS_COLOR = 1,
-} HowlRenderSpritePassKind;
-
 typedef struct {
   uint16_t width;
   uint16_t height;
@@ -83,16 +73,6 @@ typedef struct {
 } HowlRenderColorDraw;
 
 typedef struct {
-  uint32_t slot;
-  uint64_t key;
-  int32_t x_px;
-  int32_t y_px;
-  uint16_t width_px;
-  uint16_t height_px;
-  HowlRenderRgba8 color;
-} HowlRenderSpriteDraw;
-
-typedef struct {
   uint8_t kind;
   uint8_t reserved0;
   uint16_t reserved1;
@@ -111,37 +91,14 @@ typedef struct {
 } HowlRenderRasterBounds;
 
 typedef struct {
-  uint32_t slot;
-  uint64_t key;
-  uint16_t width_px;
-  uint16_t height_px;
-  uint8_t color_mode;
-  uint8_t reserved0;
-  uint16_t reserved1;
-  HowlRenderRasterBounds visual_bounds;
-  const uint8_t *pixels_ptr;
-  size_t pixels_len;
-} HowlRenderRasterUpload;
-
-typedef struct {
   const HowlRenderColorDraw *ptr;
   size_t len;
 } HowlRenderColorDrawSpan;
 
 typedef struct {
-  const HowlRenderSpriteDraw *ptr;
-  size_t len;
-} HowlRenderSpriteDrawSpan;
-
-typedef struct {
   const HowlRenderDecorationDraw *ptr;
   size_t len;
 } HowlRenderDecorationDrawSpan;
-
-typedef struct {
-  const HowlRenderRasterUpload *ptr;
-  size_t len;
-} HowlRenderRasterUploadSpan;
 
 typedef struct {
   int32_t x;
@@ -331,72 +288,10 @@ typedef struct {
 } HowlRenderPreparedSurfaceDamagePlan;
 
 typedef struct {
-  uint64_t sprite_key;
-  uint32_t slot;
-  uint16_t atlas_page;
-  uint8_t pixel_format;
-  uint8_t color_mode;
-  uint16_t width_px;
-  uint16_t height_px;
-  uint16_t stride;
-  uint32_t reserved0;
-  uint64_t blob_offset;
-  uint64_t blob_len;
-  HowlRenderRasterBounds visual_bounds;
-} HowlRenderUploadOp;
-
-typedef struct {
-  const HowlRenderUploadOp *ptr;
-  size_t len;
-} HowlRenderUploadOpSpan;
-
-typedef struct {
   int32_t status;
-  HowlRenderUploadOpSpan uploads;
-  HowlRenderByteSpan pixel_blob;
-} HowlRenderPreparedSurfaceUploadPlan;
-
-typedef struct {
-  uint16_t atlas_page;
-  uint8_t pass_kind;
-  uint8_t reserved0;
-  uint32_t first_instance;
-  uint32_t instance_count;
-} HowlRenderSpriteBatch;
-
-typedef struct {
-  const HowlRenderSpriteBatch *ptr;
-  size_t len;
-} HowlRenderSpriteBatchSpan;
-
-typedef struct {
-  uint32_t slot;
-  uint64_t sprite_key;
-  int32_t dst_x_px;
-  int32_t dst_y_px;
-  uint16_t dst_width_px;
-  uint16_t dst_height_px;
-  uint16_t src_x_px;
-  uint16_t src_y_px;
-  uint16_t src_width_px;
-  uint16_t src_height_px;
-  HowlRenderRgba8 color;
-} HowlRenderSpriteInstance;
-
-typedef struct {
-  const HowlRenderSpriteInstance *ptr;
-  size_t len;
-} HowlRenderSpriteInstanceSpan;
-
-typedef struct {
-  int32_t status;
-  HowlRenderColorDrawSpan clear_draws;
-  HowlRenderColorDrawSpan background_draws;
-  HowlRenderSpriteBatchSpan sprite_batches;
-  HowlRenderSpriteInstanceSpan sprite_instances;
-  HowlRenderDecorationDrawSpan decoration_draws;
-  HowlRenderColorDrawSpan cursor_draws;
-} HowlRenderPreparedSurfaceDrawPlan;
+  HowlRenderByteSpan rgba_pixels;
+  uint64_t uploads_committed;
+} HowlRenderPreparedSurfaceBuffer;
 
 typedef struct {
   int32_t status;
@@ -437,16 +332,6 @@ typedef struct {
 } HowlRenderSurfaceFeedback;
 
 typedef struct {
-  int32_t status;
-  uint16_t width_px;
-  uint16_t height_px;
-  uint8_t color_mode;
-  uint8_t reserved0;
-  HowlRenderRasterBounds visual_bounds;
-  HowlRenderByteSpan pixels;
-} HowlRenderCachedSprite;
-
-typedef struct {
   HowlRenderPixelSize surface_px;
   uint16_t font_size_px;
   uint16_t reserved0;
@@ -467,11 +352,9 @@ HowlRenderPrepareStatus howl_render_surface_text_prepare_handle(HowlRenderSurfac
 void howl_render_prepared_surface_release(HowlRenderPreparedSurfaceHandle prepared_surface_handle);
 int howl_render_prepared_surface_describe(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceInfo *info_out);
 int howl_render_prepared_surface_damage_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDamagePlan *plan_out);
-int howl_render_prepared_surface_upload_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceUploadPlan *plan_out);
-int howl_render_prepared_surface_draw_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDrawPlan *plan_out);
+int howl_render_prepared_surface_buffer(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceBuffer *buffer_out);
 int howl_render_prepared_surface_diagnostics(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDiagnostics *diagnostics_out);
 HowlRenderSubmitStatus howl_render_surface_text_submit(HowlRenderSurfaceTextHandle surface_text_handle, HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedFrame prepared_frame, const HowlRenderSurfaceExecutionInput *execution_in, HowlRenderSurfaceFeedback *feedback_out);
-int howl_render_surface_text_cached_sprite(HowlRenderSurfaceTextHandle handle, uint64_t sprite_key, HowlRenderCachedSprite *out);
 
 #ifdef __cplusplus
 }

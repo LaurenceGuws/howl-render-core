@@ -313,72 +313,10 @@ pub const FfiPreparedSurfaceDamagePlan = extern struct {
     buffer_damage_rects: FfiRectSpan,
 };
 
-pub const FfiUploadOp = extern struct {
-    sprite_key: u64,
-    slot: u32,
-    atlas_page: u16,
-    pixel_format: u8,
-    color_mode: u8,
-    width_px: u16,
-    height_px: u16,
-    stride: u16,
-    reserved0: u32 = 0,
-    blob_offset: u64,
-    blob_len: u64,
-    visual_bounds: FfiRasterBounds,
-};
-
-pub const FfiUploadOpSpan = extern struct {
-    ptr: [*c]const FfiUploadOp,
-    len: usize,
-};
-
-pub const FfiPreparedSurfaceUploadPlan = extern struct {
+pub const FfiPreparedSurfaceBuffer = extern struct {
     status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
-    uploads: FfiUploadOpSpan,
-    pixel_blob: FfiByteSpan,
-};
-
-pub const FfiSpriteBatch = extern struct {
-    atlas_page: u16,
-    pass_kind: u8,
-    reserved0: u8 = 0,
-    first_instance: u32,
-    instance_count: u32,
-};
-
-pub const FfiSpriteBatchSpan = extern struct {
-    ptr: [*c]const FfiSpriteBatch,
-    len: usize,
-};
-
-pub const FfiSpriteInstance = extern struct {
-    slot: u32,
-    sprite_key: u64,
-    dst_x_px: i32,
-    dst_y_px: i32,
-    dst_width_px: u16,
-    dst_height_px: u16,
-    src_x_px: u16,
-    src_y_px: u16,
-    src_width_px: u16,
-    src_height_px: u16,
-    color: FfiRgba8,
-};
-
-pub const FfiSpriteInstanceSpan = extern struct {
-    ptr: [*c]const FfiSpriteInstance,
-    len: usize,
-};
-
-pub const FfiPreparedSurfaceDrawPlan = extern struct {
-    status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
-    clear_draws: FfiColorDrawSpan,
-    background_draws: FfiColorDrawSpan,
-    sprite_batches: FfiSpriteBatchSpan,
-    sprite_instances: FfiSpriteInstanceSpan,
-    decoration_draws: FfiDecorationDrawSpan,
-    cursor_draws: FfiColorDrawSpan,
+    rgba_pixels: FfiByteSpan,
+    uploads_committed: u64,
 };
 
 pub const FfiPreparedSurfaceDiagnostics = extern struct {
@@ -417,16 +355,6 @@ pub const FfiSurfaceFeedback = extern struct {
     reserved1: u16 = 0,
     surface: FfiSurfaceHandle,
     metrics: FfiSurfaceMetrics,
-};
-
-pub const FfiCachedSprite = extern struct {
-    status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
-    width_px: u16,
-    height_px: u16,
-    color_mode: u8,
-    reserved0: u8 = 0,
-    visual_bounds: FfiRasterBounds,
-    pixels: FfiByteSpan,
 };
 
 pub const FfiSurfaceTextConfig = extern struct {
@@ -537,18 +465,6 @@ fn u16SpanOut(items: []const u16) FfiU16Span {
     return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
 }
 
-fn uploadOpSpanOut(items: []const FfiUploadOp) FfiUploadOpSpan {
-    return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
-}
-
-fn spriteBatchSpanOut(items: []const FfiSpriteBatch) FfiSpriteBatchSpan {
-    return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
-}
-
-fn spriteInstanceSpanOut(items: []const FfiSpriteInstance) FfiSpriteInstanceSpan {
-    return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
-}
-
 fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     return switch (value) {
         1 => .double,
@@ -623,17 +539,10 @@ pub fn preparedSurfaceDamagePlan(prepared_surface_handle: PreparedSurfaceHandle,
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
-pub fn preparedSurfaceUploadPlan(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceUploadPlan) callconv(.c) c_int {
+pub fn preparedSurfaceBuffer(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceBuffer) callconv(.c) c_int {
     const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = plan_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepared_surface.uploadPlanOut(@This(), owner);
-    return @intFromEnum(HowlRenderCallStatus.ok);
-}
-
-pub fn preparedSurfaceDrawPlan(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceDrawPlan) callconv(.c) c_int {
-    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
-    const out = plan_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepared_surface.drawPlanOut(@This(), owner);
+    out.* = prepared_surface.bufferOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
@@ -646,10 +555,6 @@ pub fn preparedSurfaceDiagnostics(prepared_surface_handle: PreparedSurfaceHandle
 
 pub fn surfaceTextSubmit(surface_text_handle: SurfaceTextHandle, prepared_surface_handle: PreparedSurfaceHandle, prepared_frame_in: FfiPreparedFrame, execution_in: ?*const FfiSurfaceExecutionInput, feedback_out: ?*FfiSurfaceFeedback) callconv(.c) HowlRenderSubmitStatus {
     return surface_text_ffi.submit(@This(), surface_text_handle, prepared_surface_handle, prepared_frame_in, execution_in, feedback_out);
-}
-
-pub fn surfaceTextCachedSprite(handle: SurfaceTextHandle, sprite_key: u64, out: ?*FfiCachedSprite) callconv(.c) c_int {
-    return surface_text_ffi.cachedSprite(@This(), handle, sprite_key, out);
 }
 
 test "ffi surface session rejects missing handle" {

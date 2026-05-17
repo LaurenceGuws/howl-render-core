@@ -238,18 +238,6 @@ pub const SurfaceLayout = struct {
     grid: GridSize,
 };
 
-pub const SurfaceExecutionReport = struct {
-    texture_id: u32,
-    raster_uploads_committed: usize,
-    full_redraw: bool,
-    scroll_up_px: u16,
-    clear_draws: usize,
-    background_draws: usize,
-    sprite_draws: usize,
-    decoration_draws: usize,
-    cursor_draws: usize,
-};
-
 pub const DamageRect = struct {
     x: i32,
     y: i32,
@@ -257,30 +245,16 @@ pub const DamageRect = struct {
     height: i32,
 };
 
-pub const SpriteBatchPassKind = enum(u8) {
-    alpha,
-    color,
-};
-
-pub const SpriteBatch = struct {
-    atlas_page: u16,
-    pass_kind: SpriteBatchPassKind,
-    first_instance: u32,
-    instance_count: u32,
-};
-
 pub const PreparedSurface = struct {
     allocator: std.mem.Allocator,
     request: pipeline.RenderRequest,
     required_surface_epoch: u64,
     geometry_epoch: u64,
-    atlas_page_slots: u32,
     render_px: PixelSize,
     cell_px: CellSize,
     grid: GridSize,
     surface_damage_rects: []DamageRect = &.{},
     buffer_damage_rects: []DamageRect = &.{},
-    sprite_batches: []SpriteBatch = &.{},
     text_frame: text.OwnedPreparedTextFrame,
     resolve: text_pipeline.ResolveObservability = .{},
     prepare_metrics: PrepareMetrics = .{},
@@ -288,7 +262,6 @@ pub const PreparedSurface = struct {
     pub fn deinit(self: *PreparedSurface) void {
         if (self.surface_damage_rects.len > 0) self.allocator.free(self.surface_damage_rects);
         if (self.buffer_damage_rects.len > 0) self.allocator.free(self.buffer_damage_rects);
-        if (self.sprite_batches.len > 0) self.allocator.free(self.sprite_batches);
         self.text_frame.deinit();
         self.* = undefined;
     }
@@ -320,7 +293,9 @@ pub const PreparedSurface = struct {
 };
 
 pub const SurfaceFeedback = struct {
-    report: SurfaceExecutionReport,
+    damage_kind: pipeline.DamageKind,
+    texture_id: u32,
+    uploads_committed: u64,
     resolve: text_pipeline.ResolveObservability,
     surface: SurfaceHandle,
     metrics: RenderMetrics,
@@ -328,8 +303,6 @@ pub const SurfaceFeedback = struct {
     content_valid: bool = true,
 
     pub fn damageKind(self: SurfaceFeedback) pipeline.DamageKind {
-        if (self.report.full_redraw) return .full;
-        if (self.report.scroll_up_px > 0) return .scroll;
-        return .partial;
+        return self.damage_kind;
     }
 };

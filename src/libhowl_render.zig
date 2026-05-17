@@ -14,9 +14,7 @@ comptime {
     @export(&ffi.preparedSurfaceRelease, .{ .name = "howl_render_prepared_surface_release" });
     @export(&ffi.preparedSurfaceDescribe, .{ .name = "howl_render_prepared_surface_describe" });
     @export(&ffi.preparedSurfaceDamagePlan, .{ .name = "howl_render_prepared_surface_damage_plan" });
-    @export(&ffi.preparedSurfaceUploadPlan, .{ .name = "howl_render_prepared_surface_upload_plan" });
-    @export(&ffi.preparedSurfaceDrawPlan, .{ .name = "howl_render_prepared_surface_draw_plan" });
+    @export(&ffi.preparedSurfaceBuffer, .{ .name = "howl_render_prepared_surface_buffer" });
     @export(&ffi.preparedSurfaceDiagnostics, .{ .name = "howl_render_prepared_surface_diagnostics" });
     @export(&ffi.surfaceTextSubmit, .{ .name = "howl_render_surface_text_submit" });
-    @export(&ffi.surfaceTextCachedSprite, .{ .name = "howl_render_surface_text_cached_sprite" });
 }
