@@ -283,6 +283,25 @@ fn classifyDecorationAppend(last: contract.TextDecorationDraw, draw: contract.Te
     return .merge;
 }
 
+fn classifyIconSpan(
+    group: contract.GlyphGroup,
+    cell_metrics: contract.CellMetrics,
+    grid_metrics: contract.GridMetrics,
+    next_group_cell: ?u32,
+) IconSpan {
+    if (group.kind != .icon) return .keep_kind;
+    if (cell_metrics.cell_w_px == 0) return .keep_zero_width;
+    const desired = desiredIconCells(group, cell_metrics.cell_w_px);
+    if (desired <= group.cell_span) return .keep_current_span;
+
+    const cols = @max(@as(u32, grid_metrics.cols), 1);
+    const row_end = ((group.first_cell / cols) + 1) * cols;
+    const next = next_group_cell orelse row_end;
+    const available_end = @min(row_end, next);
+    if (available_end <= group.first_cell) return .keep_no_space;
+    return .expand;
+}
+
 const SpriteDrawInput = struct {
     x_px: i32,
     y_px: i32,
@@ -381,6 +400,14 @@ const CursorRoute = enum(u2) {
 const DecorationEffect = enum(u2) {
     underline,
     strikethrough,
+};
+
+const IconSpan = enum(u3) {
+    keep_kind,
+    keep_zero_width,
+    keep_current_span,
+    keep_no_space,
+    expand,
 };
 
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
@@ -763,16 +790,13 @@ fn findCellByFirstCell(cells: []const contract.RenderableCell, first_cell: u32) 
 }
 
 fn iconGroupWithAvailableSpace(group: contract.GlyphGroup, cell_metrics: contract.CellMetrics, grid_metrics: contract.GridMetrics, next_group_cell: ?u32) contract.GlyphGroup {
-    if (group.kind != .icon) return group;
-    if (cell_metrics.cell_w_px == 0) return group;
-    const desired = desiredIconCells(group, cell_metrics.cell_w_px);
-    if (desired <= group.cell_span) return group;
+    if (classifyIconSpan(group, cell_metrics, grid_metrics, next_group_cell) != .expand) return group;
 
+    const desired = desiredIconCells(group, cell_metrics.cell_w_px);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     const row_end = ((group.first_cell / cols) + 1) * cols;
     const next = next_group_cell orelse row_end;
     const available_end = @min(row_end, next);
-    if (available_end <= group.first_cell) return group;
     const available_cells: u8 = @intCast(@min(available_end - group.first_cell, std.math.maxInt(u8)));
     const cell_span = @min(desired, available_cells);
     if (cell_span <= group.cell_span) return group;
