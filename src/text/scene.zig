@@ -333,6 +333,11 @@ const ClearColorCell = enum(u2) {
     match,
 };
 
+const DecorationLead = enum(u2) {
+    skip,
+    draw,
+};
+
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
     const valid = !damage.full and
         damage.dirty_rows.len == @as(usize, rows) and
@@ -557,6 +562,13 @@ fn classifyClearColorCell(grid_metrics: contract.GridMetrics, dirty_span: CellSp
     return .match;
 }
 
+fn classifyDecorationLead(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, cell: contract.RenderableCell) DecorationLead {
+    if (cell.continuation) return .skip;
+    if (!cell.underline and !cell.strikethrough) return .skip;
+    if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) return .skip;
+    return .draw;
+}
+
 fn sameRgba8(a: contract.Rgba8, b: contract.Rgba8) bool {
     return a.r == b.r and a.g == b.g and a.b == b.b and a.a == b.a;
 }
@@ -573,9 +585,7 @@ fn appendDecorationDraws(
     const deco = decorationGeometry(cell_metrics, font_metrics);
     const cols = @max(@as(u32, grid_metrics.cols), 1);
     for (cells) |cell| {
-        if (cell.continuation) continue;
-        if (!cell.underline and !cell.strikethrough) continue;
-        if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) continue;
+        if (classifyDecorationLead(damage, grid_metrics, cell) != .draw) continue;
         const col = cell.first_cell % cols;
         const row = cell.first_cell / cols;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
