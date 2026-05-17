@@ -238,6 +238,22 @@ const SceneAssembly = struct {
     }
 };
 
+const UnderlineRoute = enum(u3) {
+    straight,
+    double,
+    dotted,
+    dashed,
+    curly,
+};
+
+const underline_routes = [5]UnderlineRoute{
+    .straight,
+    .double,
+    .curly,
+    .dotted,
+    .dashed,
+};
+
 fn appendSceneCursorDraws(
     assembly: *SceneAssembly,
     cursor: ?CursorInput,
@@ -260,6 +276,53 @@ const SpriteDrawInput = struct {
     cell_span: u8,
 };
 
+const CellSpan = struct {
+    row: u16,
+    start_col: u16,
+    end_col: u16,
+
+    fn init(grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) CellSpan {
+        const cols = @max(@as(u32, grid_metrics.cols), 1);
+        const start_col_u32 = first_cell % cols;
+        const span_u32 = @as(u32, @max(cell_span, 1));
+        return .{
+            .row = @intCast(first_cell / cols),
+            .start_col = @intCast(start_col_u32),
+            .end_col = @intCast(start_col_u32 + span_u32 - 1),
+        };
+    }
+};
+
+const DirtyRowSpan = struct {
+    row: u16,
+    start_col: u16,
+    end_col: u16,
+
+    fn firstCell(self: DirtyRowSpan, grid_metrics: contract.GridMetrics) u32 {
+        return @as(u32, self.row) * @as(u32, @max(grid_metrics.cols, 1)) + @as(u32, self.start_col);
+    }
+
+    fn cellSpan(self: DirtyRowSpan) u8 {
+        const span_u32 = @as(u32, self.end_col - self.start_col) + 1;
+        return @intCast(@min(span_u32, @as(u32, std.math.maxInt(u8))));
+    }
+};
+
+const BackgroundLead = enum(u2) {
+    skip,
+    transparent,
+    span,
+};
+
+const BackgroundNext = enum(u3) {
+    merge,
+    stop_continuation,
+    stop_damage,
+    stop_color,
+    stop_row,
+    stop_gap,
+};
+
 fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
     const valid = !damage.full and
         damage.dirty_rows.len == @as(usize, rows) and
@@ -280,17 +343,52 @@ fn rowDirty(damage: NormalizedDamage, row: u16) bool {
     return idx < damage.dirty_rows.len and damage.dirty_rows[idx];
 }
 
+fn dirtyRowSpan(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, row: u16) ?DirtyRowSpan {
+    if (damage.full) return null;
+    if (!rowDirty(damage, row)) return null;
+
+    const cols = @max(grid_metrics.cols, 1);
+    const idx = @as(usize, row);
+    const last_col: u16 = cols - 1;
+    const start_col = @min(damage.dirty_cols_start[idx], last_col);
+    const end_col = @min(damage.dirty_cols_end[idx], last_col);
+    if (end_col < start_col) return null;
+
+    return .{
+        .row = row,
+        .start_col = start_col,
+        .end_col = end_col,
+    };
+}
+
 fn includeSpan(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, first_cell: u32, cell_span: u8) bool {
     if (damage.full) return true;
-    const cols = @max(@as(u32, grid_metrics.cols), 1);
-    const row = @as(u16, @intCast(first_cell / cols));
-    if (!rowDirty(damage, row)) return false;
-    const idx = @as(usize, row);
-    const start_col = @as(u16, @intCast(first_cell % cols));
-    const end_col = start_col +| (@max(cell_span, 1) - 1);
-    const dirty_start = damage.dirty_cols_start[idx];
-    const dirty_end = damage.dirty_cols_end[idx];
-    return !(end_col < dirty_start or start_col > dirty_end);
+    const cell = CellSpan.init(grid_metrics, first_cell, cell_span);
+    const dirty = dirtyRowSpan(damage, grid_metrics, cell.row) orelse return false;
+    return !(cell.end_col < dirty.start_col or cell.start_col > dirty.end_col);
+}
+
+fn classifyBackgroundLead(damage: NormalizedDamage, grid_metrics: contract.GridMetrics, cell: contract.RenderableCell) BackgroundLead {
+    if (cell.continuation) return .skip;
+    if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) return .skip;
+    if (cell.bg.a == 0) return .transparent;
+    return .span;
+}
+
+fn classifyBackgroundNext(
+    damage: NormalizedDamage,
+    grid_metrics: contract.GridMetrics,
+    row: u16,
+    fill_color: contract.Rgba8,
+    span_end_cell: u32,
+    cell: contract.RenderableCell,
+) BackgroundNext {
+    if (cell.continuation) return .stop_continuation;
+    if (!includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) return .stop_damage;
+    if (!sameRgba8(cell.bg, fill_color)) return .stop_color;
+    if (CellSpan.init(grid_metrics, cell.first_cell, cell.cell_span).row != row) return .stop_row;
+    if (cell.first_cell != span_end_cell) return .stop_gap;
+    return .merge;
 }
 
 fn appendGroupSpriteDraws(
@@ -361,38 +459,30 @@ fn appendBackgroundDraws(
     grid_metrics: contract.GridMetrics,
     damage: NormalizedDamage,
 ) !void {
-    const cols = @max(@as(u32, grid_metrics.cols), 1);
     var idx: usize = 0;
     while (idx < cells.len) {
         const cell = cells[idx];
-        if (cell.continuation or !includeSpan(damage, grid_metrics, cell.first_cell, cell.cell_span)) {
+        const lead = classifyBackgroundLead(damage, grid_metrics, cell);
+        if (lead == .skip or lead == .transparent) {
             idx += 1;
             continue;
         }
         const fill_color = cell.bg;
-        if (fill_color.a == 0) {
-            idx += 1;
-            continue;
-        }
-
-        const row = cell.first_cell / cols;
+        const span = CellSpan.init(grid_metrics, cell.first_cell, cell.cell_span);
+        const row = span.row;
         const span_first_cell = cell.first_cell;
         var span_cell_count: u32 = @max(cell.cell_span, 1);
         var next_idx = idx + 1;
         var span_end_cell = span_first_cell + span_cell_count;
         while (next_idx < cells.len) : (next_idx += 1) {
             const next = cells[next_idx];
-            if (next.continuation) break;
-            if (!includeSpan(damage, grid_metrics, next.first_cell, next.cell_span)) break;
-            if (!sameRgba8(next.bg, fill_color)) break;
-            if (next.first_cell / cols != row) break;
-            if (next.first_cell != span_end_cell) break;
+            if (classifyBackgroundNext(damage, grid_metrics, row, fill_color, span_end_cell, next) != .merge) break;
             const next_span = @max(next.cell_span, 1);
             span_cell_count += next_span;
             span_end_cell += next_span;
         }
 
-        const col = span_first_cell % cols;
+        const col = span.start_col;
         const base_x = @as(i32, @intCast(col)) * @as(i32, @intCast(cell_metrics.cell_w_px));
         const base_y = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px));
         try out.append(allocator, .{
@@ -417,24 +507,21 @@ fn appendClearDraws(
     damage: NormalizedDamage,
 ) !void {
     if (damage.full) return;
-    const cols = @max(@as(u32, grid_metrics.cols), 1);
     const rows = @as(usize, grid_metrics.rows);
     var row: usize = 0;
     while (row < rows and row < damage.dirty_rows.len) : (row += 1) {
-        if (!damage.dirty_rows[row]) continue;
-        const start_col = @min(damage.dirty_cols_start[row], @as(u16, @intCast(cols - 1)));
-        const end_col = @min(damage.dirty_cols_end[row], @as(u16, @intCast(cols - 1)));
-        if (end_col < start_col) continue;
-        const first_cell = @as(u32, @intCast(row)) * cols + @as(u32, start_col);
-        const span_cells = @as(u32, end_col - start_col) + 1;
+        const dirty = dirtyRowSpan(damage, grid_metrics, @intCast(row)) orelse continue;
+        const first_cell = dirty.firstCell(grid_metrics);
+        const cell_span = dirty.cellSpan();
+        const span_cells = @as(u32, @max(cell_span, 1));
         try out.append(allocator, .{
-            .x_px = @as(i32, @intCast(start_col)) * @as(i32, @intCast(cell_metrics.cell_w_px)),
+            .x_px = @as(i32, @intCast(dirty.start_col)) * @as(i32, @intCast(cell_metrics.cell_w_px)),
             .y_px = @as(i32, @intCast(row)) * @as(i32, @intCast(cell_metrics.cell_h_px)),
             .width_px = @intCast(span_cells * @as(u32, cell_metrics.cell_w_px)),
             .height_px = cell_metrics.cell_h_px,
-            .color = clearColorForSpan(cells, grid_metrics, first_cell, @intCast(@min(span_cells, @as(u32, std.math.maxInt(u8))))),
+            .color = clearColorForSpan(cells, grid_metrics, first_cell, cell_span),
             .first_cell = first_cell,
-            .cell_span = @intCast(@min(span_cells, @as(u32, std.math.maxInt(u8)))),
+            .cell_span = cell_span,
         });
     }
 }
@@ -519,27 +606,42 @@ fn appendUnderlineDraws(
     const color = if (cell.underline_color.a == 0) cell.fg else cell.underline_color;
     const y = row_y + deco.underline_y_px;
     const height = deco.underline_h_px;
-    switch (cell.underline_style) {
-        .straight => try appendDecorationDraw(assembly, .underline, cell, x, y, width, height, color),
-        .double => {
-            const gap: i32 = @max(@as(i32, @intCast(height)), 1);
-            try appendDecorationDraw(assembly, .underline, cell, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
-            try appendDecorationDraw(assembly, .underline, cell, x, y, width, height, color);
-        },
-        .dotted => {
-            const dot: u16 = @max(height, 1);
-            const step: u16 = @max(dot * 2, 2);
-            var off: u16 = 0;
-            while (off < width) : (off += step) try appendDecorationDraw(assembly, .underline_dotted, cell, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
-        },
-        .dashed => {
-            const dash: u16 = @max(width / 3, @as(u16, 2));
-            const step: u16 = @max(dash + 2, 3);
-            var off: u16 = 0;
-            while (off < width) : (off += step) try appendDecorationDraw(assembly, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
-        },
+    const route = underlineRoute(cell.underline_style);
+    switch (route) {
+        .straight => try appendStraightUnderline(assembly, cell, x, y, width, height, color),
+        .double => try appendDoubleUnderline(assembly, cell, x, y, width, height, color),
+        .dotted => try appendDottedUnderline(assembly, cell, x, y, width, height, color),
+        .dashed => try appendDashedUnderline(assembly, cell, x, y, width, height, color),
         .curly => try assembly.appendUndercurl(cache, cell, x, row_y, width, deco, cell_metrics, color),
     }
+}
+
+fn underlineRoute(style: contract.UnderlineStyle) UnderlineRoute {
+    return underline_routes[@intFromEnum(style)];
+}
+
+fn appendStraightUnderline(assembly: *SceneAssembly, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    try appendDecorationDraw(assembly, .underline, cell, x, y, width, height, color);
+}
+
+fn appendDoubleUnderline(assembly: *SceneAssembly, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    const gap: i32 = @max(@as(i32, @intCast(height)), 1);
+    try appendDecorationDraw(assembly, .underline, cell, x, @max(y - gap - @as(i32, @intCast(height)), 0), width, height, color);
+    try appendDecorationDraw(assembly, .underline, cell, x, y, width, height, color);
+}
+
+fn appendDottedUnderline(assembly: *SceneAssembly, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    const dot: u16 = @max(height, 1);
+    const step: u16 = @max(dot * 2, 2);
+    var off: u16 = 0;
+    while (off < width) : (off += step) try appendDecorationDraw(assembly, .underline_dotted, cell, x + @as(i32, @intCast(off)), y, @min(dot, width - off), height, color);
+}
+
+fn appendDashedUnderline(assembly: *SceneAssembly, cell: contract.RenderableCell, x: i32, y: i32, width: u16, height: u16, color: contract.Rgba8) !void {
+    const dash: u16 = @max(width / 3, @as(u16, 2));
+    const step: u16 = @max(dash + 2, 3);
+    var off: u16 = 0;
+    while (off < width) : (off += step) try appendDecorationDraw(assembly, .underline_dashed, cell, x + @as(i32, @intCast(off)), y, @min(dash, width - off), height, color);
 }
 
 fn saturatingSub(a: u16, b: u16) u16 {

@@ -8,6 +8,38 @@ pub const TextLane = enum(u1) {
     complex,
 };
 
+pub const RenderableClass = enum(u3) {
+    normal,
+    multi_codepoint,
+    emoji_presentation,
+    special_sprite,
+    icon_codepoint,
+    curly_underline,
+
+    pub fn lane(self: RenderableClass) TextLane {
+        return switch (self) {
+            .normal => .normal,
+            .multi_codepoint,
+            .emoji_presentation,
+            .special_sprite,
+            .icon_codepoint,
+            .curly_underline,
+            => .complex,
+        };
+    }
+
+    pub fn complexReason(self: RenderableClass) ?ComplexLaneReason {
+        return switch (self) {
+            .normal => null,
+            .multi_codepoint => .multi_codepoint,
+            .emoji_presentation => .emoji_presentation,
+            .special_sprite => .special_sprite,
+            .icon_codepoint => .icon_codepoint,
+            .curly_underline => .curly_underline,
+        };
+    }
+};
+
 pub const ComplexLaneReason = enum(u3) {
     multi_codepoint,
     emoji_presentation,
@@ -33,6 +65,20 @@ pub const LaneClass = struct {
             .normal => std.debug.assert(self.complex_reason == null),
             .complex => std.debug.assert(self.complex_reason != null),
         }
+    }
+
+    pub fn renderableClass(self: LaneClass) RenderableClass {
+        self.assertValid();
+        return switch (self.lane) {
+            .normal => .normal,
+            .complex => switch (self.complex_reason.?) {
+                .multi_codepoint => .multi_codepoint,
+                .emoji_presentation => .emoji_presentation,
+                .special_sprite => .special_sprite,
+                .icon_codepoint => .icon_codepoint,
+                .curly_underline => .curly_underline,
+            },
+        };
     }
 };
 
@@ -148,19 +194,22 @@ pub const LaneReport = struct {
 
 pub fn normalRenderableCell(cell: contract.RenderableCell, text: contract.CellText) bool {
     assertTextInvariants(text);
-    return complexRenderableCellReason(cell, text) == null;
+    return classifyRenderable(cell, text) == .normal;
 }
 
 pub fn complexRenderableCellReason(cell: contract.RenderableCell, text: contract.CellText) ?ComplexLaneReason {
     assertTextInvariants(text);
-    return complexCellReason(cell, text);
+    return classifyRenderable(cell, text).complexReason();
+}
+
+pub fn classifyRenderable(cell: contract.RenderableCell, text: contract.CellText) RenderableClass {
+    assertTextInvariants(text);
+    return renderableClass(cell, text);
 }
 
 pub fn classifyRenderableCell(cell: contract.RenderableCell, text: contract.CellText) LaneClass {
-    const normal = normalRenderableCell(cell, text);
-    const complex_reason = complexRenderableCellReason(cell, text);
-    std.debug.assert(normal != (complex_reason != null));
-    const choice = if (normal) LaneClass.normal() else LaneClass.complex(complex_reason.?);
+    const class = classifyRenderable(cell, text);
+    const choice = if (class == .normal) LaneClass.normal() else LaneClass.complex(class.complexReason().?);
     choice.assertValid();
     return choice;
 }
@@ -172,7 +221,8 @@ pub fn normalCluster(cluster: contract.CellCluster, text: contract.CellText) boo
 
 pub fn complexClusterReason(cluster: contract.CellCluster, text: contract.CellText) ?ComplexLaneReason {
     assertTextInvariants(text);
-    return complexTextReason(text, cluster.presentation);
+    const class = textClass(text, cluster.presentation) orelse return null;
+    return class.complexReason();
 }
 
 pub fn classifyCluster(cluster: contract.CellCluster, text: contract.CellText) LaneClass {
@@ -201,13 +251,13 @@ fn normalText(text: contract.CellText, presentation: contract.TextPresentation) 
         (route == null or route.? == .blank);
 }
 
-fn complexCellReason(cell: contract.RenderableCell, text: contract.CellText) ?ComplexLaneReason {
-    if (complexTextReason(text, cell.presentation)) |reason| return reason;
+fn renderableClass(cell: contract.RenderableCell, text: contract.CellText) RenderableClass {
+    if (textClass(text, cell.presentation)) |class| return class;
     if (cell.underline and cell.underline_style == .curly) return .curly_underline;
-    return null;
+    return .normal;
 }
 
-fn complexTextReason(text: contract.CellText, presentation: contract.TextPresentation) ?ComplexLaneReason {
+fn textClass(text: contract.CellText, presentation: contract.TextPresentation) ?RenderableClass {
     if (presentation == .emoji) return .emoji_presentation;
     if (symbol_map.builtinRoute(text.first_cp)) |route| {
         if (route != .blank) return .special_sprite;

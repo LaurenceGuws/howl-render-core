@@ -377,6 +377,25 @@ const DirectNormalDecision = enum {
     reject,
 };
 
+const direct_normal_actions = [2][6]DirectNormalDecision{
+    .{
+        .include,
+        .reject,
+        .reject,
+        .reject,
+        .reject,
+        .reject,
+    },
+    .{
+        .include,
+        .skip,
+        .skip,
+        .skip,
+        .skip,
+        .skip,
+    },
+};
+
 const DirectNormalCandidate = struct {
     item: DirectNormalItem,
     text: contract.CellText,
@@ -430,19 +449,10 @@ fn directNormalDecision(
     lane_report: *lane.LaneReport,
     candidate: DirectNormalCandidate,
 ) DirectNormalDecision {
-    return switch (policy) {
-        .require_all_normal => switch (candidate.choice.lane) {
-            .normal => blk: {
-                recordDirectNormalLane(lane_report, candidate.text);
-                break :blk .include;
-            },
-            .complex => .reject,
-        },
-        .skip_complex => switch (candidate.choice.lane) {
-            .normal => .include,
-            .complex => .skip,
-        },
-    };
+    const class = candidate.choice.renderableClass();
+    const action = direct_normal_actions[@intFromEnum(policy)][@intFromEnum(class)];
+    if (action == .include and policy == .require_all_normal) recordDirectNormalLane(lane_report, candidate.text);
+    return action;
 }
 
 fn directNormalCandidate(

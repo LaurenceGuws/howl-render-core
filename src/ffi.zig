@@ -4,6 +4,7 @@ const Render = @import("howl_render.zig");
 const SurfaceText = Render.SurfaceText;
 const surface = @import("frame/surface.zig");
 const text_support = @import("text/ft_hb_support.zig");
+const prepared_surface = @import("ffi_prepared_surface.zig");
 
 pub const HowlRenderSurfaceText = opaque {};
 pub const HowlRenderPreparedSurfaceObject = opaque {};
@@ -11,100 +12,7 @@ pub const HowlRenderPreparedSurfaceObject = opaque {};
 pub const SurfaceTextHandle = ?*HowlRenderSurfaceText;
 pub const PreparedSurfaceHandle = ?*HowlRenderPreparedSurfaceObject;
 
-const SurfaceTextOwner = struct {
-    session: SurfaceText,
-    config: Render.SurfaceTextConfig,
-    font_path: ?[:0]u8 = null,
-    fallback_font_paths: std.ArrayList([:0]u8) = .empty,
-    clear_draws: std.ArrayList(FfiColorDraw) = .empty,
-    background_draws: std.ArrayList(FfiColorDraw) = .empty,
-    sprite_draws: std.ArrayList(FfiSpriteDraw) = .empty,
-    decoration_draws: std.ArrayList(FfiDecorationDraw) = .empty,
-    cursor_draws: std.ArrayList(FfiColorDraw) = .empty,
-    raster_uploads: std.ArrayList(FfiRasterUpload) = .empty,
-
-    fn create(config: Render.SurfaceTextConfig) ?*SurfaceTextOwner {
-        const owner = std.heap.c_allocator.create(SurfaceTextOwner) catch return null;
-        owner.* = .{ .session = SurfaceText.init(), .config = config };
-        return owner;
-    }
-
-    fn destroy(self: *SurfaceTextOwner) void {
-        if (self.font_path) |path| std.heap.c_allocator.free(path);
-        self.font_path = null;
-        for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
-        self.fallback_font_paths.deinit(std.heap.c_allocator);
-        self.clear_draws.deinit(std.heap.c_allocator);
-        self.background_draws.deinit(std.heap.c_allocator);
-        self.sprite_draws.deinit(std.heap.c_allocator);
-        self.decoration_draws.deinit(std.heap.c_allocator);
-        self.cursor_draws.deinit(std.heap.c_allocator);
-        self.raster_uploads.deinit(std.heap.c_allocator);
-        self.session.deinit();
-        std.heap.c_allocator.destroy(self);
-    }
-
-    fn resetPreparedViews(self: *SurfaceTextOwner) void {
-        self.clear_draws.clearRetainingCapacity();
-        self.background_draws.clearRetainingCapacity();
-        self.sprite_draws.clearRetainingCapacity();
-        self.decoration_draws.clearRetainingCapacity();
-        self.cursor_draws.clearRetainingCapacity();
-        self.raster_uploads.clearRetainingCapacity();
-    }
-
-    fn invalidateTextState(self: *SurfaceTextOwner) void {
-        text_support.resetLoadedFace(&self.session);
-        self.session.text_state.face_text_cache.clear();
-        self.session.text_state.shape_run_cache.clear();
-        self.session.text_state.glyph_cell_cache.clear();
-        if (self.session.text_preparer) |*preparer| preparer.clearAtlas();
-    }
-};
-
-const PreparedSurfaceOwner = struct {
-    session_owner: *SurfaceTextOwner,
-    prepared: Render.PreparedSurface,
-    snapshot_seq: u64,
-    dirty_epoch: u64,
-    geometry_epoch: u64,
-    required_base_seq: u64,
-    required_surface_epoch: u64,
-    render_px: FfiPixelSize,
-    cell_px: FfiCellSize,
-    grid: FfiGridSize,
-    prepare_metrics: FfiSurfaceMetrics,
-    damage_kind: u8,
-    full_redraw: u8,
-    scroll_up_px: u16,
-    clear_draws: []FfiColorDraw = &.{},
-    background_draws: []FfiColorDraw = &.{},
-    sprite_batches: []FfiSpriteBatch = &.{},
-    sprite_instances: []FfiSpriteInstance = &.{},
-    decoration_draws: []FfiDecorationDraw = &.{},
-    cursor_draws: []FfiColorDraw = &.{},
-    surface_damage_rects: []FfiRect = &.{},
-    buffer_damage_rects: []FfiRect = &.{},
-    uploads: []FfiUploadOp = &.{},
-    pixel_blob: []u8 = &.{},
-    missing_glyphs: u64,
-    resolve_metrics: FfiSurfaceMetrics,
-
-    fn destroy(self: *PreparedSurfaceOwner) void {
-        self.prepared.deinit();
-        freeOwnedSlice(FfiColorDraw, &self.clear_draws);
-        freeOwnedSlice(FfiColorDraw, &self.background_draws);
-        freeOwnedSlice(FfiSpriteBatch, &self.sprite_batches);
-        freeOwnedSlice(FfiSpriteInstance, &self.sprite_instances);
-        freeOwnedSlice(FfiDecorationDraw, &self.decoration_draws);
-        freeOwnedSlice(FfiColorDraw, &self.cursor_draws);
-        freeOwnedSlice(FfiRect, &self.surface_damage_rects);
-        freeOwnedSlice(FfiRect, &self.buffer_damage_rects);
-        freeOwnedSlice(FfiUploadOp, &self.uploads);
-        freeOwnedSlice(u8, &self.pixel_blob);
-        std.heap.c_allocator.destroy(self);
-    }
-};
+const PreparedSurfaceOwner = prepared_surface.Owner(@This());
 
 const OwnedSurfaceSource = struct {
     allocator: std.mem.Allocator,
@@ -780,157 +688,6 @@ fn spriteInstanceSpanOut(items: []const FfiSpriteInstance) FfiSpriteInstanceSpan
     return .{ .ptr = if (items.len == 0) null else items.ptr, .len = items.len };
 }
 
-fn preparePreparedViews(owner: *SurfaceTextOwner, value: Render.PreparedSurface) !void {
-    owner.resetPreparedViews();
-    try owner.clear_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.clear_draws.len);
-    try owner.background_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.background_draws.len);
-    try owner.sprite_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.sprite_draws.len);
-    try owner.decoration_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.decoration_draws.len);
-    try owner.cursor_draws.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.scene.scene.cursor_draws.len);
-    try owner.raster_uploads.ensureTotalCapacity(std.heap.c_allocator, value.text_frame.raster_plan.outputs.len);
-
-    for (value.text_frame.scene.scene.clear_draws) |draw| {
-        owner.clear_draws.appendAssumeCapacity(.{
-            .x_px = draw.x_px,
-            .y_px = draw.y_px,
-            .width_px = draw.width_px,
-            .height_px = draw.height_px,
-            .color = rgba8Out(draw.color),
-        });
-    }
-    for (value.text_frame.scene.scene.background_draws) |draw| {
-        owner.background_draws.appendAssumeCapacity(.{
-            .x_px = draw.x_px,
-            .y_px = draw.y_px,
-            .width_px = draw.width_px,
-            .height_px = draw.height_px,
-            .color = rgba8Out(draw.color),
-        });
-    }
-    for (value.text_frame.scene.scene.sprite_draws) |draw| {
-        owner.sprite_draws.appendAssumeCapacity(.{
-            .slot = draw.sprite.slot,
-            .key = draw.sprite.key.value,
-            .x_px = draw.x_px,
-            .y_px = draw.y_px,
-            .width_px = draw.width_px,
-            .height_px = draw.height_px,
-            .color = rgba8Out(draw.color),
-        });
-    }
-    for (value.text_frame.scene.scene.decoration_draws) |draw| {
-        owner.decoration_draws.appendAssumeCapacity(.{
-            .kind = @intFromEnum(draw.kind),
-            .x_px = draw.x_px,
-            .y_px = draw.y_px,
-            .width_px = draw.width_px,
-            .height_px = draw.height_px,
-            .color = rgba8Out(draw.color),
-        });
-    }
-    for (value.text_frame.scene.scene.cursor_draws) |draw| {
-        owner.cursor_draws.appendAssumeCapacity(.{
-            .x_px = draw.x_px,
-            .y_px = draw.y_px,
-            .width_px = draw.width_px,
-            .height_px = draw.height_px,
-            .color = rgba8Out(draw.color),
-        });
-    }
-    for (value.text_frame.raster_plan.outputs) |output| {
-        const slot = findSceneSpriteSlot(value.text_frame.scene.scene, output.key) orelse continue;
-        const bounds = output.visualBounds();
-        owner.raster_uploads.appendAssumeCapacity(.{
-            .slot = slot,
-            .key = output.key.value,
-            .width_px = output.width_px,
-            .height_px = output.height_px,
-            .color_mode = @intFromEnum(output.color_mode),
-            .visual_bounds = .{
-                .x_px = bounds.x_px,
-                .y_px = bounds.y_px,
-                .width_px = bounds.width_px,
-                .height_px = bounds.height_px,
-            },
-            .pixels_ptr = if (output.pixels.len == 0) null else output.pixels.ptr,
-            .pixels_len = output.pixels.len,
-        });
-    }
-}
-
-fn packedStrideForOutput(output: Render.Text.Rasterizer.RasterSpriteOutput) u16 {
-    const channels: u16 = if (output.color_mode == .color) 4 else 1;
-    return @intCast(@as(u32, output.width_px) * @as(u32, channels));
-}
-
-fn pixelFormatForOutput(output: Render.Text.Rasterizer.RasterSpriteOutput) u8 {
-    return switch (output.color_mode) {
-        .alpha => 0,
-        .color => 1,
-    };
-}
-
-fn findUploadOp(uploads: []const FfiUploadOp, sprite_key: u64, slot: u32) ?FfiUploadOp {
-    for (uploads) |upload| {
-        if (upload.sprite_key == sprite_key and upload.slot == slot) return upload;
-    }
-    return null;
-}
-
-fn prepareInfoOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceInfo {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .snapshot_seq = owner.snapshot_seq,
-        .dirty_epoch = owner.dirty_epoch,
-        .geometry_epoch = owner.geometry_epoch,
-        .required_base_seq = owner.required_base_seq,
-        .required_surface_epoch = owner.required_surface_epoch,
-        .render_px = owner.render_px,
-        .cell_px = owner.cell_px,
-        .grid = owner.grid,
-        .prepare_metrics = owner.prepare_metrics,
-        .damage_kind = owner.damage_kind,
-    };
-}
-
-fn prepareDamagePlanOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceDamagePlan {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .full_redraw = owner.full_redraw,
-        .scroll_up_px = owner.scroll_up_px,
-        .surface_damage_rects = rectSpanOut(owner.surface_damage_rects),
-        .buffer_damage_rects = rectSpanOut(owner.buffer_damage_rects),
-    };
-}
-
-fn prepareUploadPlanOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceUploadPlan {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .uploads = uploadOpSpanOut(owner.uploads),
-        .pixel_blob = byteSpanOut(owner.pixel_blob),
-    };
-}
-
-fn prepareDrawPlanOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceDrawPlan {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .clear_draws = colorDrawSpanOut(owner.clear_draws),
-        .background_draws = colorDrawSpanOut(owner.background_draws),
-        .sprite_batches = spriteBatchSpanOut(owner.sprite_batches),
-        .sprite_instances = spriteInstanceSpanOut(owner.sprite_instances),
-        .decoration_draws = decorationDrawSpanOut(owner.decoration_draws),
-        .cursor_draws = colorDrawSpanOut(owner.cursor_draws),
-    };
-}
-
-fn prepareDiagnosticsOut(owner: *PreparedSurfaceOwner) FfiPreparedSurfaceDiagnostics {
-    return .{
-        .status = @intFromEnum(HowlRenderCallStatus.ok),
-        .missing_glyphs = owner.missing_glyphs,
-        .resolve_metrics = owner.resolve_metrics,
-    };
-}
-
 fn executionInputIn(value: FfiSurfaceExecutionInput) SurfaceText.SurfaceExecutionInput {
     return .{
         .surface = .{
@@ -980,146 +737,6 @@ fn preparedFrameIn(value: FfiPreparedFrame) Render.FramePipeline.PreparedFrame {
     };
 }
 
-fn atlasPageForPrepared(slot: u32, atlas_page_slots: u32) u16 {
-    if (atlas_page_slots == 0) return 0;
-    return @intCast(slot / atlas_page_slots);
-}
-
-fn preparedSurfaceOwnerCreate(session_owner: *SurfaceTextOwner, value: Render.PreparedSurface) !*PreparedSurfaceOwner {
-    var owner = try std.heap.c_allocator.create(PreparedSurfaceOwner);
-    errdefer std.heap.c_allocator.destroy(owner);
-    owner.* = .{
-        .session_owner = session_owner,
-        .prepared = value,
-        .snapshot_seq = value.request.token.snapshot_seq,
-        .dirty_epoch = value.request.token.dirty_epoch,
-        .geometry_epoch = value.geometry_epoch,
-        .required_base_seq = value.pipelineFrame().required_base_seq,
-        .required_surface_epoch = value.required_surface_epoch,
-        .render_px = .{ .width = value.render_px.width, .height = value.render_px.height },
-        .cell_px = .{ .width = value.cell_px.width, .height = value.cell_px.height },
-        .grid = .{ .cols = value.grid.cols, .rows = value.grid.rows },
-        .prepare_metrics = .{
-            .sync_us = value.prepare_metrics.sync_us,
-            .copy_us = value.prepare_metrics.copy_us,
-            .render_us = value.prepare_metrics.surface_us,
-            .glyphs = 0,
-            .fills = 0,
-            .clear_fills = 0,
-            .background_fills = 0,
-            .decoration_fills = 0,
-            .cursor_fills = 0,
-            .uploads = 0,
-            .face_checks = 0,
-            .face_cache_hits = 0,
-            .shape_requests = 0,
-            .shape_cache_hits = 0,
-            .fallback_hits = 0,
-            .fallback_misses = 0,
-            .missing_glyphs = 0,
-        },
-        .damage_kind = @intFromEnum(value.damageKind()),
-        .full_redraw = boolByte(value.text_frame.scene.scene.full_redraw),
-        .scroll_up_px = value.text_frame.scene.scene.scroll_up_px,
-        .missing_glyphs = value.text_frame.scene.scene.missing.len,
-        .resolve_metrics = .{
-            .sync_us = 0,
-            .copy_us = 0,
-            .render_us = 0,
-            .glyphs = 0,
-            .fills = 0,
-            .clear_fills = 0,
-            .background_fills = 0,
-            .decoration_fills = 0,
-            .cursor_fills = 0,
-            .uploads = 0,
-            .face_checks = value.resolve.counters.face_checks,
-            .face_cache_hits = value.resolve.counters.face_cache_hits,
-            .shape_requests = value.resolve.counters.shape_requests,
-            .shape_cache_hits = value.resolve.counters.shape_cache_hits,
-            .fallback_hits = value.resolve.counters.fallback_hits,
-            .fallback_misses = value.resolve.counters.fallback_misses,
-            .missing_glyphs = value.resolve.counters.missing_glyphs,
-        },
-    };
-    errdefer owner.destroy();
-
-    owner.clear_draws = try std.heap.c_allocator.dupe(FfiColorDraw, session_owner.clear_draws.items);
-    owner.background_draws = try std.heap.c_allocator.dupe(FfiColorDraw, session_owner.background_draws.items);
-    owner.decoration_draws = try std.heap.c_allocator.dupe(FfiDecorationDraw, session_owner.decoration_draws.items);
-    owner.cursor_draws = try std.heap.c_allocator.dupe(FfiColorDraw, session_owner.cursor_draws.items);
-
-    owner.surface_damage_rects = try std.heap.c_allocator.alloc(FfiRect, value.surface_damage_rects.len);
-    for (value.surface_damage_rects, 0..) |rect, idx| {
-        owner.surface_damage_rects[idx] = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
-    }
-    owner.buffer_damage_rects = try std.heap.c_allocator.alloc(FfiRect, value.buffer_damage_rects.len);
-    for (value.buffer_damage_rects, 0..) |rect, idx| {
-        owner.buffer_damage_rects[idx] = .{ .x = rect.x, .y = rect.y, .width = rect.width, .height = rect.height };
-    }
-
-    owner.uploads = try std.heap.c_allocator.alloc(FfiUploadOp, session_owner.raster_uploads.items.len);
-    var blob_len: usize = 0;
-    for (session_owner.raster_uploads.items) |upload| blob_len += upload.pixels_len;
-    owner.pixel_blob = try std.heap.c_allocator.alloc(u8, blob_len);
-    var blob_offset: usize = 0;
-    for (session_owner.raster_uploads.items, 0..) |upload, idx| {
-        const pixels = if (upload.pixels_len == 0 or upload.pixels_ptr == null) &.{} else upload.pixels_ptr[0..upload.pixels_len];
-        if (pixels.len > 0) std.mem.copyForwards(u8, owner.pixel_blob[blob_offset .. blob_offset + pixels.len], pixels);
-        owner.uploads[idx] = .{
-            .sprite_key = upload.key,
-            .slot = upload.slot,
-            .atlas_page = atlasPageForPrepared(upload.slot, value.atlas_page_slots),
-            .pixel_format = if (upload.color_mode == 0) 0 else 1,
-            .color_mode = upload.color_mode,
-            .width_px = upload.width_px,
-            .height_px = upload.height_px,
-            .stride = if (upload.color_mode == 0) upload.width_px else @intCast(@as(u32, upload.width_px) * 4),
-            .blob_offset = blob_offset,
-            .blob_len = pixels.len,
-            .visual_bounds = upload.visual_bounds,
-        };
-        blob_offset += pixels.len;
-    }
-
-    owner.sprite_instances = try std.heap.c_allocator.alloc(FfiSpriteInstance, session_owner.sprite_draws.items.len);
-    for (session_owner.sprite_draws.items, 0..) |draw, idx| {
-        const upload = findUploadOp(owner.uploads, draw.key, draw.slot);
-        const src_width_px = if (upload) |op| op.visual_bounds.width_px else draw.width_px;
-        const src_height_px = if (upload) |op| op.visual_bounds.height_px else draw.height_px;
-        owner.sprite_instances[idx] = .{
-            .slot = draw.slot,
-            .sprite_key = draw.key,
-            .dst_x_px = draw.x_px,
-            .dst_y_px = draw.y_px,
-            .dst_width_px = draw.width_px,
-            .dst_height_px = draw.height_px,
-            .src_x_px = if (upload) |op| op.visual_bounds.x_px else 0,
-            .src_y_px = if (upload) |op| op.visual_bounds.y_px else 0,
-            .src_width_px = src_width_px,
-            .src_height_px = src_height_px,
-            .color = draw.color,
-        };
-    }
-    owner.sprite_batches = try std.heap.c_allocator.alloc(FfiSpriteBatch, value.sprite_batches.len);
-    for (value.sprite_batches, 0..) |batch, idx| {
-        owner.sprite_batches[idx] = .{
-            .atlas_page = batch.atlas_page,
-            .pass_kind = @intFromEnum(batch.pass_kind),
-            .first_instance = batch.first_instance,
-            .instance_count = batch.instance_count,
-        };
-    }
-    return owner;
-}
-
-fn findSceneSpriteSlot(scene: Render.TextScene, key: Render.SpriteKey) ?u32 {
-    for (scene.sprite_draws) |draw| {
-        if (draw.sprite.key.value == key.value) return draw.sprite.slot;
-    }
-    return null;
-}
-
 fn surfaceFeedbackOut(value: Render.SurfaceFeedback) FfiSurfaceFeedback {
     return .{
         .status = @intFromEnum(HowlRenderCallStatus.ok),
@@ -1139,12 +756,7 @@ fn underlineStyleIn(value: u8) Render.UnderlineStyle {
     };
 }
 
-fn surfaceTextOwnerFromHandle(handle: SurfaceTextHandle) ?*SurfaceTextOwner {
-    const owned = handle orelse return null;
-    return @ptrCast(@alignCast(owned));
-}
-
-fn preparedSurfaceOwnerFromHandle(handle: PreparedSurfaceHandle) ?*PreparedSurfaceOwner {
+fn surfaceTextOwnerFromHandle(handle: SurfaceTextHandle) ?*surface.SurfaceTextOwner {
     const owned = handle orelse return null;
     return @ptrCast(@alignCast(owned));
 }
@@ -1176,7 +788,7 @@ pub fn surfaceTextDeriveFrameLayout(handle: SurfaceTextHandle, render_px: FfiPix
 
 pub fn surfaceTextInit(config: FfiSurfaceTextConfig) callconv(.c) SurfaceTextHandle {
     if (config.surface_px.width == 0 or config.surface_px.height == 0) return null;
-    const owner = SurfaceTextOwner.create(.{
+    const owner = surface.SurfaceTextOwner.create(.{
         .surface_px = pixelIn(config.surface_px),
         .font_size_px = @max(config.font_size_px, 1),
     }) orelse return null;
@@ -1250,61 +862,56 @@ pub fn surfaceTextPrepareHandle(surface_text_handle: SurfaceTextHandle, surface_
     defer surface_source.deinit();
     prepare.state = surface_source.frame;
     const prepared = owner.session.prepareSurface(std.heap.c_allocator, prepare) catch return .failed;
-    preparePreparedViews(owner, prepared) catch {
-        var failed_prepared = prepared;
-        failed_prepared.deinit();
-        return .failed;
-    };
     if (prepared_handle_out) |out| {
-        const prepared_owner = preparedSurfaceOwnerCreate(owner, prepared) catch return .failed;
+        const prepared_owner = prepared_surface.create(@This(), owner, prepared) catch return .failed;
         out.* = @ptrCast(prepared_owner);
     }
     return .ready;
 }
 
 pub fn preparedSurfaceRelease(prepared_surface_handle: PreparedSurfaceHandle) callconv(.c) void {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return;
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return;
     owner.destroy();
 }
 
 pub fn preparedSurfaceDescribe(prepared_surface_handle: PreparedSurfaceHandle, info_out: ?*FfiPreparedSurfaceInfo) callconv(.c) c_int {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = info_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepareInfoOut(owner);
+    out.* = prepared_surface.infoOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn preparedSurfaceDamagePlan(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceDamagePlan) callconv(.c) c_int {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = plan_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepareDamagePlanOut(owner);
+    out.* = prepared_surface.damagePlanOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn preparedSurfaceUploadPlan(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceUploadPlan) callconv(.c) c_int {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = plan_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepareUploadPlanOut(owner);
+    out.* = prepared_surface.uploadPlanOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn preparedSurfaceDrawPlan(prepared_surface_handle: PreparedSurfaceHandle, plan_out: ?*FfiPreparedSurfaceDrawPlan) callconv(.c) c_int {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = plan_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepareDrawPlanOut(owner);
+    out.* = prepared_surface.drawPlanOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn preparedSurfaceDiagnostics(prepared_surface_handle: PreparedSurfaceHandle, diagnostics_out: ?*FfiPreparedSurfaceDiagnostics) callconv(.c) c_int {
-    const owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
+    const owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return @intFromEnum(HowlRenderCallStatus.missing_handle);
     const out = diagnostics_out orelse return @intFromEnum(HowlRenderCallStatus.invalid_argument);
-    out.* = prepareDiagnosticsOut(owner);
+    out.* = prepared_surface.diagnosticsOut(@This(), owner);
     return @intFromEnum(HowlRenderCallStatus.ok);
 }
 
 pub fn surfaceTextSubmit(surface_text_handle: SurfaceTextHandle, prepared_surface_handle: PreparedSurfaceHandle, prepared_frame_in: FfiPreparedFrame, execution_in: ?*const FfiSurfaceExecutionInput, feedback_out: ?*FfiSurfaceFeedback) callconv(.c) HowlRenderSubmitStatus {
     const owner = surfaceTextOwnerFromHandle(surface_text_handle) orelse return .failed;
-    const prepared_owner = preparedSurfaceOwnerFromHandle(prepared_surface_handle) orelse return .failed;
+    const prepared_owner = prepared_surface.fromHandle(@This(), prepared_surface_handle) orelse return .failed;
     if (prepared_owner.session_owner != owner) return .failed;
     const execution = execution_in orelse return .failed;
     const prepared_frame = preparedFrameIn(prepared_frame_in);

@@ -92,6 +92,36 @@ pub const SurfaceTextConfig = struct {
     font_path: ?[:0]const u8 = null,
 };
 
+pub const SurfaceTextOwner = struct {
+    session: SurfaceText,
+    config: SurfaceTextConfig,
+    font_path: ?[:0]u8 = null,
+    fallback_font_paths: std.ArrayList([:0]u8) = .empty,
+
+    pub fn create(config: SurfaceTextConfig) ?*SurfaceTextOwner {
+        const owner = std.heap.c_allocator.create(SurfaceTextOwner) catch return null;
+        owner.* = .{ .session = SurfaceText.init(), .config = config };
+        return owner;
+    }
+
+    pub fn destroy(self: *SurfaceTextOwner) void {
+        if (self.font_path) |path| std.heap.c_allocator.free(path);
+        self.font_path = null;
+        for (self.fallback_font_paths.items) |path| std.heap.c_allocator.free(path);
+        self.fallback_font_paths.deinit(std.heap.c_allocator);
+        self.session.deinit();
+        std.heap.c_allocator.destroy(self);
+    }
+
+    pub fn invalidateTextState(self: *SurfaceTextOwner) void {
+        text_support.resetLoadedFace(&self.session);
+        self.session.text_state.face_text_cache.clear();
+        self.session.text_state.shape_run_cache.clear();
+        self.session.text_state.glyph_cell_cache.clear();
+        if (self.session.text_preparer) |*preparer| preparer.clearAtlas();
+    }
+};
+
 pub const FillRect = struct {
     x: i32,
     y: i32,
