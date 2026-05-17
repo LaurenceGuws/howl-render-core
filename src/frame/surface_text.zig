@@ -141,6 +141,13 @@ pub const SurfaceText = struct {
         return final;
     }
 
+    pub fn atlasRaster(self: *SurfaceText, key: contract.SpriteKey) ?text.AtlasCache.StoredRaster {
+        lockMutex(&self.mutex);
+        defer self.mutex.unlock();
+        const preparer = self.text_preparer orelse return null;
+        return preparer.atlas.rasterForKey(key);
+    }
+
     fn buildPreparedPlans(
         allocator: std.mem.Allocator,
         prepare: PrepareInput,

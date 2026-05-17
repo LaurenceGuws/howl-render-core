@@ -419,6 +419,16 @@ pub const FfiSurfaceFeedback = extern struct {
     metrics: FfiSurfaceMetrics,
 };
 
+pub const FfiCachedSprite = extern struct {
+    status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
+    width_px: u16,
+    height_px: u16,
+    color_mode: u8,
+    reserved0: u8 = 0,
+    visual_bounds: FfiRasterBounds,
+    pixels: FfiByteSpan,
+};
+
 pub const FfiSurfaceTextConfig = extern struct {
     surface_px: FfiPixelSize,
     font_size_px: u16,
@@ -636,6 +646,10 @@ pub fn preparedSurfaceDiagnostics(prepared_surface_handle: PreparedSurfaceHandle
 
 pub fn surfaceTextSubmit(surface_text_handle: SurfaceTextHandle, prepared_surface_handle: PreparedSurfaceHandle, prepared_frame_in: FfiPreparedFrame, execution_in: ?*const FfiSurfaceExecutionInput, feedback_out: ?*FfiSurfaceFeedback) callconv(.c) HowlRenderSubmitStatus {
     return surface_text_ffi.submit(@This(), surface_text_handle, prepared_surface_handle, prepared_frame_in, execution_in, feedback_out);
+}
+
+pub fn surfaceTextCachedSprite(handle: SurfaceTextHandle, sprite_key: u64, out: ?*FfiCachedSprite) callconv(.c) c_int {
+    return surface_text_ffi.cachedSprite(@This(), handle, sprite_key, out);
 }
 
 test "ffi surface session rejects missing handle" {

@@ -18,4 +18,5 @@ comptime {
     @export(&ffi.preparedSurfaceDrawPlan, .{ .name = "howl_render_prepared_surface_draw_plan" });
     @export(&ffi.preparedSurfaceDiagnostics, .{ .name = "howl_render_prepared_surface_diagnostics" });
     @export(&ffi.surfaceTextSubmit, .{ .name = "howl_render_surface_text_submit" });
+    @export(&ffi.surfaceTextCachedSprite, .{ .name = "howl_render_surface_text_cached_sprite" });
 }

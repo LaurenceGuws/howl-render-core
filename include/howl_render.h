@@ -437,6 +437,16 @@ typedef struct {
 } HowlRenderSurfaceFeedback;
 
 typedef struct {
+  int32_t status;
+  uint16_t width_px;
+  uint16_t height_px;
+  uint8_t color_mode;
+  uint8_t reserved0;
+  HowlRenderRasterBounds visual_bounds;
+  HowlRenderByteSpan pixels;
+} HowlRenderCachedSprite;
+
+typedef struct {
   HowlRenderPixelSize surface_px;
   uint16_t font_size_px;
   uint16_t reserved0;
@@ -461,6 +471,7 @@ int howl_render_prepared_surface_upload_plan(HowlRenderPreparedSurfaceHandle pre
 int howl_render_prepared_surface_draw_plan(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDrawPlan *plan_out);
 int howl_render_prepared_surface_diagnostics(HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedSurfaceDiagnostics *diagnostics_out);
 HowlRenderSubmitStatus howl_render_surface_text_submit(HowlRenderSurfaceTextHandle surface_text_handle, HowlRenderPreparedSurfaceHandle prepared_surface_handle, HowlRenderPreparedFrame prepared_frame, const HowlRenderSurfaceExecutionInput *execution_in, HowlRenderSurfaceFeedback *feedback_out);
+int howl_render_surface_text_cached_sprite(HowlRenderSurfaceTextHandle handle, uint64_t sprite_key, HowlRenderCachedSprite *out);
 
 #ifdef __cplusplus
 }

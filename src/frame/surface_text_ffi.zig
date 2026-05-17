@@ -128,6 +128,21 @@ pub fn submit(comptime Ffi: type, surface_text_handle: Ffi.SurfaceTextHandle, pr
     return .rendered;
 }
 
+pub fn cachedSprite(comptime Ffi: type, handle: Ffi.SurfaceTextHandle, sprite_key: u64, out: ?*Ffi.FfiCachedSprite) c_int {
+    const owner = ownerFromHandle(Ffi, handle) orelse return @intFromEnum(Ffi.HowlRenderCallStatus.missing_handle);
+    const cached = owner.session.atlasRaster(.{ .value = sprite_key }) orelse return @intFromEnum(Ffi.HowlRenderCallStatus.failed);
+    const sprite_out = out orelse return @intFromEnum(Ffi.HowlRenderCallStatus.invalid_argument);
+    sprite_out.* = .{
+        .status = @intFromEnum(Ffi.HowlRenderCallStatus.ok),
+        .width_px = cached.width_px,
+        .height_px = cached.height_px,
+        .color_mode = @intFromEnum(cached.color_mode),
+        .visual_bounds = .{ .x_px = cached.visual_bounds.x_px, .y_px = cached.visual_bounds.y_px, .width_px = cached.visual_bounds.width_px, .height_px = cached.visual_bounds.height_px },
+        .pixels = .{ .ptr = if (cached.pixels.len == 0) null else cached.pixels.ptr, .len = cached.pixels.len },
+    };
+    return @intFromEnum(Ffi.HowlRenderCallStatus.ok);
+}
+
 fn surfaceFeedbackOut(comptime Ffi: type, value: Render.SurfaceFeedback) Ffi.FfiSurfaceFeedback {
     return .{
         .status = @intFromEnum(Ffi.HowlRenderCallStatus.ok),
