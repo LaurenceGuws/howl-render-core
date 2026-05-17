@@ -4,6 +4,7 @@ const damage = @import("damage.zig");
 const geometry_mod = @import("geometry.zig");
 const input = @import("input.zig");
 const pipeline = @import("pipeline.zig");
+const sprite_batch = @import("sprite_batch.zig");
 const contract = @import("../text/contract.zig");
 const text_pipeline = @import("../text/pipeline.zig");
 const text = @import("../text/text.zig");
@@ -516,7 +517,7 @@ pub const SurfaceText = struct {
         errdefer if (surface_damage_rects.len > 0) allocator.free(surface_damage_rects);
         const buffer_damage_rects = try damage.buildBufferRects(PixelSize, CellSize, contract.GridMetrics, DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
         errdefer if (buffer_damage_rects.len > 0) allocator.free(buffer_damage_rects);
-        const sprite_batches = try buildSpriteBatches(allocator, 2048, prepared.scene.scene.sprite_draws, prepared.raster_plan.outputs);
+        const sprite_batches = try sprite_batch.buildBatches(SpriteBatch, SpriteBatchPassKind, allocator, 2048, prepared.scene.scene.sprite_draws, prepared.raster_plan.outputs);
         errdefer if (sprite_batches.len > 0) allocator.free(sprite_batches);
         return .{
             .surface_damage_rects = surface_damage_rects,
@@ -707,68 +708,6 @@ pub const SurfaceText = struct {
             .fallback_misses = counters.fallback_misses,
             .missing_glyphs = counters.missing_glyphs,
         };
-    }
-
-    fn buildSpriteBatches(
-        allocator: std.mem.Allocator,
-        atlas_page_slots: u32,
-        draws: []const contract.TextSpriteDraw,
-        outputs: []const text.Rasterizer.RasterSpriteOutput,
-    ) ![]SpriteBatch {
-        if (draws.len == 0) return &.{};
-        var batches = std.ArrayList(SpriteBatch).empty;
-        errdefer batches.deinit(allocator);
-        var current_pass: ?SpriteBatchPassKind = null;
-        var first_instance: u32 = 0;
-        var instance_count: u32 = 0;
-        for (draws, 0..) |draw, idx| {
-            const pass_kind = spritePassKindForDraw(draw, outputs);
-            if (current_pass == null) {
-                current_pass = pass_kind;
-                first_instance = @intCast(idx);
-                instance_count = 1;
-                continue;
-            }
-            if (current_pass.? != pass_kind) {
-                try batches.append(allocator, .{
-                    .atlas_page = atlasPageForSlot(draws[first_instance].sprite.slot, atlas_page_slots),
-                    .pass_kind = current_pass.?,
-                    .first_instance = first_instance,
-                    .instance_count = instance_count,
-                });
-                current_pass = pass_kind;
-                first_instance = @intCast(idx);
-                instance_count = 1;
-                continue;
-            }
-            instance_count += 1;
-        }
-        try batches.append(allocator, .{
-            .atlas_page = atlasPageForSlot(draws[first_instance].sprite.slot, atlas_page_slots),
-            .pass_kind = current_pass.?,
-            .first_instance = first_instance,
-            .instance_count = instance_count,
-        });
-        return try batches.toOwnedSlice(allocator);
-    }
-
-    fn spritePassKindForDraw(
-        draw: contract.TextSpriteDraw,
-        outputs: []const text.Rasterizer.RasterSpriteOutput,
-    ) SpriteBatchPassKind {
-        for (outputs) |output| {
-            if (output.key.value != draw.sprite.key.value) continue;
-            return switch (output.color_mode) {
-                .alpha => .alpha,
-                .color => .color,
-            };
-        }
-        return .alpha;
-    }
-
-    fn atlasPageForSlot(slot: u32, atlas_page_slots: u32) u16 {
-        if (atlas_page_slots == 0) return 0;
-        return @intCast(slot / atlas_page_slots);
     }
 
 };
