@@ -4,19 +4,17 @@ const scene = @import("scene.zig");
 
 pub const Damage = struct {
     full: bool,
-    scroll_up_px: u16,
     dirty_rows: []const bool,
     dirty_cols_start: []const u16,
     dirty_cols_end: []const u16,
 
-    pub fn init(damage: scene.DamageInput, rows: u16, cell_h_px: u16) Damage {
+    pub fn init(damage: scene.DamageInput, rows: u16) Damage {
         const valid = !damage.full and
             damage.dirty_rows.len == @as(usize, rows) and
             damage.dirty_cols_start.len == @as(usize, rows) and
             damage.dirty_cols_end.len == @as(usize, rows);
         return .{
             .full = !valid,
-            .scroll_up_px = if (valid) @intCast(@as(u32, @min(damage.scroll_up_rows, rows)) * @as(u32, cell_h_px)) else 0,
             .dirty_rows = if (valid) damage.dirty_rows else &.{},
             .dirty_cols_start = if (valid) damage.dirty_cols_start else &.{},
             .dirty_cols_end = if (valid) damage.dirty_cols_end else &.{},
@@ -53,7 +51,6 @@ pub fn includeSpan(damage: Damage, grid_metrics: contract.GridMetrics, first_cel
 pub fn borrowScene(allocator: std.mem.Allocator, damage: Damage, direct: anytype) scene.OwnedTextScene {
     return .{ .allocator = allocator, .scene = .{
         .full_redraw = damage.full,
-        .scroll_up_px = damage.scroll_up_px,
         .clear_draws = direct.clear_draws.items,
         .background_draws = direct.background_draws.items,
         .sprite_draws = direct.sprite_draws.items,
@@ -74,7 +71,6 @@ pub fn installMergedScene(text_scene: *scene.OwnedTextScene, damage: Damage, mer
     text_scene.allocator.free(text_scene.scene.decoration_draws);
     text_scene.allocator.free(text_scene.scene.missing);
     text_scene.scene.full_redraw = damage.full;
-    text_scene.scene.scroll_up_px = damage.scroll_up_px;
     text_scene.scene.clear_draws = merged.clear_draws;
     text_scene.scene.cursor_draws = merged.cursor_draws;
     text_scene.scene.background_draws = merged.background_draws;

@@ -308,7 +308,7 @@ pub const FfiPreparedSurfaceDamagePlan = extern struct {
     status: i32 = @intFromEnum(HowlRenderCallStatus.failed),
     full_redraw: u8,
     reserved0: u8 = 0,
-    scroll_up_px: u16,
+    reserved1: u16 = 0,
     surface_damage_rects: FfiRectSpan,
     buffer_damage_rects: FfiRectSpan,
 };
@@ -341,7 +341,7 @@ pub const FfiSurfaceSource = extern struct {
     scroll_row: u64,
     is_alternate_screen: u8,
     full_damage: u8,
-    scroll_up_rows: u16,
+    reserved1: u16 = 0,
     dirty_rows: FfiByteSpan,
     dirty_cols_start: FfiU16Span,
     dirty_cols_end: FfiU16Span,

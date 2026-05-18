@@ -100,7 +100,7 @@ pub fn prepare(
     cursor: ?scene.CursorInput,
     lane_report: *lane.LaneReport,
 ) !?Product {
-    const damage = direct_scene.Damage.init(damage_input, grid_metrics.rows, session.metrics.cell_h_px);
+    const damage = direct_scene.Damage.init(damage_input, grid_metrics.rows);
     const source_len = sourceLen(source);
     const visible_count = countVisible(source, damage, grid_metrics, policy, lane_report) orelse return null;
     try driver.scratch.reset(driver.allocator, visible_count, source_len, grid_metrics.rows);

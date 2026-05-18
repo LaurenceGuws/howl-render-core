@@ -14,10 +14,9 @@ fn lockMutex(mutex: *ThreadMutex) void {
 }
 
 pub const DamageKind = enum(u2) {
-    none,
-    partial,
-    scroll,
-    full,
+    none = 0,
+    partial = 1,
+    full = 3,
 };
 
 pub const PreparePriority = union(enum) {
@@ -33,7 +32,7 @@ pub const SnapshotToken = struct {
     damage_kind: DamageKind,
 
     pub fn requiresRetainedBase(self: SnapshotToken) bool {
-        return self.damage_kind == .partial or self.damage_kind == .scroll;
+        return self.damage_kind == .partial;
     }
 
     pub fn isNewerThan(self: SnapshotToken, other: SnapshotToken) bool {
@@ -187,11 +186,11 @@ pub fn LatestMailbox(comptime T: type) type {
 
 test "snapshot token classifies retained-base damage" {
     const full = SnapshotToken{ .snapshot_seq = 1, .dirty_epoch = 1, .geometry_epoch = 1, .damage_base_seq = 0, .damage_kind = .full };
-    const scroll = SnapshotToken{ .snapshot_seq = 2, .dirty_epoch = 2, .geometry_epoch = 1, .damage_base_seq = 1, .damage_kind = .scroll };
+    const partial = SnapshotToken{ .snapshot_seq = 2, .dirty_epoch = 2, .geometry_epoch = 1, .damage_base_seq = 1, .damage_kind = .partial };
 
     try std.testing.expect(!full.requiresRetainedBase());
-    try std.testing.expect(scroll.requiresRetainedBase());
-    try std.testing.expect(scroll.isNewerThan(full));
+    try std.testing.expect(partial.requiresRetainedBase());
+    try std.testing.expect(partial.isNewerThan(full));
 }
 
 test "prepared partial frame validates retained target base" {
@@ -201,7 +200,7 @@ test "prepared partial frame validates retained target base" {
         .content_valid = true,
     };
     const prepared = PreparedFrame{
-        .token = .{ .snapshot_seq = 11, .dirty_epoch = 11, .geometry_epoch = 3, .damage_base_seq = 10, .damage_kind = .scroll },
+        .token = .{ .snapshot_seq = 11, .dirty_epoch = 11, .geometry_epoch = 3, .damage_base_seq = 10, .damage_kind = .partial },
         .required_base_seq = 10,
         .required_target_epoch = 7,
     };

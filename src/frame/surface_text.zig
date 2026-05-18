@@ -107,7 +107,6 @@ pub const SurfaceText = struct {
         if (!prepare.target_valid) {
             if (self.text_preparer) |*preparer| preparer.clearAtlas();
             text_input.options.scene.damage.full = true;
-            text_input.options.scene.damage.scroll_up_rows = 0;
         }
         var resolve: text_pipeline.ResolveObservability = .{};
         const preparer = try self.ensureTextPreparer(allocator, &context);
@@ -159,9 +158,9 @@ pub const SurfaceText = struct {
         grid: contract.GridMetrics,
         prepared: text.OwnedPreparedTextFrame,
     ) !PreparedPlans {
-        const surface_damage_rects = try damage.buildSurfaceRects(surface.PixelSize, surface.CellSize, contract.GridMetrics, surface.DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
+        const surface_damage_rects = try damage.buildSurfaceRects(surface.PixelSize, surface.CellSize, contract.GridMetrics, surface.DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.full_redraw);
         errdefer if (surface_damage_rects.len > 0) allocator.free(surface_damage_rects);
-        const buffer_damage_rects = try damage.buildBufferRects(surface.PixelSize, surface.CellSize, contract.GridMetrics, surface.DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.scroll_up_px, prepared.scene.scene.full_redraw);
+        const buffer_damage_rects = try damage.buildBufferRects(surface.PixelSize, surface.CellSize, contract.GridMetrics, surface.DamageRect, allocator, prepare.query.render_px, prepare.query.cell_px, grid, prepare.state.damage, prepared.scene.scene.full_redraw);
         errdefer if (buffer_damage_rects.len > 0) allocator.free(buffer_damage_rects);
         return .{
             .surface_damage_rects = surface_damage_rects,

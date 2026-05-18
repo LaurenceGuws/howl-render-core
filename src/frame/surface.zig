@@ -192,7 +192,6 @@ pub const GridModel = struct {
 
 pub const DamageInfo = struct {
     full: bool = true,
-    scroll_up_rows: u16 = 0,
     dirty_rows: []const bool = &.{},
     dirty_cols_start: []const u16 = &.{},
     dirty_cols_end: []const u16 = &.{},
@@ -268,13 +267,12 @@ pub const PreparedSurface = struct {
 
     pub fn damageKind(self: *const PreparedSurface) pipeline.DamageKind {
         if (self.text_frame.scene.scene.full_redraw) return .full;
-        if (self.text_frame.scene.scene.scroll_up_px > 0) return .scroll;
         return .partial;
     }
 
     pub fn pipelineFrame(self: *const PreparedSurface) pipeline.PreparedFrame {
         const damage_kind = self.damageKind();
-        const damage_base_seq = if (damage_kind == .partial or damage_kind == .scroll)
+        const damage_base_seq = if (damage_kind == .partial)
             self.request.token.damage_base_seq
         else
             0;

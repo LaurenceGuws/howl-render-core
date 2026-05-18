@@ -67,7 +67,6 @@ const Workload = struct {
     grid: render.GridMetrics,
     damage: struct {
         full: bool,
-        scroll_up_rows: u16 = 0,
         dirty_rows: []const bool,
         dirty_cols_start: []const u16,
         dirty_cols_end: []const u16,
@@ -277,6 +276,82 @@ fn buildAsciiFullWorkload(allocator: std.mem.Allocator) !Workload {
         .grid = .{ .cols = cols, .rows = rows },
         .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
     };
+}
+
+fn buildLsdLikeWorkload(allocator: std.mem.Allocator, colored: bool) !Workload {
+    const rows: u16 = 52;
+    const cols: u16 = 119;
+    const bg = rgba(0, 0, 0);
+    const fg = rgba(204, 204, 204);
+    const dir_fg = rgba(97, 175, 239);
+    const exec_fg = rgba(152, 195, 121);
+    const link_fg = rgba(198, 120, 221);
+    const perm_fg = rgba(224, 108, 117);
+    const size_fg = rgba(229, 192, 123);
+    const date_fg = rgba(86, 182, 194);
+    const cells = try initCells(allocator, rows, cols, bg);
+    const dirty = try initDirtyAll(allocator, rows, cols);
+
+    var row: u16 = 0;
+    while (row < rows) : (row += 1) {
+        const row_base: u32 = @as(u32, row) * cols;
+        var col: u16 = 0;
+        const kind = row % 3;
+        const name_fg = if (!colored)
+            fg
+        else switch (kind) {
+            0 => dir_fg,
+            1 => exec_fg,
+            else => link_fg,
+        };
+        const size_color = if (colored) size_fg else fg;
+        const date_color = if (colored) date_fg else fg;
+        const perm_color = if (colored) perm_fg else fg;
+
+        writeText(cells, row_base, cols, &col, if (kind == 1) "-rwxr-xr-x" else "drwxr-xr-x", perm_color, bg);
+        padSpaces(cells, row_base, cols, &col, 1, name_fg, bg);
+        writeText(cells, row_base, cols, &col, "user", fg, bg);
+        padSpaces(cells, row_base, cols, &col, 1, name_fg, bg);
+        writeText(cells, row_base, cols, &col, "group", fg, bg);
+        padSpaces(cells, row_base, cols, &col, 2, name_fg, bg);
+        writeText(cells, row_base, cols, &col, if (kind == 0) "4.0K" else "128K", size_color, bg);
+        padSpaces(cells, row_base, cols, &col, 2, name_fg, bg);
+        writeText(cells, row_base, cols, &col, "2026-05-18", date_color, bg);
+        padSpaces(cells, row_base, cols, &col, 1, name_fg, bg);
+        writeText(cells, row_base, cols, &col, if (kind == 0) "src" else if (kind == 1) "build.zig" else "README.md", name_fg, bg);
+        if (kind == 2) {
+            padSpaces(cells, row_base, cols, &col, 1, name_fg, bg);
+            writeText(cells, row_base, cols, &col, "->", fg, bg);
+            padSpaces(cells, row_base, cols, &col, 1, name_fg, bg);
+            writeText(cells, row_base, cols, &col, "target", link_fg, bg);
+        }
+        padSpaces(cells, row_base, cols, &col, cols -| col, name_fg, bg);
+    }
+
+    return .{
+        .name = if (colored) "lsd_like_color" else "lsd_like_plain",
+        .cell_px = .{ .width = 9, .height = 18 },
+        .dirty_cells_per_run = @intCast(@as(u32, rows) * cols),
+        .input = .{ .cells = cells },
+        .grid = .{ .cols = cols, .rows = rows },
+        .damage = .{ .full = true, .dirty_rows = dirty.rows, .dirty_cols_start = dirty.starts, .dirty_cols_end = dirty.ends },
+    };
+}
+
+fn writeText(cells: []render.CellInput, row_base: u32, cols: u16, col: *u16, text: []const u8, fg: render.Rgba8, bg: render.Rgba8) void {
+    for (text) |byte| {
+        if (col.* >= cols) break;
+        cells[@intCast(row_base + col.*)] = .{ .codepoint = byte, .fg = fg, .bg = bg };
+        col.* += 1;
+    }
+}
+
+fn padSpaces(cells: []render.CellInput, row_base: u32, cols: u16, col: *u16, count: u16, fg: render.Rgba8, bg: render.Rgba8) void {
+    var left = count;
+    while (left > 0 and col.* < cols) : (left -= 1) {
+        cells[@intCast(row_base + col.*)] = .{ .codepoint = ' ', .fg = fg, .bg = bg };
+        col.* += 1;
+    }
 }
 
 fn buildSparseRowsWorkload(allocator: std.mem.Allocator) !Workload {
@@ -516,7 +591,6 @@ fn runWorkload(io: std.Io, allocator: std.mem.Allocator, workload: Workload, run
         .scene = .{
             .damage = .{
                 .full = workload.damage.full,
-                .scroll_up_rows = workload.damage.scroll_up_rows,
                 .dirty_rows = workload.damage.dirty_rows,
                 .dirty_cols_start = workload.damage.dirty_cols_start,
                 .dirty_cols_end = workload.damage.dirty_cols_end,
@@ -780,6 +854,8 @@ pub fn main(init: std.process.Init) !void {
 
     const workloads = [_]Workload{
         try buildAsciiFullWorkload(arena),
+        try buildLsdLikeWorkload(arena, false),
+        try buildLsdLikeWorkload(arena, true),
         try buildCellTextAsciiFullWorkload(arena),
         try buildSparseRowsWorkload(arena),
         try buildMixedBoxWorkload(arena),

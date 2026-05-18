@@ -93,18 +93,14 @@ fn mapUnderlineStyle(style: surface.UnderlineStyle) contract.UnderlineStyle {
     };
 }
 
-fn damageScrollUpRows(damage: anytype) u16 {
-    return if (@hasField(@TypeOf(damage), "scroll_up_rows")) damage.scroll_up_rows else 0;
-}
-
 fn isAlacrittyEmptyCell(cell: surface.Cell) bool {
     const blank = cell.codepoint == ' ' or cell.codepoint == '\t';
-    const default_colors = cell.bg_color.kind == .default and cell.fg_color.kind == .default;
+    const default_bg = cell.bg_color.kind == .default;
     const visible_flags = cell.flags.continuation or
         cell.attrs.inverse or
         cell.attrs.underline or
         cell.attrs.strikethrough;
-    return blank and default_colors and !visible_flags;
+    return blank and default_bg and !visible_flags;
 }
 
 fn emptyCellInput() contract.CellInput {
@@ -235,7 +231,6 @@ pub fn vtStateToFrameTextInputWithTheme(
         .color = t.cursor_color,
     } else null;
 
-    const scroll_up_rows = damageScrollUpRows(state.damage);
     return .{
         .allocator = allocator,
         .cells = cell_inputs,
@@ -244,7 +239,6 @@ pub fn vtStateToFrameTextInputWithTheme(
             .cursor = cursor,
             .damage = .{
                 .full = state.damage.full,
-                .scroll_up_rows = scroll_up_rows,
                 .dirty_rows = state.damage.dirty_rows,
                 .dirty_cols_start = state.damage.dirty_cols_start,
                 .dirty_cols_end = state.damage.dirty_cols_end,
@@ -300,6 +294,24 @@ test "frame_input marks Alacritty-empty cells before color mapping" {
     try std.testing.expect(!input.cells[4].empty);
 }
 
+test "frame_input keeps fg-colored blanks empty" {
+    const cells = [_]surface.Cell{
+        .{ .codepoint = ' ', .fg_color = .{ .kind = .indexed, .value = 2 } },
+        .{ .codepoint = '\t', .fg_color = .{ .kind = .rgb, .value = 0x33AAFF } },
+    };
+    const state = .{
+        .grid = .{ .cells = &cells, .cols = 2, .rows = 1 },
+        .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = .block },
+        .damage = .{ .full = true, .dirty_rows = &[_]bool{}, .dirty_cols_start = &[_]u16{}, .dirty_cols_end = &[_]u16{} },
+    };
+
+    var input = try vtStateToTextSceneInput(std.testing.allocator, state);
+    defer input.deinit();
+
+    try std.testing.expect(input.cells[0].empty);
+    try std.testing.expect(input.cells[1].empty);
+}
+
 test "frame_input threads partial damage into text scene input" {
     const cells = [_]surface.Cell{ .{}, .{} };
     const dirty_rows = [_]bool{ false, true };
@@ -310,7 +322,6 @@ test "frame_input threads partial damage into text scene input" {
         .cursor = .{ .visible = false, .col = 0, .row = 0, .shape = .block },
         .damage = .{
             .full = false,
-            .scroll_up_rows = 1,
             .dirty_rows = &dirty_rows,
             .dirty_cols_start = &dirty_starts,
             .dirty_cols_end = &dirty_ends,
@@ -319,7 +330,6 @@ test "frame_input threads partial damage into text scene input" {
     var input = try vtStateToTextSceneInput(std.testing.allocator, state);
     defer input.deinit();
     try std.testing.expect(!input.options.scene.damage.full);
-    try std.testing.expectEqual(@as(u16, 1), input.options.scene.damage.scroll_up_rows);
     try std.testing.expectEqual(@as(usize, 2), input.options.scene.damage.dirty_rows.len);
     try std.testing.expectEqual(@as(u16, 2), input.options.scene.damage.dirty_cols_start[1]);
 }

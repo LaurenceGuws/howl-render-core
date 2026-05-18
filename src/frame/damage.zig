@@ -10,11 +10,10 @@ pub fn buildSurfaceRects(
     cell_px: CellSize,
     grid: GridMetrics,
     damage: anytype,
-    scroll_up_px: u16,
     full_redraw: bool,
 ) ![]Rect {
     if (render_px.width == 0 or render_px.height == 0) return &.{};
-    if (full_redraw or damage.full or scroll_up_px > 0) return fullRect(Rect, allocator, render_px);
+    if (full_redraw or damage.full) return fullRect(Rect, allocator, render_px);
     return buildDirtyRowRects(CellSize, GridMetrics, Rect, allocator, cell_px, grid, damage);
 }
 
@@ -28,12 +27,10 @@ pub fn buildBufferRects(
     cell_px: CellSize,
     grid: GridMetrics,
     damage: anytype,
-    scroll_up_px: u16,
     full_redraw: bool,
 ) ![]Rect {
     if (render_px.width == 0 or render_px.height == 0) return &.{};
     if (full_redraw or damage.full) return fullRect(Rect, allocator, render_px);
-    if (scroll_up_px > 0) return buildScrollAndDirtyRects(PixelSize, CellSize, GridMetrics, Rect, allocator, render_px, cell_px, grid, damage, scroll_up_px);
     return buildDirtyRowRects(CellSize, GridMetrics, Rect, allocator, cell_px, grid, damage);
 }
 
@@ -41,32 +38,6 @@ fn fullRect(comptime Rect: type, allocator: std.mem.Allocator, render_px: anytyp
     const out = try allocator.alloc(Rect, 1);
     out[0] = .{ .x = 0, .y = 0, .width = render_px.width, .height = render_px.height };
     return out;
-}
-
-fn buildScrollAndDirtyRects(
-    comptime PixelSize: type,
-    comptime CellSize: type,
-    comptime GridMetrics: type,
-    comptime Rect: type,
-    allocator: std.mem.Allocator,
-    render_px: PixelSize,
-    cell_px: CellSize,
-    grid: GridMetrics,
-    damage: anytype,
-    scroll_up_px: u16,
-) ![]Rect {
-    var rects = std.ArrayList(Rect).empty;
-    errdefer rects.deinit(allocator);
-    try rects.append(allocator, .{
-        .x = 0,
-        .y = render_px.height - scroll_up_px,
-        .width = render_px.width,
-        .height = scroll_up_px,
-    });
-    const dirty = try buildDirtyRowRects(CellSize, GridMetrics, Rect, allocator, cell_px, grid, damage);
-    defer if (dirty.len > 0) allocator.free(dirty);
-    try rects.appendSlice(allocator, dirty);
-    return try rects.toOwnedSlice(allocator);
 }
 
 fn buildDirtyRowRects(

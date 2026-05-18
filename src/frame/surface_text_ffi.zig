@@ -203,7 +203,7 @@ fn surfaceSourceIn(comptime Ffi: type, allocator: std.mem.Allocator, value: Ffi.
     errdefer if (dirty_cols_start.len > 0) allocator.free(dirty_cols_start);
     const dirty_cols_end = try dirtyColsIn(allocator, value.rows, value.dirty_cols_end);
     errdefer if (dirty_cols_end.len > 0) allocator.free(dirty_cols_end);
-    return .{ .allocator = allocator, .cells = cells, .dirty_rows = dirty_rows, .dirty_cols_start = dirty_cols_start, .dirty_cols_end = dirty_cols_end, .frame = .{ .viewport = .{ .cols = value.cols, .rows = value.rows, .scroll_row = @intCast(value.scroll_row), .is_alternate_screen = value.is_alternate_screen != 0 }, .grid = .{ .cells = cells, .cols = value.cols, .rows = value.rows }, .cursor = cursorIn(value.cursor), .damage = .{ .full = value.full_damage != 0, .scroll_up_rows = value.scroll_up_rows, .dirty_rows = dirty_rows, .dirty_cols_start = dirty_cols_start, .dirty_cols_end = dirty_cols_end } } };
+    return .{ .allocator = allocator, .cells = cells, .dirty_rows = dirty_rows, .dirty_cols_start = dirty_cols_start, .dirty_cols_end = dirty_cols_end, .frame = .{ .viewport = .{ .cols = value.cols, .rows = value.rows, .scroll_row = @intCast(value.scroll_row), .is_alternate_screen = value.is_alternate_screen != 0 }, .grid = .{ .cells = cells, .cols = value.cols, .rows = value.rows }, .cursor = cursorIn(value.cursor), .damage = .{ .full = value.full_damage != 0, .dirty_rows = dirty_rows, .dirty_cols_start = dirty_cols_start, .dirty_cols_end = dirty_cols_end } } };
 }
 
 fn dirtyRowsIn(allocator: std.mem.Allocator, rows: u16, span: anytype) ![]bool {

@@ -24,7 +24,6 @@ typedef enum {
 typedef enum {
   HOWL_RENDER_DAMAGE_NONE = 0,
   HOWL_RENDER_DAMAGE_PARTIAL = 1,
-  HOWL_RENDER_DAMAGE_SCROLL = 2,
   HOWL_RENDER_DAMAGE_FULL = 3,
 } HowlRenderDamageKind;
 
@@ -282,7 +281,7 @@ typedef struct {
   int32_t status;
   uint8_t full_redraw;
   uint8_t reserved0;
-  uint16_t scroll_up_px;
+  uint16_t reserved1;
   HowlRenderRectSpan surface_damage_rects;
   HowlRenderRectSpan buffer_damage_rects;
 } HowlRenderPreparedSurfaceDamagePlan;
@@ -315,7 +314,7 @@ typedef struct {
   uint64_t scroll_row;
   uint8_t is_alternate_screen;
   uint8_t full_damage;
-  uint16_t scroll_up_rows;
+  uint16_t reserved0;
   HowlRenderByteSpan dirty_rows;
   HowlRenderU16Span dirty_cols_start;
   HowlRenderU16Span dirty_cols_end;

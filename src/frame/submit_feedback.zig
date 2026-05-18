@@ -12,7 +12,6 @@ pub fn markRendered(atlas: *text.AtlasCache.OwnedAtlasCache, outputs: []const te
 
 pub fn damageKind(prepared: anytype) pipeline.DamageKind {
     if (prepared.text_frame.scene.scene.full_redraw) return .full;
-    if (prepared.text_frame.scene.scene.scroll_up_px > 0) return .scroll;
     return .partial;
 }
 

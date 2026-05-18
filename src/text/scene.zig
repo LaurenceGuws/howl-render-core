@@ -28,7 +28,6 @@ pub const CursorInput = struct {
 
 pub const DamageInput = struct {
     full: bool = true,
-    scroll_up_rows: u16 = 0,
     dirty_rows: []const bool = &.{},
     dirty_cols_start: []const u16 = &.{},
     dirty_cols_end: []const u16 = &.{},
@@ -82,7 +81,7 @@ pub fn buildSceneWithAtlasCacheOptions(
     cache: *atlas_cache.OwnedAtlasCache,
     options: BuildOptions,
 ) !OwnedTextScene {
-    const damage = normalizedDamage(options.damage, grid_metrics.rows, cell_metrics.cell_h_px);
+    const damage = normalizedDamage(options.damage, grid_metrics.rows);
     var assembly = SceneAssembly{ .allocator = allocator };
     errdefer assembly.deinit();
     try assembly.missing.appendSlice(allocator, missing);
@@ -98,7 +97,6 @@ pub fn buildSceneWithAtlasCacheOptions(
 
 const NormalizedDamage = struct {
     full: bool,
-    scroll_up_px: u16,
     dirty_rows: []const bool,
     dirty_cols_start: []const u16,
     dirty_cols_end: []const u16,
@@ -128,7 +126,6 @@ const SceneAssembly = struct {
     fn toOwnedScene(self: *SceneAssembly, damage: NormalizedDamage) !OwnedTextScene {
         return .{ .allocator = self.allocator, .scene = .{
             .full_redraw = damage.full,
-            .scroll_up_px = damage.scroll_up_px,
             .clear_draws = try self.clear_draws.toOwnedSlice(self.allocator),
             .background_draws = try self.background_draws.toOwnedSlice(self.allocator),
             .sprite_draws = try self.sprite_draws.toOwnedSlice(self.allocator),
@@ -410,14 +407,13 @@ const IconSpan = enum(u3) {
     expand,
 };
 
-fn normalizedDamage(damage: DamageInput, rows: u16, cell_h_px: u16) NormalizedDamage {
+fn normalizedDamage(damage: DamageInput, rows: u16) NormalizedDamage {
     const valid = !damage.full and
         damage.dirty_rows.len == @as(usize, rows) and
         damage.dirty_cols_start.len == @as(usize, rows) and
         damage.dirty_cols_end.len == @as(usize, rows);
     return .{
         .full = !valid,
-        .scroll_up_px = if (valid) @intCast(@as(u32, @min(damage.scroll_up_rows, rows)) * @as(u32, cell_h_px)) else 0,
         .dirty_rows = if (valid) damage.dirty_rows else &.{},
         .dirty_cols_start = if (valid) damage.dirty_cols_start else &.{},
         .dirty_cols_end = if (valid) damage.dirty_cols_end else &.{},
@@ -954,7 +950,7 @@ test "scene build options include cursor draws" {
     try std.testing.expectEqual(color.g, owned.scene.cursor_draws[0].color.g);
 }
 
-test "scene damage filters clean rows and carries scroll reuse pixels" {
+test "scene damage filters clean rows" {
     const color = contract.Rgba8{ .r = 1, .g = 2, .b = 3, .a = 255 };
     const cells = [_]contract.RenderableCell{
         .{ .text_id = .{ .value = 0 }, .first_cell = 0, .cell_span = 1, .style = .regular, .presentation = .any, .fg = color, .bg = color },
@@ -972,7 +968,6 @@ test "scene damage filters clean rows and carries scroll reuse pixels" {
     var owned = try buildSceneWithOptions(std.testing.allocator, &cells, &groups, &.{}, .{ .cell_w_px = 8, .cell_h_px = 16, .baseline_px = 12 }, .{ .cols = 2, .rows = 2 }, .{
         .damage = .{
             .full = false,
-            .scroll_up_rows = 1,
             .dirty_rows = &dirty_rows,
             .dirty_cols_start = &dirty_starts,
             .dirty_cols_end = &dirty_ends,
@@ -980,7 +975,6 @@ test "scene damage filters clean rows and carries scroll reuse pixels" {
     });
     defer owned.deinit();
     try std.testing.expect(!owned.scene.full_redraw);
-    try std.testing.expectEqual(@as(u16, 16), owned.scene.scroll_up_px);
     try std.testing.expectEqual(@as(usize, 1), owned.scene.clear_draws.len);
     try std.testing.expectEqual(@as(u16, 16), owned.scene.clear_draws[0].width_px);
     try std.testing.expectEqual(@as(usize, 1), owned.scene.background_draws.len);

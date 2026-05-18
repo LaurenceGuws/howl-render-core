@@ -18,7 +18,7 @@ pub fn Owner(comptime Ffi: type) type {
         prepare_metrics: Ffi.FfiSurfaceMetrics,
         damage_kind: u8,
         full_redraw: u8,
-        scroll_up_px: u16,
+        reserved1: u16,
         surface_damage_rects: []Ffi.FfiRect = &.{},
         buffer_damage_rects: []Ffi.FfiRect = &.{},
         rgba_pixels: []u8 = &.{},
@@ -62,7 +62,7 @@ fn ownerBase(comptime Ffi: type, session_owner: *surface_text.SurfaceTextOwner, 
         .prepare_metrics = prepareMetrics(Ffi, value),
         .damage_kind = @intFromEnum(value.damageKind()),
         .full_redraw = boolByte(value.text_frame.scene.scene.full_redraw),
-        .scroll_up_px = value.text_frame.scene.scene.scroll_up_px,
+        .reserved1 = 0,
         .uploads_committed = value.text_frame.raster_plan.outputs.len,
         .missing_glyphs = value.text_frame.scene.scene.missing.len,
         .resolve_metrics = resolveMetrics(Ffi, value),
@@ -144,7 +144,7 @@ pub fn infoOut(comptime Ffi: type, owner: *Owner(Ffi)) Ffi.FfiPreparedSurfaceInf
 }
 
 pub fn damagePlanOut(comptime Ffi: type, owner: *Owner(Ffi)) Ffi.FfiPreparedSurfaceDamagePlan {
-    return .{ .status = @intFromEnum(Ffi.HowlRenderCallStatus.ok), .full_redraw = owner.full_redraw, .scroll_up_px = owner.scroll_up_px, .surface_damage_rects = span(Ffi.FfiRectSpan, owner.surface_damage_rects), .buffer_damage_rects = span(Ffi.FfiRectSpan, owner.buffer_damage_rects) };
+    return .{ .status = @intFromEnum(Ffi.HowlRenderCallStatus.ok), .full_redraw = owner.full_redraw, .reserved1 = owner.reserved1, .surface_damage_rects = span(Ffi.FfiRectSpan, owner.surface_damage_rects), .buffer_damage_rects = span(Ffi.FfiRectSpan, owner.buffer_damage_rects) };
 }
 
 pub fn bufferOut(comptime Ffi: type, owner: *Owner(Ffi)) Ffi.FfiPreparedSurfaceBuffer {
